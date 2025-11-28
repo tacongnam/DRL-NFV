@@ -177,7 +177,7 @@ def train_models():
 
 def main():
     # --- PHASE 1: TRAINING ---
-    NUM_TRAIN_EPISODES = 500 # Để demo nhanh, thực tế nên 500+
+    NUM_TRAIN_EPISODES = 200 # Để demo nhanh, thực tế nên 500+
     epsilon = 1.0
     epsilon_decay = 0.95
     min_epsilon = 0.05
