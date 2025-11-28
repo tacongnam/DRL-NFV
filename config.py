@@ -1,45 +1,36 @@
 import numpy as np
 
-# Network Configuration
-NUM_DCS = 6
-LINK_BW = 1000
-VNFS = ['NAT', 'FW', 'VOC', 'TM', 'WO', 'IDPS']
-NUM_VNF_TYPES = len(VNFS)
-    
-# DC Resources
-DC_CPU_RANGE = (12, 120)
-DC_RAM = 256
-DC_STORAGE = 2000
+# --- CẤU HÌNH MẠNG & TÀI NGUYÊN ---
+NUM_DCS = 6          # Số lượng Data Center
+NUM_VNFS = 6         # Số loại VNF (NAT, FW, VOC, TM, WO, IDPS)
+LINK_BANDWIDTH = 1024 # Mbps
 
-# SFC Profiles (Paper Table I)
-SFC_PROFILES = {
-    'CG': {'chain': ['NAT', 'FW', 'VOC', 'WO', 'IDPS'], 'bw': 4, 'delay': 80},
-    'AR': {'chain': ['NAT', 'FW', 'TM', 'VOC', 'IDPS'], 'bw': 100, 'delay': 10},
-    'VoIP': {'chain': ['NAT', 'FW', 'TM', 'FW', 'NAT'], 'bw': 0.064, 'delay': 100},
-    'VS': {'chain': ['NAT', 'FW', 'TM', 'VOC', 'IDPS'], 'bw': 4, 'delay': 100},
-    'MIoT': {'chain': ['NAT', 'FW', 'IDPS'], 'bw': 1, 'delay': 5},
-    'Ind4.0': {'chain': ['NAT', 'FW'], 'bw': 70, 'delay': 8}
+# [Paper Section V.A]: DC Resources (CPU, RAM, Storage)
+DC_RESOURCES_MIN = [12, 64, 500] 
+DC_RESOURCES_MAX = [120, 256, 2000]
+
+# --- CẤU HÌNH SFC (Table I) ---
+# Mapping: 0:NAT, 1:FW, 2:VOC, 3:TM, 4:WO, 5:IDPS
+# Format: { "Name": {"bw": Mbps, "delay": ms, "vnfs": [list_idx]} }
+SFC_TYPES = {
+    "CG":     {"bw": 4,     "delay": 80,  "vnfs": [0, 1, 2, 4, 5]},
+    "AR":     {"bw": 100,   "delay": 10,  "vnfs": [0, 1, 3, 2, 5]},
+    "VoIP":   {"bw": 0.064, "delay": 100, "vnfs": [0, 1, 3, 1, 0]},
+    "VS":     {"bw": 4,     "delay": 100, "vnfs": [0, 1, 3, 2, 5]},
+    "MIoT":   {"bw": 10,    "delay": 5,   "vnfs": [0, 1, 5]},
+    "Ind4.0": {"bw": 70,    "delay": 8,   "vnfs": [0, 1]}
 }
 
-# VNF Resource Consumption (Paper/Standard approx)
-VNF_REQ = {
-    'NAT': {'cpu': 2, 'ram': 2, 'sto': 10},
-    'FW': {'cpu': 4, 'ram': 4, 'sto': 20},
-    'VOC': {'cpu': 8, 'ram': 8, 'sto': 50},
-    'TM': {'cpu': 2, 'ram': 2, 'sto': 10},
-    'WO': {'cpu': 4, 'ram': 4, 'sto': 20},
-    'IDPS': {'cpu': 8, 'ram': 8, 'sto': 50}
-}
+# Giả lập tài nguyên tiêu tốn cho mỗi loại VNF [CPU, RAM, Storage]
+VNF_COSTS = [
+    [2, 4, 10], [4, 8, 20], [2, 4, 10], 
+    [1, 2, 5],  [2, 4, 10], [8, 16, 40]
+]
 
-# Hyperparameters
-STATE_DIM_DC = 3 + NUM_VNF_TYPES # CPU, RAM, BW, Installed_VNFs
-LATENT_DIM = 16
-ACTION_SPACE = 2 * NUM_VNF_TYPES + 1 # Install(N), Uninstall(N), Wait(1)
-
-BATCH_SIZE = 64
-GAMMA = 0.95
-LR_VAE = 1e-3
-LR_DQN = 5e-4
-EPSILON_START = 1.0
-EPSILON_END = 0.05
-EPSILON_DECAY = 0.99
+# --- HYPERPARAMETERS ---
+LATENT_DIM = 8       # Kích thước không gian ẩn Z của VAE
+DQN_LR = 0.001
+VAE_LR = 0.001
+BATCH_SIZE = 32
+MEMORY_SIZE = 2000
+GAMMA = 0.99

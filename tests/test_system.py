@@ -1,44 +1,28 @@
 import unittest
-import numpy as np
+import config
 from env.core_network import CoreNetworkEnv
-from models.vae_model import GenAIAgent
-from models.dqn_model import DQNAgent
-from config import *
 
 class TestSystem(unittest.TestCase):
-    def setUp(self):
-        self.env = CoreNetworkEnv()
-        self.vae = GenAIAgent()
-        self.dqn = DQNAgent()
+    def test_different_dc_constraint(self):
+        """Kiểm tra logic cấm đặt VNF trùng DC trong cùng SFC"""
+        env = CoreNetworkEnv()
         
-    def test_env_dimensions(self):
-        dc_states = self.env._get_dc_states()
-        self.assertEqual(dc_states.shape, (NUM_DCS, STATE_DIM_DC))
+        # Tạo request Ind4.0 (2 VNFs: index 0, 1)
+        sfc_data = config.SFC_TYPES['Ind4.0'].copy()
+        env.set_current_request(sfc_data)
         
-    def test_vae_prediction(self):
-        dc_states = self.env._get_dc_states()
-        values = self.vae.predict_value(dc_states)
-        self.assertEqual(values.shape, (NUM_DCS, 1))
+        # 1. Đặt VNF đầu tiên vào DC 0 -> Thành công
+        _, r1, _, _ = env.step(action=0, selected_dc_idx=0)
+        self.assertGreater(r1, 0)
+        self.assertIn(0, env.placed_vnfs_loc)
         
-    def test_dqn_act(self):
-        idx = 0
-        dc_s, loc_s, glob_s = self.env.get_dqn_state(idx)
-        action = self.dqn.act(dc_s, loc_s, glob_s)
-        self.assertTrue(0 <= action < ACTION_SPACE)
+        # 2. Cố tình đặt VNF thứ hai cũng vào DC 0 -> Phải thất bại nặng
+        _, r2, done, info = env.step(action=1, selected_dc_idx=0)
         
-    def test_full_step_cycle(self):
-        self.env.reset()
-        # VAE Select
-        dc_states = self.env._get_dc_states()
-        idx = np.argmax(self.vae.predict_value(dc_states))
-        
-        # DQN Act
-        dc_s, loc_s, glob_s = self.env.get_dqn_state(idx)
-        action = self.dqn.act(dc_s, loc_s, glob_s)
-        
-        # Step
-        _, reward, _, _ = self.env.step(idx, action)
-        self.assertIsInstance(reward, float)
+        # Reward phải rất thấp (-5.0 trong code) và Done = True
+        self.assertEqual(r2, -5.0) 
+        self.assertTrue(done)
+        self.assertIn("Violation", info.get('error', ''))
 
 if __name__ == '__main__':
     unittest.main()
