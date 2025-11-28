@@ -172,7 +172,7 @@ def train_dqn(num_dcs=4, episodes=500):
     replay_buffer = ReplayBuffer()
     
     vae_dataset = collect_vae_data(num_dcs, episodes=100)
-    train_vae(vae, vae_dataset, epochs=50)
+    train_vae(vae, vae_dataset, epochs=500)
     
     print("\nTraining DQN with VAE assistance...")
     stats = {'episodes': [], 'rewards': [], 'acceptance': []}
