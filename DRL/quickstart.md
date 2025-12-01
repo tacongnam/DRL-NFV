@@ -6,6 +6,21 @@
 pip install gymnasium tensorflow numpy matplotlib
 ```
 
+Or use requirements file:
+```bash
+pip install -r requirements.txt
+```
+
+## ⚠️ Important: Environment Setup
+
+The code is configured to run on **CPU** by default (works everywhere). If you're on Kaggle/Colab and see CUDA errors, this is normal - just ignore the warning, code will run fine on CPU.
+
+**Already handled in code:**
+```python
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # Force CPU
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'   # Reduce TF warnings
+```
+
 ## 🔍 Step 1: Verify Architecture (30 seconds)
 
 Kiểm tra xem implementation có khớp với paper không:

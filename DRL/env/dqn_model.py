@@ -1,9 +1,12 @@
 import tensorflow as tf
 from tensorflow import keras
-from keras import layers
+from tensorflow.keras import layers
 import numpy as np
+
+import os
 import sys
-sys.path.append('..')
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from config import *
 
 class AttentionLayer(layers.Layer):
@@ -81,8 +84,8 @@ class DQNModel:
         advantage_stream = layers.Dense(64, activation='relu')(x)
         advantages = layers.Dense(self.num_actions, activation='linear', name='advantages')(advantage_stream)
         
-        mean_advantage = tf.reduce_mean(advantages, axis=1, keepdims=True)
-        output = value + (advantages - mean_advantage)
+        mean_advantage = layers.Lambda(lambda x: tf.reduce_mean(x, axis=1, keepdims=True))(advantages)
+        output = layers.Add()([value, layers.Subtract()([advantages, mean_advantage])])
         
         model = keras.Model(inputs=[input1, input2, input3], outputs=output)
         return model

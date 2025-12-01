@@ -21,8 +21,30 @@ Implementation của thuật toán DRL cho Service Function Chaining (SFC) Provi
 ## Cài đặt
 
 ```bash
+pip install -r requirements.txt
+```
+
+Or manually:
+```bash
 pip install gymnasium tensorflow numpy matplotlib
 ```
+
+**Note:** Code được configure để chạy trên **CPU** (works everywhere). CUDA warnings có thể bỏ qua.
+
+## Quick Test
+
+Trước khi training, test xem mọi thứ hoạt động:
+
+```bash
+python quick_test.py
+```
+
+Expected output:
+```
+✅ ALL TESTS PASSED!
+```
+
+Nếu có lỗi, xem [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 
 ## Verify Architecture
 

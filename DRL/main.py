@@ -1,5 +1,9 @@
 import numpy as np
 import tensorflow as tf
+import os
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
 from env.sfc_environment import SFCEnvironment
 from env.dqn_model import DQNModel, ReplayMemory
 from config import *
