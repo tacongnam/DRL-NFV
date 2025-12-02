@@ -63,6 +63,8 @@ class SFCEnvironment(gym.Env):
         num_types = np.random.randint(1, len(self.sfc_types) + 1)
         selected_types = np.random.choice(self.sfc_types, num_types, replace=False)
         
+        total_created = 0
+        
         for sfc_type in selected_types:
             config = SFC_TYPES[sfc_type]
             bundle_size = np.random.randint(*config['bundle'])
@@ -87,6 +89,10 @@ class SFCEnvironment(gym.Env):
                     'processing_times': []
                 }
                 self.pending_sfcs.append(sfc)
+                total_created += 1
+
+        if total_created:
+            print(f"[ENV DEBUG] Created {total_created} SFCs (pending total now {len(self.pending_sfcs)})")
     
     def _set_dc_priority(self):
         priorities = []

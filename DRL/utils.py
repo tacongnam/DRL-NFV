@@ -65,9 +65,9 @@ def calculate_priority_p3(elapsed_time, e2e_delay):
 
 def check_resource_availability(dc_resources, vnf_type, vnf_specs):
     required = vnf_specs[vnf_type]
-    return (dc_resources['cpu'] >= required['cpu'] and 
-            dc_resources['ram'] >= required['ram'] and
-            dc_resources['storage'] >= required['storage'])
+    return (dc_resources['available_cpu'] >= required['cpu'] and 
+            dc_resources['available_ram'] >= required['ram'] and
+            dc_resources['available_storage'] >= required['storage'])
 
 class ReplayBuffer:
     def __init__(self, capacity):
