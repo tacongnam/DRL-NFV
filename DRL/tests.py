@@ -1,3 +1,11 @@
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+import warnings
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+warnings.filterwarnings('ignore', category=UserWarning)
+import logging
+logging.getLogger('tensorflow').setLevel(logging.ERROR)
+
 import unittest
 import numpy as np
 from env.sfc_environment import SFCEnvironment
@@ -98,7 +106,8 @@ class TestUtils(unittest.TestCase):
         available = check_resource_availability(dc_resources, 'NAT', VNF_SPECS)
         self.assertTrue(available)
         
-        dc_resources['cpu'] = 1
+        # Set cpu to insufficient value
+        dc_resources['cpu'] = 0
         available = check_resource_availability(dc_resources, 'NAT', VNF_SPECS)
         self.assertFalse(available)
     

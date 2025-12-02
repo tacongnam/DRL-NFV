@@ -1,3 +1,11 @@
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+import warnings
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+warnings.filterwarnings('ignore', category=UserWarning)
+import logging
+logging.getLogger('tensorflow').setLevel(logging.ERROR)
+
 from env.sfc_environment import SFCEnvironment
 from agent import DQNAgent
 from config import *
@@ -17,14 +25,41 @@ def quick_demo():
     
     agent = DQNAgent(state1_dim, state2_dim, state3_dim, action_dim)
     
-    print("\nEnvironment Setup:")
+    # Try to load a pre-trained model
+    best_model_path = "checkpoints/best_model.weights.h5"
+    final_model_path = "checkpoints/final_model.weights.h5"
+    load_path = None
+    
+    if os.path.exists(best_model_path):
+        load_path = best_model_path
+        print(f"\n[INFO] Found best_model checkpoint. Loading from {best_model_path}...")
+    elif os.path.exists(final_model_path):
+        load_path = final_model_path
+        print(f"\n[INFO] Found final_model checkpoint. Loading from {final_model_path}...")
+    else:
+        print("\n[INFO] No pre-trained checkpoint found. Training from scratch...")
+    
+    if load_path:
+        try:
+            agent.load(load_path)
+            print(f"[SUCCESS] Model loaded successfully. Skipping training phase.\n")
+            training_episodes = 0
+        except Exception as e:
+            print(f"[WARNING] Failed to load model: {e}. Proceeding with training.\n")
+            training_episodes = 5
+    else:
+        training_episodes = 5
+    
+    print("Environment Setup:")
     print(f"  Number of DCs: {env.num_dcs}")
     print(f"  VNF Types: {', '.join(VNF_LIST)}")
     print(f"  SFC Types: {', '.join(SFC_TYPES.keys())}")
     print(f"  Action Space: {action_dim} (Allocate={len(VNF_LIST)}, Uninstall={len(VNF_LIST)}, Wait=1)")
     
-    print("\nTraining for 20 episodes...")
-    for episode in range(20):
+    print(f"\nTraining for {training_episodes} episodes...")
+    if training_episodes == 0:
+        print("(Skipped - using pre-trained model)")
+    for episode in range(training_episodes):
         state, _ = env.reset()
         episode_reward = 0
         done = False
@@ -60,7 +95,8 @@ def quick_demo():
 
             step += 1
         
-        agent.decay_epsilon()
+        if training_episodes > 0:
+            agent.decay_epsilon()
         
         print(f"  Episode {episode + 1}: Reward={episode_reward:.2f}, "
               f"AccRatio={info['acceptance_ratio']:.1%}, "
@@ -68,25 +104,28 @@ def quick_demo():
         print(f"    Actions distribution: {action_counts.tolist()}")
         print(f"    Invalid actions: {invalid_count}")
     
-    # Save trained model
-    checkpoint_path = "checkpoints/demo_trained_model.weights.h5"
-    agent.save(checkpoint_path)
-    print(f"\n✓ Model saved to {checkpoint_path}")
-    
-    print("\nTesting on different network configurations...")
+    print("\n" + "="*60)
+    print("Testing on different network configurations...")
+    print("="*60)
     for num_dcs in [2, 4, 6]:
         test_env = SFCEnvironment(num_dcs=num_dcs)
         state, _ = test_env.reset()
         done = False
         step = 0
+        invalid_action_count = 0
         
-        while not done and step < 300:
+        while not done and step < 1000:
             action = agent.select_action(state, training=False)
-            state, _, done, _, info = test_env.step(action)
+            state, reward, done, _, info = test_env.step(action)
+            if reward == REWARD_CONFIG['invalid_action']:
+                invalid_action_count += 1
             step += 1
         
-        print(f"  {num_dcs} DCs: AccRatio={info['acceptance_ratio']:.1%}, "
-              f"Delay={info['avg_delay']:.2f}ms, ResUtil={info['resource_util']:.1%}")
+        print(f"  {num_dcs} DCs:")
+        print(f"    AccRatio={info['acceptance_ratio']:.1%}, Satisfied={info['satisfied']}, Dropped={info['dropped']}")
+        print(f"    Delay={info['avg_delay']:.2f}ms, ResUtil={info['resource_util']:.1%}")
+        print(f"    Invalid actions: {invalid_action_count}/{step}")
+        print(f"    Pending SFCs: {len(test_env.pending_sfcs)}, Active SFCs: {len(test_env.active_sfcs)}")
     
     print("\n" + "="*60)
     print("Demo completed! Run main.py for full training.")

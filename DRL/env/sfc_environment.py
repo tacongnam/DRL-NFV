@@ -75,11 +75,19 @@ class SFCEnvironment(gym.Env):
                 while dest == source:
                     dest = np.random.randint(0, self.num_dcs)
                 
+                # Ensure bandwidth is a scalar. If config['bw'] is a range (tuple/list), sample a value.
+                bw_config = config.get('bw')
+                if isinstance(bw_config, (list, tuple)) and len(bw_config) == 2:
+                    # sample uniformly within the provided range
+                    bw_value = float(np.random.uniform(bw_config[0], bw_config[1]))
+                else:
+                    bw_value = float(bw_config)
+
                 sfc = {
                     'id': len(self.pending_sfcs) + len(self.active_sfcs) + len(self.satisfied_sfcs) + len(self.dropped_sfcs),
                     'type': sfc_type,
                     'vnfs': config['vnfs'].copy(),
-                    'bw': config['bw'],
+                    'bw': bw_value,
                     'delay': config['delay'],
                     'source': source,
                     'dest': dest,
@@ -364,6 +372,7 @@ class SFCEnvironment(gym.Env):
                     self.active_sfcs.remove(sfc)
                 self.dropped_sfcs.append(sfc)
                 self._release_resources(sfc)
+                print(f"[ENV DEBUG] SFC {sfc['id']} ({sfc['type']}) dropped: elapsed={self.current_time - sfc['created_time']:.2f}, delay_budget={sfc['delay']}")
                 return REWARD_CONFIG['sfc_dropped']
         
         return REWARD_CONFIG['default']
@@ -399,10 +408,12 @@ class SFCEnvironment(gym.Env):
             queue_length = allocated_count
             waiting_delay += queue_length * VNF_SPECS[vnf_type]['proc_time']
         
-        total_delay = path_delay + proc_delay + waiting_delay
+        # Only check future delays, not elapsed time
+        total_future_delay = path_delay + proc_delay + waiting_delay
         elapsed = self.current_time - sfc['created_time']
+        remaining_budget = sfc['delay'] - elapsed
         
-        return (elapsed + total_delay) <= sfc['delay']
+        return total_future_delay <= remaining_budget
     
     def _update_sfcs(self):
         to_drop = []
