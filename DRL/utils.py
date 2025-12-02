@@ -1,91 +1,94 @@
 import numpy as np
-from config import *
+import networkx as nx
+from config import LIGHT_SPEED, PRIORITY_CONFIG
 
-def calculate_shortest_path(graph, source, destination, bandwidth_req, link_bw):
-    n = len(graph)
-    dist = [float('inf')] * n
-    parent = [-1] * n
-    visited = [False] * n
-    dist[source] = 0
+def create_network_topology(num_dcs, dc_positions=None):
+    G = nx.Graph()
+    if dc_positions is None:
+        dc_positions = np.random.rand(num_dcs, 2) * 1000
     
-    for _ in range(n):
-        u = -1
-        for i in range(n):
-            if not visited[i] and (u == -1 or dist[i] < dist[u]):
-                u = i
-        
-        if dist[u] == float('inf'):
-            break
-            
-        visited[u] = True
-        
-        for v in range(n):
-            if graph[u][v] > 0 and link_bw[u][v] >= bandwidth_req:
-                if dist[u] + graph[u][v] < dist[v]:
-                    dist[v] = dist[u] + graph[u][v]
-                    parent[v] = u
-    
-    if dist[destination] == float('inf'):
-        return [], float('inf')
-    
-    path = []
-    current = destination
-    while current != -1:
-        path.append(current)
-        current = parent[current]
-    path.reverse()
-    
-    return path, dist[destination]
-
-def calculate_propagation_delay(distance_km):
-    return distance_km / (SPEED_OF_LIGHT / 1000)
-
-def normalize_state(state, max_val=100):
-    return np.clip(state / max_val, 0, 1)
-
-def create_distance_matrix(num_dcs, min_dist=50, max_dist=500):
-    matrix = np.zeros((num_dcs, num_dcs))
     for i in range(num_dcs):
-        for j in range(i+1, num_dcs):
-            dist = np.random.uniform(min_dist, max_dist)
-            matrix[i][j] = dist
-            matrix[j][i] = dist
-    return matrix
-
-def create_dc_resources(num_dcs):
-    dcs = []
-    for _ in range(num_dcs):
-        cpu = np.random.uniform(*DC_CONFIG['cpu_range'])
-        dcs.append({
-            'cpu': cpu,
-            'ram': DC_CONFIG['ram_capacity'],
-            'storage': DC_CONFIG['storage_capacity'],
-            'cpu_used': 0,
-            'ram_used': 0,
-            'storage_used': 0,
-            'installed_vnfs': {vnf: 0 for vnf in VNF_TYPES},
-            'allocated_vnfs': {vnf: 0 for vnf in VNF_TYPES}
-        })
-    return dcs
-
-def generate_sfc_requests(request_count_range=(1, 3)):
-    requests = []
-    num_request_types = np.random.randint(*request_count_range)
+        G.add_node(i, pos=dc_positions[i])
     
-    for _ in range(num_request_types):
-        sfc_type = np.random.choice(SFC_TYPES)
-        characteristics = SFC_CHARACTERISTICS[sfc_type]
-        bundle_size = np.random.randint(*characteristics['bundle_size'])
+    for i in range(num_dcs):
+        for j in range(i + 1, num_dcs):
+            dist = np.linalg.norm(dc_positions[i] - dc_positions[j])
+            G.add_edge(i, j, weight=dist, available_bw=1000)
+    
+    return G
+
+def calculate_propagation_delay(G, path):
+    delay = 0
+    for i in range(len(path) - 1):
+        dist = G[path[i]][path[i+1]]['weight']
+        delay += (dist * 1000) / LIGHT_SPEED * 1000
+    return delay
+
+def get_shortest_path_with_bw(G, source, dest, required_bw):
+    try:
+        all_paths = list(nx.all_simple_paths(G, source, dest))
+        valid_paths = []
+        for path in all_paths:
+            valid = True
+            for i in range(len(path) - 1):
+                if G[path[i]][path[i+1]]['available_bw'] < required_bw:
+                    valid = False
+                    break
+            if valid:
+                valid_paths.append(path)
         
-        for _ in range(bundle_size):
-            requests.append({
-                'type': sfc_type,
-                'chain': characteristics['chain'].copy(),
-                'bandwidth': characteristics['bw'],
-                'delay_tolerance': characteristics['delay'],
-                'creation_time': 0,
-                'allocated_vnfs': [],
-                'status': 'pending'
-            })
+        if not valid_paths:
+            return None
+        
+        return min(valid_paths, key=lambda p: sum(G[p[i]][p[i+1]]['weight'] for i in range(len(p)-1)))
+    except:
+        return None
+
+def calculate_priority_p1(elapsed_time, e2e_delay):
+    return elapsed_time - e2e_delay
+
+def calculate_priority_p2(vnf, dc_id, sfc_allocated_dcs):
+    sfc_id = vnf['sfc_id']
+    allocated_dcs = sfc_allocated_dcs.get(sfc_id, [])
     
-    return requests
+    if dc_id in allocated_dcs:
+        return 10
+    elif allocated_dcs:
+        return -5
+    return 0
+
+def calculate_priority_p3(elapsed_time, e2e_delay):
+    remaining = e2e_delay - elapsed_time
+    if remaining < PRIORITY_CONFIG['urgency_threshold']:
+        return PRIORITY_CONFIG['urgency_constant'] / (remaining + PRIORITY_CONFIG['epsilon'])
+    return 0
+
+def check_resource_availability(dc_resources, vnf_type, vnf_specs):
+    required = vnf_specs[vnf_type]
+    return (dc_resources['cpu'] >= required['cpu'] and 
+            dc_resources['ram'] >= required['ram'] and
+            dc_resources['storage'] >= required['storage'])
+
+class ReplayBuffer:
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.buffer = []
+        self.position = 0
+    
+    def push(self, state1, state2, state3, action, reward, next_state1, next_state2, next_state3, done):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.position] = (state1, state2, state3, action, reward, 
+                                       next_state1, next_state2, next_state3, done)
+        self.position = (self.position + 1) % self.capacity
+    
+    def sample(self, batch_size):
+        indices = np.random.choice(len(self.buffer), batch_size, replace=False)
+        batch = [self.buffer[idx] for idx in indices]
+        
+        s1, s2, s3, a, r, ns1, ns2, ns3, d = zip(*batch)
+        return (np.array(s1), np.array(s2), np.array(s3), np.array(a), 
+                np.array(r), np.array(ns1), np.array(ns2), np.array(ns3), np.array(d))
+    
+    def __len__(self):
+        return len(self.buffer)

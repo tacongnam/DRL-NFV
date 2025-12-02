@@ -1,109 +1,175 @@
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
-
-import os
 import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+sys.path.append('..')
 from config import *
 from utils import *
 
 class SFCEnvironment(gym.Env):
     def __init__(self, num_dcs=4):
-        super().__init__()
+        super(SFCEnvironment, self).__init__()
         
         self.num_dcs = num_dcs
-        self.num_vnf_types = len(VNF_TYPES)
-        self.num_sfc_types = len(SFC_TYPES)
+        self.vnf_types = VNF_LIST
+        self.sfc_types = list(SFC_TYPES.keys())
         
-        self.action_space = spaces.Discrete(2 * self.num_vnf_types + 1)
+        self.action_space = spaces.Discrete(2 * len(VNF_LIST) + 1)
         
-        state1_dim = 2 * self.num_vnf_types + 2
-        state2_dim = self.num_sfc_types * (1 + 2 * self.num_vnf_types)
-        state3_dim = self.num_sfc_types * (4 + self.num_vnf_types)
+        obs_dim1 = 2 * len(VNF_LIST) + 2
+        obs_dim2 = len(self.sfc_types) * (1 + 2 * len(VNF_LIST))
+        obs_dim3 = len(self.sfc_types) * (4 + len(VNF_LIST))
         
         self.observation_space = spaces.Dict({
-            'state1': spaces.Box(low=0, high=1, shape=(state1_dim,), dtype=np.float32),
-            'state2': spaces.Box(low=0, high=1, shape=(state2_dim,), dtype=np.float32),
-            'state3': spaces.Box(low=0, high=1, shape=(state3_dim,), dtype=np.float32)
+            'state1': spaces.Box(low=0, high=np.inf, shape=(obs_dim1,), dtype=np.float32),
+            'state2': spaces.Box(low=0, high=np.inf, shape=(obs_dim2,), dtype=np.float32),
+            'state3': spaces.Box(low=0, high=np.inf, shape=(obs_dim3,), dtype=np.float32)
         })
         
         self.reset()
     
-    def reset(self, seed=None, options=None):
+    def reset(self, seed=None):
         super().reset(seed=seed)
         
-        self.dcs = create_dc_resources(self.num_dcs)
-        self.distance_matrix = create_distance_matrix(self.num_dcs)
-        self.link_bandwidth = np.full((self.num_dcs, self.num_dcs), DC_CONFIG['link_bandwidth'])
-        self.link_bandwidth_used = np.zeros((self.num_dcs, self.num_dcs))
+        self.network = create_network_topology(self.num_dcs)
         
-        self.sfc_requests = []
+        self.dcs = []
+        for i in range(self.num_dcs):
+            cpu = np.random.randint(*DC_CONFIG['cpu_range'])
+            self.dcs.append({
+                'id': i,
+                'cpu': cpu,
+                'ram': DC_CONFIG['ram'],
+                'storage': DC_CONFIG['storage'],
+                'available_cpu': cpu,
+                'available_ram': DC_CONFIG['ram'],
+                'available_storage': DC_CONFIG['storage'],
+                'installed_vnfs': {vnf: 0 for vnf in VNF_LIST},
+                'allocated_vnfs': {vnf: 0 for vnf in VNF_LIST}
+            })
+        
+        self.pending_sfcs = []
+        self.active_sfcs = []
+        self.satisfied_sfcs = []
+        self.dropped_sfcs = []
         self.current_time = 0
         self.current_dc_idx = 0
-        self.total_accepted = 0
-        self.total_dropped = 0
-        self.total_generated = 0
+        self.dc_priority_list = list(range(self.num_dcs))
+        self.sfc_allocated_dcs = {}
         
-        return self._get_state(), {}
+        return self._get_observation(), {}
     
-    def _get_state(self):
-        dc = self.dcs[self.current_dc_idx]
+    def _generate_sfc_requests(self):
+        num_types = np.random.randint(1, len(self.sfc_types) + 1)
+        selected_types = np.random.choice(self.sfc_types, num_types, replace=False)
+        
+        for sfc_type in selected_types:
+            config = SFC_TYPES[sfc_type]
+            bundle_size = np.random.randint(*config['bundle'])
+            
+            for _ in range(bundle_size):
+                source = np.random.randint(0, self.num_dcs)
+                dest = np.random.randint(0, self.num_dcs)
+                while dest == source:
+                    dest = np.random.randint(0, self.num_dcs)
+                
+                sfc = {
+                    'id': len(self.pending_sfcs) + len(self.active_sfcs) + len(self.satisfied_sfcs) + len(self.dropped_sfcs),
+                    'type': sfc_type,
+                    'vnfs': config['vnfs'].copy(),
+                    'bw': config['bw'],
+                    'delay': config['delay'],
+                    'source': source,
+                    'dest': dest,
+                    'created_time': self.current_time,
+                    'allocated_vnfs': [],
+                    'allocated_dcs': [],
+                    'processing_times': []
+                }
+                self.pending_sfcs.append(sfc)
+    
+    def _set_dc_priority(self):
+        priorities = []
+        min_delay_sfc = None
+        min_delay = float('inf')
+        
+        for sfc in self.pending_sfcs:
+            remaining = sfc['delay'] - (self.current_time - sfc['created_time'])
+            if remaining < min_delay:
+                min_delay = remaining
+                min_delay_sfc = sfc
+        
+        if min_delay_sfc is None:
+            self.dc_priority_list = list(range(self.num_dcs))
+            return
+        
+        source = min_delay_sfc['source']
+        dest = min_delay_sfc['dest']
+        path = get_shortest_path_with_bw(self.network, source, dest, min_delay_sfc['bw'])
+        
+        if path:
+            priority_dcs = path.copy()
+            other_dcs = [i for i in range(self.num_dcs) if i not in path]
+            self.dc_priority_list = priority_dcs + other_dcs
+        else:
+            self.dc_priority_list = list(range(self.num_dcs))
+    
+    def _get_observation(self):
+        if len(self.dc_priority_list) == 0:
+            self.dc_priority_list = list(range(self.num_dcs))
+        
+        if self.current_dc_idx >= len(self.dc_priority_list):
+            self.current_dc_idx = 0
+        
+        current_dc = self.dcs[self.dc_priority_list[self.current_dc_idx]]
         
         state1 = []
-        for vnf in VNF_TYPES:
-            state1.append(dc['installed_vnfs'][vnf] / 10)
-            state1.append(max(0, dc['installed_vnfs'][vnf] - dc['allocated_vnfs'][vnf]) / 10)
-        state1.append(1 - dc['storage_used'] / dc['storage'])
-        state1.append(1 - dc['cpu_used'] / dc['cpu'])
+        for vnf in VNF_LIST:
+            state1.append(current_dc['installed_vnfs'][vnf])
+            state1.append(current_dc['installed_vnfs'][vnf] - current_dc['allocated_vnfs'][vnf])
+        state1.extend([current_dc['available_storage'], current_dc['available_cpu']])
         
         state2 = []
-        for sfc_type in SFC_TYPES:
-            sfc_info = [0] * (1 + 2 * self.num_vnf_types)
-            sfc_info[0] = SFC_TYPES.index(sfc_type) / len(SFC_TYPES)
+        for sfc_type in self.sfc_types:
+            sfc_info = [0] * (1 + 2 * len(VNF_LIST))
             
-            for req in self.sfc_requests:
-                if req['type'] == sfc_type and req['status'] == 'pending':
-                    for vnf_idx, vnf in enumerate(req['chain']):
-                        if vnf_idx < len(req['allocated_vnfs']):
-                            sfc_info[1 + VNF_TYPES.index(vnf)] += 0.1
-                        else:
-                            sfc_info[1 + self.num_vnf_types + VNF_TYPES.index(vnf)] += 0.1
+            for sfc in self.active_sfcs:
+                if sfc['type'] == sfc_type and current_dc['id'] in sfc['allocated_dcs']:
+                    sfc_info[0] = 1
+                    for vnf in sfc['allocated_vnfs']:
+                        if vnf in VNF_LIST:
+                            idx = VNF_LIST.index(vnf)
+                            sfc_info[1 + idx] = 1
+                    
+                    remaining_vnfs = [v for v in sfc['vnfs'] if v not in sfc['allocated_vnfs']]
+                    for vnf in remaining_vnfs:
+                        if vnf in VNF_LIST:
+                            idx = VNF_LIST.index(vnf)
+                            sfc_info[1 + len(VNF_LIST) + idx] = 1
                     break
             
             state2.extend(sfc_info)
         
         state3 = []
-        for sfc_type in SFC_TYPES:
-            pending_count = sum(1 for r in self.sfc_requests if r['type'] == sfc_type and r['status'] == 'pending')
+        for sfc_type in self.sfc_types:
+            type_sfcs = [s for s in self.pending_sfcs if s['type'] == sfc_type]
             
-            min_remaining = float('inf')
-            total_bw = 0
-            vnf_waiting = {vnf: 0 for vnf in VNF_TYPES}
-            
-            for req in self.sfc_requests:
-                if req['type'] == sfc_type and req['status'] == 'pending':
-                    remaining = req['delay_tolerance'] - (self.current_time - req['creation_time'])
-                    min_remaining = min(min_remaining, remaining)
-                    total_bw = req['bandwidth']
-                    
-                    for vnf_idx, vnf in enumerate(req['chain']):
-                        if vnf_idx >= len(req['allocated_vnfs']):
-                            vnf_waiting[vnf] += 1
-            
-            if min_remaining == float('inf'):
-                min_remaining = 0
-            
-            info = [SFC_TYPES.index(sfc_type) / len(SFC_TYPES)]
-            info.append(pending_count / 50)
-            info.append(min(1.0, min_remaining / 100))
-            info.append(total_bw / 100)
-            
-            for vnf in VNF_TYPES:
-                info.append(vnf_waiting[vnf] / 20)
-            
-            state3.extend(info)
+            if type_sfcs:
+                count = len(type_sfcs)
+                min_remaining = min([s['delay'] - (self.current_time - s['created_time']) 
+                                    for s in type_sfcs])
+                bw = type_sfcs[0]['bw']
+                
+                vnf_counts = [0] * len(VNF_LIST)
+                for sfc in type_sfcs:
+                    remaining = [v for v in sfc['vnfs'] if v not in sfc['allocated_vnfs']]
+                    for vnf in remaining:
+                        if vnf in VNF_LIST:
+                            vnf_counts[VNF_LIST.index(vnf)] += 1
+                
+                state3.extend([1, count, max(0, min_remaining), bw] + vnf_counts)
+            else:
+                state3.extend([0] * (4 + len(VNF_LIST)))
         
         return {
             'state1': np.array(state1, dtype=np.float32),
@@ -112,183 +178,243 @@ class SFCEnvironment(gym.Env):
         }
     
     def step(self, action):
-        reward = 0
+        reward = REWARD_CONFIG['default']
         done = False
         
-        if action == 2 * self.num_vnf_types:
-            reward = 0
-        elif action < self.num_vnf_types:
-            reward = self._allocate_vnf(action)
+        if len(self.dc_priority_list) == 0:
+            self.dc_priority_list = list(range(self.num_dcs))
+        
+        if self.current_time % DRL_CONFIG['request_interval'] == 0 and self.current_dc_idx == 0:
+            self._generate_sfc_requests()
+        
+        if action == 2 * len(VNF_LIST):
+            pass
+        elif action < len(VNF_LIST):
+            reward = self._uninstall_vnf(action)
         else:
-            reward = self._uninstall_vnf(action - self.num_vnf_types)
+            reward = self._allocate_vnf(action - len(VNF_LIST))
         
-        completion_reward = self._check_sfc_completion()
-        reward += completion_reward
+        self._update_sfcs()
         
-        self._update_dc_priority()
+        self.current_dc_idx = (self.current_dc_idx + 1) % max(1, len(self.dc_priority_list))
         
-        pending_count = len([r for r in self.sfc_requests if r['status'] == 'pending'])
-        if pending_count == 0:
+        if self.current_dc_idx == 0:
+            self.current_time += DRL_CONFIG['action_inference_time']
+            self._set_dc_priority()
+        
+        if len(self.pending_sfcs) == 0 and len(self.active_sfcs) == 0:
             done = True
         
-        self.current_time += TRAINING_CONFIG['action_inference_time']
+        obs = self._get_observation()
         
-        return self._get_state(), reward, done, False, {'pending': pending_count}
-    
-    def _allocate_vnf(self, vnf_idx):
-        vnf_type = VNF_TYPES[vnf_idx]
-        dc = self.dcs[self.current_dc_idx]
-        requirements = VNF_REQUIREMENTS[vnf_type]
+        total_requests = len(self.satisfied_sfcs) + len(self.dropped_sfcs)
+        acceptance_ratio = len(self.satisfied_sfcs) / max(1, total_requests)
         
-        pending_vnfs = self._get_pending_vnfs(vnf_type)
-        if not pending_vnfs:
-            return REWARD_CONFIG['invalid_action']
+        avg_delay = 0
+        if self.satisfied_sfcs:
+            total_delay = 0
+            for sfc in self.satisfied_sfcs:
+                path_delay = 0
+                unique_dcs = []
+                for dc_id in sfc['allocated_dcs']:
+                    if not unique_dcs or dc_id != unique_dcs[-1]:
+                        unique_dcs.append(dc_id)
+                
+                if len(unique_dcs) > 1:
+                    for i in range(len(unique_dcs) - 1):
+                        path = get_shortest_path_with_bw(self.network, unique_dcs[i], 
+                                                         unique_dcs[i+1], sfc['bw'])
+                        if path:
+                            path_delay += calculate_propagation_delay(self.network, path)
+                
+                proc_delay = sum(sfc['processing_times'])
+                total_delay += path_delay + proc_delay
+            
+            avg_delay = total_delay / len(self.satisfied_sfcs)
         
-        if dc['cpu'] - dc['cpu_used'] < requirements['cpu']:
-            dc['installed_vnfs'][vnf_type] += 1
-            dc['cpu_used'] += requirements['cpu']
-            dc['ram_used'] += requirements['ram']
-            dc['storage_used'] += requirements['storage']
+        resource_util = 0
+        total_cpu = sum(dc['cpu'] for dc in self.dcs)
+        if total_cpu > 0:
+            used_cpu = sum(dc['cpu'] - dc['available_cpu'] for dc in self.dcs)
+            resource_util = used_cpu / total_cpu
         
-        if dc['installed_vnfs'][vnf_type] <= dc['allocated_vnfs'][vnf_type]:
-            return REWARD_CONFIG['invalid_action']
+        info = {
+            'satisfied': len(self.satisfied_sfcs),
+            'dropped': len(self.dropped_sfcs),
+            'acceptance_ratio': acceptance_ratio,
+            'avg_delay': avg_delay,
+            'resource_util': resource_util
+        }
         
-        selected_vnf = self._select_vnf_with_priority(pending_vnfs, vnf_type)
-        
-        selected_vnf['req']['allocated_vnfs'].append({
-            'vnf': vnf_type,
-            'dc_idx': self.current_dc_idx,
-            'alloc_time': self.current_time
-        })
-        
-        dc['allocated_vnfs'][vnf_type] += 1
-        
-        return 0
+        return obs, reward, done, False, info
     
     def _uninstall_vnf(self, vnf_idx):
-        vnf_type = VNF_TYPES[vnf_idx]
-        dc = self.dcs[self.current_dc_idx]
+        vnf_type = VNF_LIST[vnf_idx]
+        current_dc = self.dcs[self.dc_priority_list[self.current_dc_idx]]
         
-        if dc['installed_vnfs'][vnf_type] <= dc['allocated_vnfs'][vnf_type]:
+        has_pending = False
+        for sfc in self.pending_sfcs + self.active_sfcs:
+            remaining_vnfs = [v for v in sfc['vnfs'] if v not in sfc['allocated_vnfs']]
+            if vnf_type in remaining_vnfs:
+                has_pending = True
+                break
+        
+        idle_count = current_dc['installed_vnfs'][vnf_type] - current_dc['allocated_vnfs'][vnf_type]
+        
+        if idle_count > 0 and not has_pending:
+            current_dc['installed_vnfs'][vnf_type] -= 1
+            specs = VNF_SPECS[vnf_type]
+            current_dc['available_cpu'] += specs['cpu']
+            current_dc['available_ram'] += specs['ram']
+            current_dc['available_storage'] += specs['storage']
+            return REWARD_CONFIG['default']
+        elif has_pending:
             return REWARD_CONFIG['uninstall_required']
+        else:
+            return REWARD_CONFIG['invalid_action']
+    
+    def _allocate_vnf(self, vnf_idx):
+        vnf_type = VNF_LIST[vnf_idx]
+        current_dc = self.dcs[self.dc_priority_list[self.current_dc_idx]]
         
-        if dc['installed_vnfs'][vnf_type] > 0:
-            dc['installed_vnfs'][vnf_type] -= 1
-            requirements = VNF_REQUIREMENTS[vnf_type]
-            dc['cpu_used'] -= requirements['cpu']
-            dc['ram_used'] -= requirements['ram']
-            dc['storage_used'] -= requirements['storage']
-            return 0
+        waiting_vnfs = []
+        for sfc in self.pending_sfcs + self.active_sfcs:
+            if len(sfc['allocated_vnfs']) < len(sfc['vnfs']):
+                next_vnf_idx = len(sfc['allocated_vnfs'])
+                if next_vnf_idx < len(sfc['vnfs']) and sfc['vnfs'][next_vnf_idx] == vnf_type:
+                    waiting_vnfs.append(sfc)
+        
+        if not waiting_vnfs:
+            return REWARD_CONFIG['invalid_action']
+        
+        can_allocate = False
+        if current_dc['installed_vnfs'][vnf_type] > current_dc['allocated_vnfs'][vnf_type]:
+            can_allocate = True
+        elif check_resource_availability(current_dc, vnf_type, VNF_SPECS):
+            can_allocate = True
+        
+        if not can_allocate:
+            return REWARD_CONFIG['invalid_action']
+        
+        selected_sfc = self._select_vnf_by_priority(waiting_vnfs, current_dc['id'])
+        
+        if selected_sfc:
+            return self._perform_allocation(selected_sfc, vnf_type, current_dc)
         
         return REWARD_CONFIG['invalid_action']
     
-    def _get_pending_vnfs(self, vnf_type):
-        pending = []
-        for req in self.sfc_requests:
-            if req['status'] != 'pending':
-                continue
-            
-            next_vnf_idx = len(req['allocated_vnfs'])
-            if next_vnf_idx < len(req['chain']) and req['chain'][next_vnf_idx] == vnf_type:
-                pending.append({'req': req, 'vnf_idx': next_vnf_idx})
+    def _select_vnf_by_priority(self, waiting_vnfs, dc_id):
+        best_sfc = None
+        best_priority = float('-inf')
         
-        return pending
-    
-    def _select_vnf_with_priority(self, pending_vnfs, vnf_type):
-        max_priority = -float('inf')
-        selected = None
-        
-        for item in pending_vnfs:
-            req = item['req']
-            elapsed = self.current_time - req['creation_time']
-            remaining = req['delay_tolerance'] - elapsed
+        for sfc in waiting_vnfs:
+            elapsed = self.current_time - sfc['created_time']
             
-            p1 = elapsed
-            p2 = self._calculate_dc_priority(req)
-            p3 = 0
-            if remaining < PRIORITY_CONFIG['urgency_threshold']:
-                p3 = PRIORITY_CONFIG['urgency_constant'] / (remaining + 0.001)
+            p1 = calculate_priority_p1(elapsed, sfc['delay'])
+            p2 = calculate_priority_p2({'sfc_id': sfc['id']}, dc_id, self.sfc_allocated_dcs)
+            p3 = calculate_priority_p3(elapsed, sfc['delay'])
             
             priority = p1 + p2 + p3
             
-            if priority > max_priority:
-                max_priority = priority
-                selected = item
+            if priority > best_priority:
+                best_priority = priority
+                best_sfc = sfc
         
-        return selected
+        return best_sfc
     
-    def _calculate_dc_priority(self, req):
-        priority = 0
-        dc_idx = self.current_dc_idx
-        
-        for alloc in req['allocated_vnfs']:
-            if alloc['dc_idx'] == dc_idx:
-                priority += 10
+    def _perform_allocation(self, sfc, vnf_type, dc):
+        if dc['installed_vnfs'][vnf_type] <= dc['allocated_vnfs'][vnf_type]:
+            specs = VNF_SPECS[vnf_type]
+            if check_resource_availability(dc, vnf_type, VNF_SPECS):
+                dc['installed_vnfs'][vnf_type] += 1
+                dc['available_cpu'] -= specs['cpu']
+                dc['available_ram'] -= specs['ram']
+                dc['available_storage'] -= specs['storage']
             else:
-                priority -= 5
+                return REWARD_CONFIG['invalid_action']
         
-        return priority
-    
-    def _update_dc_priority(self):
-        self.current_dc_idx = (self.current_dc_idx + 1) % self.num_dcs
-    
-    def _check_sfc_completion(self):
-        total_reward = 0
+        dc['allocated_vnfs'][vnf_type] += 1
+        sfc['allocated_vnfs'].append(vnf_type)
+        sfc['allocated_dcs'].append(dc['id'])
+        sfc['processing_times'].append(VNF_SPECS[vnf_type]['proc_time'])
         
-        for req in self.sfc_requests:
-            if req['status'] != 'pending':
-                continue
-            
-            elapsed = self.current_time - req['creation_time']
-            
-            if len(req['allocated_vnfs']) == len(req['chain']):
-                total_delay = self._calculate_total_delay(req)
-                
-                if total_delay <= req['delay_tolerance']:
-                    req['status'] = 'accepted'
-                    self.total_accepted += 1
-                    total_reward += REWARD_CONFIG['sfc_satisfied']
-                else:
-                    req['status'] = 'dropped'
-                    self.total_dropped += 1
-                    self._release_resources(req)
-                    total_reward += REWARD_CONFIG['sfc_dropped']
-            
-            elif elapsed > req['delay_tolerance']:
-                req['status'] = 'dropped'
-                self.total_dropped += 1
-                self._release_resources(req)
-                total_reward += REWARD_CONFIG['sfc_dropped']
+        if sfc['id'] not in self.sfc_allocated_dcs:
+            self.sfc_allocated_dcs[sfc['id']] = []
+        self.sfc_allocated_dcs[sfc['id']].append(dc['id'])
         
-        return total_reward
+        if sfc in self.pending_sfcs:
+            self.pending_sfcs.remove(sfc)
+            self.active_sfcs.append(sfc)
+        
+        if len(sfc['allocated_vnfs']) == len(sfc['vnfs']):
+            if self._check_sfc_completion(sfc):
+                if sfc in self.active_sfcs:
+                    self.active_sfcs.remove(sfc)
+                self.satisfied_sfcs.append(sfc)
+                self._release_resources(sfc)
+                return REWARD_CONFIG['sfc_satisfied']
+            else:
+                if sfc in self.active_sfcs:
+                    self.active_sfcs.remove(sfc)
+                self.dropped_sfcs.append(sfc)
+                self._release_resources(sfc)
+                return REWARD_CONFIG['sfc_dropped']
+        
+        return REWARD_CONFIG['default']
     
-    def _calculate_total_delay(self, req):
-        prop_delay = 0
+    def _check_sfc_completion(self, sfc):
+        path_delay = 0
         proc_delay = 0
+        waiting_delay = 0
         
-        for i in range(len(req['allocated_vnfs']) - 1):
-            dc1 = req['allocated_vnfs'][i]['dc_idx']
-            dc2 = req['allocated_vnfs'][i+1]['dc_idx']
-            prop_delay += calculate_propagation_delay(self.distance_matrix[dc1][dc2])
+        unique_dcs = []
+        for dc_id in sfc['allocated_dcs']:
+            if not unique_dcs or dc_id != unique_dcs[-1]:
+                unique_dcs.append(dc_id)
         
-        for alloc in req['allocated_vnfs']:
-            vnf = alloc['vnf']
-            proc_delay += VNF_REQUIREMENTS[vnf]['proc_time']
+        if len(unique_dcs) > 1:
+            for i in range(len(unique_dcs) - 1):
+                path = get_shortest_path_with_bw(self.network, unique_dcs[i], 
+                                                 unique_dcs[i+1], sfc['bw'])
+                if path:
+                    path_delay += calculate_propagation_delay(self.network, path)
+                else:
+                    return False
         
-        return prop_delay + proc_delay
+        proc_delay = sum(sfc['processing_times'])
+        
+        for i, vnf_type in enumerate(sfc['allocated_vnfs']):
+            dc_id = sfc['allocated_dcs'][i]
+            dc = self.dcs[dc_id]
+            
+            allocated_count = sum(1 for j, v in enumerate(sfc['allocated_vnfs'][:i]) 
+                                 if v == vnf_type and sfc['allocated_dcs'][j] == dc_id)
+            
+            queue_length = allocated_count
+            waiting_delay += queue_length * VNF_SPECS[vnf_type]['proc_time']
+        
+        total_delay = path_delay + proc_delay + waiting_delay
+        elapsed = self.current_time - sfc['created_time']
+        
+        return (elapsed + total_delay) <= sfc['delay']
     
-    def _release_resources(self, req):
-        for alloc in req['allocated_vnfs']:
-            dc = self.dcs[alloc['dc_idx']]
-            dc['allocated_vnfs'][alloc['vnf']] -= 1
+    def _update_sfcs(self):
+        to_drop = []
+        for sfc in self.pending_sfcs + self.active_sfcs:
+            elapsed = self.current_time - sfc['created_time']
+            if elapsed > sfc['delay']:
+                to_drop.append(sfc)
+        
+        for sfc in to_drop:
+            if sfc in self.pending_sfcs:
+                self.pending_sfcs.remove(sfc)
+            elif sfc in self.active_sfcs:
+                self.active_sfcs.remove(sfc)
+                self._release_resources(sfc)
+            self.dropped_sfcs.append(sfc)
     
-    def add_requests(self, requests):
-        for req in requests:
-            req['creation_time'] = self.current_time
-        self.sfc_requests.extend(requests)
-        self.total_generated += len(requests)
-    
-    def get_acceptance_ratio(self):
-        if self.total_generated == 0:
-            return 0
-        return self.total_accepted / self.total_generated
+    def _release_resources(self, sfc):
+        for i, vnf_type in enumerate(sfc['allocated_vnfs']):
+            dc_id = sfc['allocated_dcs'][i]
+            dc = self.dcs[dc_id]
+            dc['allocated_vnfs'][vnf_type] -= 1
