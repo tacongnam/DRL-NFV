@@ -25,23 +25,31 @@ def calculate_propagation_delay(G, path):
     return delay
 
 def get_shortest_path_with_bw(G, source, dest, required_bw):
+    """
+    Optimized: Use Dijkstra instead of enumerating all paths.
+    Much faster for large networks.
+    """
     try:
-        all_paths = list(nx.all_simple_paths(G, source, dest))
-        valid_paths = []
-        for path in all_paths:
-            valid = True
-            for i in range(len(path) - 1):
-                if G[path[i]][path[i+1]]['available_bw'] < required_bw:
-                    valid = False
-                    break
-            if valid:
-                valid_paths.append(path)
+        if source == dest:
+            return [source]
         
-        if not valid_paths:
+        # Use Dijkstra to find shortest path with available BW
+        # Filter edges with insufficient BW
+        valid_edges = [(u, v) for u, v, d in G.edges(data=True) 
+                       if d.get('available_bw', float('inf')) >= required_bw]
+        
+        if not valid_edges:
             return None
         
-        return min(valid_paths, key=lambda p: sum(G[p[i]][p[i+1]]['weight'] for i in range(len(p)-1)))
-    except:
+        # Create subgraph with only valid edges
+        valid_graph = G.edge_subgraph(valid_edges).copy()
+        
+        try:
+            path = nx.shortest_path(valid_graph, source, dest, weight='weight')
+            return path
+        except nx.NetworkXNoPath:
+            return None
+    except Exception as e:
         return None
 
 def calculate_priority_p1(elapsed_time, e2e_delay):

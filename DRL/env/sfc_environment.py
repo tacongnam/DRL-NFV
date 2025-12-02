@@ -2,9 +2,20 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 import sys
+import time
 sys.path.append('..')
 from config import *
 from utils import *
+
+# Timing metrics
+TIMING_STATS = {
+    'pathfinding': 0,
+    'pathfinding_calls': 0,
+    'update_sfcs': 0,
+    'check_completion': 0,
+    'get_observation': 0,
+    'step_total': 0
+}
 
 class SFCEnvironment(gym.Env):
     def __init__(self, num_dcs=4):
@@ -57,26 +68,32 @@ class SFCEnvironment(gym.Env):
         self.dc_priority_list = list(range(self.num_dcs))
         self.sfc_allocated_dcs = {}
         
+        # Cache SFCs by next VNF needed for faster lookup
+        self._pending_by_next_vnf = {vnf: [] for vnf in VNF_LIST}
+        self._active_by_next_vnf = {vnf: [] for vnf in VNF_LIST}
+        
         return self._get_observation(), {}
     
     def _generate_sfc_requests(self):
         num_types = np.random.randint(1, len(self.sfc_types) + 1)
         selected_types = np.random.choice(self.sfc_types, num_types, replace=False)
         
+        # Limit pending SFCs to avoid queue explosion
+        # If queue is too large, skip request generation this round
+        MAX_PENDING = 50  # Hard limit
+        if len(self.pending_sfcs) >= MAX_PENDING:
+            return
+        
         total_created = 0
         
         for sfc_type in selected_types:
             config = SFC_TYPES[sfc_type]
-            raw_bundle = np.random.randint(*config['bundle'])
-            # scale traffic so we can run lighter/faster simulations during debugging
-            bundle_size = max(1, int(raw_bundle * SIM_CONFIG.get('traffic_scale', 1.0)))
-            # avoid creating more pending SFCs than allowed
-            max_pending = SIM_CONFIG.get('max_pending_sfcs', 2000)
-            remaining_slots = max_pending - (len(self.pending_sfcs) + total_created)
-            if remaining_slots <= 0:
+            bundle_size = np.random.randint(*config['bundle'])
+            
+            # Limit bundle to avoid creating too many at once
+            bundle_size = min(bundle_size, MAX_PENDING - len(self.pending_sfcs))
+            if bundle_size <= 0:
                 break
-            if bundle_size > remaining_slots:
-                bundle_size = remaining_slots
             
             for _ in range(bundle_size):
                 source = np.random.randint(0, self.num_dcs)
@@ -107,9 +124,6 @@ class SFCEnvironment(gym.Env):
                 }
                 self.pending_sfcs.append(sfc)
                 total_created += 1
-
-        if total_created and SIM_CONFIG.get('debug', False):
-            print(f"[ENV DEBUG] Created {total_created} SFCs (pending total now {len(self.pending_sfcs)})")
     
     def _set_dc_priority(self):
         priorities = []
@@ -152,30 +166,42 @@ class SFCEnvironment(gym.Env):
             state1.append(current_dc['installed_vnfs'][vnf] - current_dc['allocated_vnfs'][vnf])
         state1.extend([current_dc['available_storage'], current_dc['available_cpu']])
         
+        # Pre-build indices for faster lookups
+        vnf_to_idx = {vnf: idx for idx, vnf in enumerate(VNF_LIST)}
+        current_dc_id = current_dc['id']
+        
+        # Group active SFCs by type for faster lookup in state2
+        active_by_type = {sfc_type: None for sfc_type in self.sfc_types}
+        for sfc in self.active_sfcs:
+            if current_dc_id in sfc['allocated_dcs'] and active_by_type[sfc['type']] is None:
+                active_by_type[sfc['type']] = sfc
+        
         state2 = []
         for sfc_type in self.sfc_types:
             sfc_info = [0] * (1 + 2 * len(VNF_LIST))
             
-            for sfc in self.active_sfcs:
-                if sfc['type'] == sfc_type and current_dc['id'] in sfc['allocated_dcs']:
-                    sfc_info[0] = 1
-                    for vnf in sfc['allocated_vnfs']:
-                        if vnf in VNF_LIST:
-                            idx = VNF_LIST.index(vnf)
-                            sfc_info[1 + idx] = 1
-                    
-                    remaining_vnfs = [v for v in sfc['vnfs'] if v not in sfc['allocated_vnfs']]
-                    for vnf in remaining_vnfs:
-                        if vnf in VNF_LIST:
-                            idx = VNF_LIST.index(vnf)
-                            sfc_info[1 + len(VNF_LIST) + idx] = 1
-                    break
+            sfc = active_by_type[sfc_type]
+            if sfc:
+                sfc_info[0] = 1
+                for vnf in sfc['allocated_vnfs']:
+                    if vnf in vnf_to_idx:
+                        sfc_info[1 + vnf_to_idx[vnf]] = 1
+                
+                remaining_vnfs = [v for v in sfc['vnfs'] if v not in sfc['allocated_vnfs']]
+                for vnf in remaining_vnfs:
+                    if vnf in vnf_to_idx:
+                        sfc_info[1 + len(VNF_LIST) + vnf_to_idx[vnf]] = 1
             
             state2.extend(sfc_info)
         
+        # Group pending SFCs by type for state3
+        pending_by_type = {sfc_type: [] for sfc_type in self.sfc_types}
+        for sfc in self.pending_sfcs:
+            pending_by_type[sfc['type']].append(sfc)
+        
         state3 = []
         for sfc_type in self.sfc_types:
-            type_sfcs = [s for s in self.pending_sfcs if s['type'] == sfc_type]
+            type_sfcs = pending_by_type[sfc_type]
             
             if type_sfcs:
                 count = len(type_sfcs)
@@ -187,8 +213,8 @@ class SFCEnvironment(gym.Env):
                 for sfc in type_sfcs:
                     remaining = [v for v in sfc['vnfs'] if v not in sfc['allocated_vnfs']]
                     for vnf in remaining:
-                        if vnf in VNF_LIST:
-                            vnf_counts[VNF_LIST.index(vnf)] += 1
+                        if vnf in vnf_to_idx:
+                            vnf_counts[vnf_to_idx[vnf]] += 1
                 
                 state3.extend([1, count, max(0, min_remaining), bw] + vnf_counts)
             else:
@@ -201,6 +227,7 @@ class SFCEnvironment(gym.Env):
         }
     
     def step(self, action):
+        step_start = time.time()
         reward = REWARD_CONFIG['default']
         done = False
         
@@ -217,7 +244,9 @@ class SFCEnvironment(gym.Env):
         else:
             reward = self._allocate_vnf(action - len(VNF_LIST))
         
+        update_start = time.time()
         self._update_sfcs()
+        TIMING_STATS['update_sfcs'] += time.time() - update_start
         
         self.current_dc_idx = (self.current_dc_idx + 1) % max(1, len(self.dc_priority_list))
         
@@ -228,7 +257,9 @@ class SFCEnvironment(gym.Env):
         if len(self.pending_sfcs) == 0 and len(self.active_sfcs) == 0:
             done = True
         
+        obs_start = time.time()
         obs = self._get_observation()
+        TIMING_STATS['get_observation'] += time.time() - obs_start
         
         total_requests = len(self.satisfied_sfcs) + len(self.dropped_sfcs)
         acceptance_ratio = len(self.satisfied_sfcs) / max(1, total_requests)
@@ -237,21 +268,25 @@ class SFCEnvironment(gym.Env):
         if self.satisfied_sfcs:
             total_delay = 0
             for sfc in self.satisfied_sfcs:
-                path_delay = 0
-                unique_dcs = []
-                for dc_id in sfc['allocated_dcs']:
-                    if not unique_dcs or dc_id != unique_dcs[-1]:
-                        unique_dcs.append(dc_id)
+                # Use cached delay if available, otherwise calculate
+                if 'cached_delay' not in sfc:
+                    path_delay = 0
+                    unique_dcs = []
+                    for dc_id in sfc['allocated_dcs']:
+                        if not unique_dcs or dc_id != unique_dcs[-1]:
+                            unique_dcs.append(dc_id)
+                    
+                    if len(unique_dcs) > 1:
+                        for i in range(len(unique_dcs) - 1):
+                            path = get_shortest_path_with_bw(self.network, unique_dcs[i], 
+                                                             unique_dcs[i+1], sfc['bw'])
+                            if path:
+                                path_delay += calculate_propagation_delay(self.network, path)
+                    
+                    proc_delay = sum(sfc['processing_times'])
+                    sfc['cached_delay'] = path_delay + proc_delay
                 
-                if len(unique_dcs) > 1:
-                    for i in range(len(unique_dcs) - 1):
-                        path = get_shortest_path_with_bw(self.network, unique_dcs[i], 
-                                                         unique_dcs[i+1], sfc['bw'])
-                        if path:
-                            path_delay += calculate_propagation_delay(self.network, path)
-                
-                proc_delay = sum(sfc['processing_times'])
-                total_delay += path_delay + proc_delay
+                total_delay += sfc['cached_delay']
             
             avg_delay = total_delay / len(self.satisfied_sfcs)
         
@@ -268,6 +303,8 @@ class SFCEnvironment(gym.Env):
             'avg_delay': avg_delay,
             'resource_util': resource_util
         }
+        
+        TIMING_STATS['step_total'] += time.time() - step_start
         
         return obs, reward, done, False, info
     
@@ -300,12 +337,18 @@ class SFCEnvironment(gym.Env):
         vnf_type = VNF_LIST[vnf_idx]
         current_dc = self.dcs[self.dc_priority_list[self.current_dc_idx]]
         
-        waiting_vnfs = []
-        for sfc in self.pending_sfcs + self.active_sfcs:
-            if len(sfc['allocated_vnfs']) < len(sfc['vnfs']):
-                next_vnf_idx = len(sfc['allocated_vnfs'])
-                if next_vnf_idx < len(sfc['vnfs']) and sfc['vnfs'][next_vnf_idx] == vnf_type:
-                    waiting_vnfs.append(sfc)
+        # Use cached lists if available, otherwise build them
+        waiting_vnfs = (self._pending_by_next_vnf.get(vnf_type, []) + 
+                       self._active_by_next_vnf.get(vnf_type, []))
+        
+        if not waiting_vnfs:
+            # Fall back to searching through all SFCs
+            waiting_vnfs = []
+            for sfc in self.pending_sfcs + self.active_sfcs:
+                if len(sfc['allocated_vnfs']) < len(sfc['vnfs']):
+                    next_vnf_idx = len(sfc['allocated_vnfs'])
+                    if next_vnf_idx < len(sfc['vnfs']) and sfc['vnfs'][next_vnf_idx] == vnf_type:
+                        waiting_vnfs.append(sfc)
         
         if not waiting_vnfs:
             return REWARD_CONFIG['invalid_action']
@@ -357,6 +400,16 @@ class SFCEnvironment(gym.Env):
                 return REWARD_CONFIG['invalid_action']
         
         dc['allocated_vnfs'][vnf_type] += 1
+        
+        # Update cache: remove from current VNF list
+        next_vnf_idx = len(sfc['allocated_vnfs'])
+        if sfc in self.pending_sfcs:
+            if sfc in self._pending_by_next_vnf.get(vnf_type, []):
+                self._pending_by_next_vnf[vnf_type].remove(sfc)
+        else:
+            if sfc in self._active_by_next_vnf.get(vnf_type, []):
+                self._active_by_next_vnf[vnf_type].remove(sfc)
+        
         sfc['allocated_vnfs'].append(vnf_type)
         sfc['allocated_dcs'].append(dc['id'])
         sfc['processing_times'].append(VNF_SPECS[vnf_type]['proc_time'])
@@ -368,6 +421,17 @@ class SFCEnvironment(gym.Env):
         if sfc in self.pending_sfcs:
             self.pending_sfcs.remove(sfc)
             self.active_sfcs.append(sfc)
+            # Update cache: move to active
+            if next_vnf_idx < len(sfc['vnfs']):
+                next_vnf = sfc['vnfs'][next_vnf_idx]
+                if sfc not in self._active_by_next_vnf.get(next_vnf, []):
+                    self._active_by_next_vnf[next_vnf].append(sfc)
+        else:
+            # Already active, just update the next VNF cache
+            if next_vnf_idx < len(sfc['vnfs']):
+                next_vnf = sfc['vnfs'][next_vnf_idx]
+                if sfc not in self._active_by_next_vnf.get(next_vnf, []):
+                    self._active_by_next_vnf[next_vnf].append(sfc)
         
         if len(sfc['allocated_vnfs']) == len(sfc['vnfs']):
             if self._check_sfc_completion(sfc):
@@ -381,13 +445,12 @@ class SFCEnvironment(gym.Env):
                     self.active_sfcs.remove(sfc)
                 self.dropped_sfcs.append(sfc)
                 self._release_resources(sfc)
-                if SIM_CONFIG.get('debug', False):
-                    print(f"[ENV DEBUG] SFC {sfc['id']} ({sfc['type']}) dropped: elapsed={self.current_time - sfc['created_time']:.2f}, delay_budget={sfc['delay']}")
                 return REWARD_CONFIG['sfc_dropped']
         
         return REWARD_CONFIG['default']
     
     def _check_sfc_completion(self, sfc):
+        check_start = time.time()
         path_delay = 0
         proc_delay = 0
         waiting_delay = 0
@@ -399,11 +462,16 @@ class SFCEnvironment(gym.Env):
         
         if len(unique_dcs) > 1:
             for i in range(len(unique_dcs) - 1):
+                path_start = time.time()
                 path = get_shortest_path_with_bw(self.network, unique_dcs[i], 
                                                  unique_dcs[i+1], sfc['bw'])
+                TIMING_STATS['pathfinding'] += time.time() - path_start
+                TIMING_STATS['pathfinding_calls'] += 1
+                
                 if path:
                     path_delay += calculate_propagation_delay(self.network, path)
                 else:
+                    TIMING_STATS['check_completion'] += time.time() - check_start
                     return False
         
         proc_delay = sum(sfc['processing_times'])
@@ -423,19 +491,46 @@ class SFCEnvironment(gym.Env):
         elapsed = self.current_time - sfc['created_time']
         remaining_budget = sfc['delay'] - elapsed
         
+        TIMING_STATS['check_completion'] += time.time() - check_start
         return total_future_delay <= remaining_budget
     
     def _update_sfcs(self):
+        # Only check pending SFCs since active ones are already processed
         to_drop = []
-        for sfc in self.pending_sfcs + self.active_sfcs:
+        
+        # Check pending SFCs
+        i = 0
+        while i < len(self.pending_sfcs):
+            sfc = self.pending_sfcs[i]
             elapsed = self.current_time - sfc['created_time']
             if elapsed > sfc['delay']:
-                to_drop.append(sfc)
+                to_drop.append((sfc, 'pending'))
+            i += 1
         
-        for sfc in to_drop:
-            if sfc in self.pending_sfcs:
+        # Check active SFCs
+        i = 0
+        while i < len(self.active_sfcs):
+            sfc = self.active_sfcs[i]
+            elapsed = self.current_time - sfc['created_time']
+            if elapsed > sfc['delay']:
+                to_drop.append((sfc, 'active'))
+            i += 1
+        
+        # Remove dropped SFCs and clean caches
+        for sfc, source in to_drop:
+            # Clean from cache
+            if len(sfc['allocated_vnfs']) < len(sfc['vnfs']):
+                next_vnf_idx = len(sfc['allocated_vnfs'])
+                next_vnf = sfc['vnfs'][next_vnf_idx]
+                if source == 'pending' and sfc in self._pending_by_next_vnf.get(next_vnf, []):
+                    self._pending_by_next_vnf[next_vnf].remove(sfc)
+                elif source == 'active' and sfc in self._active_by_next_vnf.get(next_vnf, []):
+                    self._active_by_next_vnf[next_vnf].remove(sfc)
+            
+            # Remove from state
+            if source == 'pending':
                 self.pending_sfcs.remove(sfc)
-            elif sfc in self.active_sfcs:
+            else:  # active
                 self.active_sfcs.remove(sfc)
                 self._release_resources(sfc)
             self.dropped_sfcs.append(sfc)

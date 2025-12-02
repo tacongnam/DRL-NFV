@@ -96,15 +96,16 @@ DRL_CONFIG = {
     'actions_per_step': 100,
     'step_duration': 1,
     'action_inference_time': 0.01,
-    'request_interval': 2,
+    'request_interval': 4,  # According to paper: N=4 steps between SFC request generations
     'gamma': 0.99,
     'epsilon_start': 1.0,
     'epsilon_end': 0.01,
     'epsilon_decay': 0.995,
     'learning_rate': 0.0001,
-    'batch_size': 32,
+    'batch_size': 16,  # OPTIMIZED: Reduced from 32 to 16 for faster training (architecture unchanged)
     'memory_size': 10000,
-    'target_update_freq': 10
+    'target_update_freq': 50,  # OPTIMIZED: Increased from 10 to 50 (fewer target updates)
+    'train_freq': 5  # OPTIMIZED: Train every 5 steps instead of every step
 }
 
 REWARD_CONFIG = {
@@ -122,9 +123,3 @@ PRIORITY_CONFIG = {
 }
 
 LIGHT_SPEED = 3e8
-
-SIM_CONFIG = {
-    'debug': False,
-    'max_pending_sfcs': 2000,
-    'traffic_scale': 1.0
-}
