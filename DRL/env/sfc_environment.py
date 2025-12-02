@@ -67,7 +67,16 @@ class SFCEnvironment(gym.Env):
         
         for sfc_type in selected_types:
             config = SFC_TYPES[sfc_type]
-            bundle_size = np.random.randint(*config['bundle'])
+            raw_bundle = np.random.randint(*config['bundle'])
+            # scale traffic so we can run lighter/faster simulations during debugging
+            bundle_size = max(1, int(raw_bundle * SIM_CONFIG.get('traffic_scale', 1.0)))
+            # avoid creating more pending SFCs than allowed
+            max_pending = SIM_CONFIG.get('max_pending_sfcs', 2000)
+            remaining_slots = max_pending - (len(self.pending_sfcs) + total_created)
+            if remaining_slots <= 0:
+                break
+            if bundle_size > remaining_slots:
+                bundle_size = remaining_slots
             
             for _ in range(bundle_size):
                 source = np.random.randint(0, self.num_dcs)
@@ -99,7 +108,7 @@ class SFCEnvironment(gym.Env):
                 self.pending_sfcs.append(sfc)
                 total_created += 1
 
-        if total_created:
+        if total_created and SIM_CONFIG.get('debug', False):
             print(f"[ENV DEBUG] Created {total_created} SFCs (pending total now {len(self.pending_sfcs)})")
     
     def _set_dc_priority(self):
@@ -372,7 +381,8 @@ class SFCEnvironment(gym.Env):
                     self.active_sfcs.remove(sfc)
                 self.dropped_sfcs.append(sfc)
                 self._release_resources(sfc)
-                print(f"[ENV DEBUG] SFC {sfc['id']} ({sfc['type']}) dropped: elapsed={self.current_time - sfc['created_time']:.2f}, delay_budget={sfc['delay']}")
+                if SIM_CONFIG.get('debug', False):
+                    print(f"[ENV DEBUG] SFC {sfc['id']} ({sfc['type']}) dropped: elapsed={self.current_time - sfc['created_time']:.2f}, delay_budget={sfc['delay']}")
                 return REWARD_CONFIG['sfc_dropped']
         
         return REWARD_CONFIG['default']

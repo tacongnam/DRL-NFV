@@ -113,7 +113,7 @@ python main.py
 
 **Reconfigurability:** Mỗi episode train với số DC ngẫu nhiên (2-8) để model học generalize.
 
-## Testing
+## Testing  
 
 ```bash
 python tests.py -v

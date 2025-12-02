@@ -1,28 +1,28 @@
 SFC_TYPES = {
     'CG': {  
         'vnfs': ['NAT', 'FW', 'VOC', 'WO', 'IDPS'],
-        'bw': 4,      
+        'bw': 0.004,      
         'delay': 80, 
         'bundle': (40, 55)
     },
 
     'AR': { 
         'vnfs': ['NAT', 'FW', 'TM', 'VOC', 'IDPS'],
-        'bw': 100,
+        'bw': 0.1,
         'delay': 10,
         'bundle': (1, 4)
     },
 
     'VoIP': {
         'vnfs': ['NAT', 'FW', 'TM'], 
-        'bw': 0.064,
+        'bw': 0.00064,
         'delay': 100,
         'bundle': (100, 200)
     },
 
     'VS': { 
         'vnfs': ['NAT', 'FW', 'TM', 'VOC', 'IDPS'],
-        'bw': 4,
+        'bw': 0.004,
         'delay': 100,
         'bundle': (50, 100)
     },
@@ -30,13 +30,13 @@ SFC_TYPES = {
     'MIoT': {
         'vnfs': ['NAT', 'FW', 'IDPS'],
         'bw': (1, 50),
-        'delay': 5,
+        'delay': 0.005,
         'bundle': (10, 15)
     },
 
     'Ind4.0': {
         'vnfs': ['NAT', 'FW'],
-        'bw': 70,
+        'bw': 0.07,
         'delay': 8,
         'bundle': (1, 4)
     }
@@ -87,7 +87,7 @@ DC_CONFIG = {
     'cpu_range': (12, 120),
     'ram': 256,
     'storage': 2048,
-    'link_bw': 1000
+    'link_bw': 1,
 }
 
 DRL_CONFIG = {
@@ -108,10 +108,10 @@ DRL_CONFIG = {
 }
 
 REWARD_CONFIG = {
-    'sfc_satisfied': 5.0,
-    'sfc_dropped': -2.0,
-    'invalid_action': -0.1,
-    'uninstall_required': -0.05,
+    'sfc_satisfied': 2.0,
+    'sfc_dropped': -1.5,
+    'invalid_action': -1.0,
+    'uninstall_required': -0.5,
     'default': 0.0
 }
 
@@ -122,3 +122,9 @@ PRIORITY_CONFIG = {
 }
 
 LIGHT_SPEED = 3e8
+
+SIM_CONFIG = {
+    'debug': False,
+    'max_pending_sfcs': 2000,
+    'traffic_scale': 1.0
+}
