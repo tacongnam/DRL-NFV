@@ -42,18 +42,17 @@ def main():
                 total_reward += reward
             
             global_replay_memory.extend(episode_memory)
-            
-            if epsilon > config.EPSILON_MIN:
-                epsilon *= config.EPSILON_DECAY
-                
+
             episode_rewards.append(total_reward)
             episode_ars.append(info['acc_ratio'])
             total_episodes_run += 1
             
             print(f"\r   > Ep {total_episodes_run}: Reward={total_reward:.1f}, AR={info['acc_ratio']:.2f}%, DCs={env.num_active_dcs}", end="")
 
-
         loss = agent.train(global_replay_memory)
+
+        if epsilon > config.EPSILON_MIN:
+            epsilon *= config.EPSILON_DECAY
         
         avg_rew = np.mean(episode_rewards)
         avg_ar = np.mean(episode_ars)
