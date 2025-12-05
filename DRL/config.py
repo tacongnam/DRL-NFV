@@ -6,12 +6,12 @@ LINK_BW_CAPACITY = 1000  # Mbps
 SPEED_OF_LIGHT = 300000.0  # km/s
 
 # --- Training & Simulation Hyperparameters (Paper Section III.A & IV) ---
-TRAIN_UPDATES = 50          # U: Total updates
+TRAIN_UPDATES = 100          # U: Total updates
 EPISODES_PER_UPDATE = 20     # E: Episodes per update
-ACTIONS_PER_TIME_STEP = 50   # A: Actions per 1ms simulation step
+ACTIONS_PER_TIME_STEP = 100   # A: Actions per 1ms simulation step
 TIME_STEP = 1       # T: 1 ms
 TRAFFIC_GEN_INTERVAL = 4     # N: Generate traffic every 4 simulation steps (4ms)
-MAX_SIM_TIME_PER_EPISODE = 100 # Giới hạn thời gian mô phỏng (ms) để tránh lặp vô tận
+MAX_SIM_TIME_PER_EPISODE = 200 # Giới hạn thời gian mô phỏng (ms) để tránh lặp vô tận
 TRAFFIC_STOP_TIME = 150      # Dừng sinh request ở ms thứ 150 để hệ thống xử lý hết hàng đợi (End condition)
 
 # --- DC Resources ---
@@ -49,7 +49,7 @@ LEARNING_RATE = 0.001
 GAMMA = 0.99
 EPSILON_START = 1.0
 EPSILON_DECAY = 0.99  # Giảm chậm hơn vì training lâu
-EPSILON_MIN = 0.05
+EPSILON_MIN = 0.1
 BATCH_SIZE = 64      # Tăng batch size cho ổn định
 MEMORY_SIZE = 10000
 
