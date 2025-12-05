@@ -7,6 +7,9 @@ class SFCManager:
         self.active_requests = [] # Các request đang được xử lý hoặc chờ
         self.request_counter = 0
 
+        self.completed_history = []
+        self.dropped_history = []
+
     def generate_requests(self, time_step, num_dcs): # Thêm num_dcs
         new_reqs = []
         for s_type in config.SFC_TYPES:
@@ -27,9 +30,20 @@ class SFCManager:
 
     def clean_requests(self):
         """Xóa các request đã xong hoặc bị drop"""
+        completed = [r for r in self.active_requests if r.is_completed]
+        dropped = [r for r in self.active_requests if r.is_dropped]
+        
+        self.completed_history.extend(completed)
+        self.dropped_history.extend(dropped)
+
         self.active_requests = [r for r in self.active_requests 
                                 if not r.is_completed and not r.is_dropped]
 
+    def reset_history(self):
+        """Reset stats"""
+        self.completed_history = []
+        self.dropped_history = []
+        
     def get_global_state_info(self):
         """Tạo Input 3 cho DRL"""
         # Matrix [|S| x (4 + |V|)]
