@@ -69,7 +69,6 @@ def main():
 
             if epsilon > config.EPSILON_MIN:
                 epsilon *= config.EPSILON_DECAY
-                epsilon = max(config.EPSILON_MIN, epsilon)
             
             # In progress trong 1 update
             if ep_in_update % 1 == 0 or ep_in_update == config.EPISODES_PER_UPDATE:

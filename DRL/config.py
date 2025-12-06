@@ -2,8 +2,8 @@ MAX_NUM_DCS = 6    # Maximum number of data centers (random 2-6 during training)
 LINK_BW_CAPACITY = 1000  # Mbps
 SPEED_OF_LIGHT = 300000.0  # km/s
 
-TRAIN_UPDATES = 40          # U: Total weight updates
-EPISODES_PER_UPDATE = 20     # E: Episodes collected before each update
+TRAIN_UPDATES = 50          # U: Total weight updates
+EPISODES_PER_UPDATE = 15     # E: Episodes collected before each update
 ACTIONS_PER_TIME_STEP = 50   # A: Number of actions per 1ms timestep
 TIME_STEP = 1                 # T: Duration of each timestep in milliseconds
 TRAFFIC_GEN_INTERVAL = 4     # N: Generate new SFC requests every 4 timesteps (4ms)
@@ -49,8 +49,8 @@ ACTION_SPACE_SIZE = 2 * NUM_VNF_TYPES + 1  # WAIT + UNINSTALL×6 + ALLOC×6 = 13
 LEARNING_RATE = 0.001
 GAMMA = 0.99             # Discount factor
 EPSILON_START = 1.0      # Initial exploration rate
-EPSILON_DECAY = 0.99      # Decay rate PER UPDATE (not per episode)
-EPSILON_MIN = 0.01        # Minimum exploration rate
+EPSILON_DECAY = 0.992    # Decay rate per episode
+EPSILON_MIN = 0.01       # Minimum exploration rate
 BATCH_SIZE = 64          # Mini-batch size for training
 MEMORY_SIZE = 10000      # Replay memory capacity
 
