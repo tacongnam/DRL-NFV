@@ -75,7 +75,6 @@ class SFC_DQN:
         minibatch = random.sample(replay_memory, config.BATCH_SIZE)
         
         # Prepare batches
-        # Trích xuất dữ liệu từ minibatch (vẫn giữ nguyên logic cũ)
         states_1 = np.array([i[0][0] for i in minibatch])
         states_2 = np.array([i[0][1] for i in minibatch])
         states_3 = np.array([i[0][2] for i in minibatch])
@@ -102,15 +101,32 @@ class SFC_DQN:
         )
         return history.history['loss'][0]
 
-    def get_action(self, state, epsilon):
+    def get_action(self, state, epsilon, valid_actions_mask=None):
+        """
+        CRITICAL IMPROVEMENT: Action Masking
+        - valid_actions_mask: Boolean array indicating which actions are valid
+        - This prevents the model from even considering invalid actions
+        """
         if np.random.rand() <= epsilon:
+            # Random exploration - but only among VALID actions
+            if valid_actions_mask is not None:
+                valid_indices = np.where(valid_actions_mask)[0]
+                if len(valid_indices) > 0:
+                    return np.random.choice(valid_indices)
             return np.random.randint(config.ACTION_SPACE_SIZE)
         
+        # Exploitation - get Q-values
         state_1 = tf.convert_to_tensor(state[0].reshape(1, -1))
         state_2 = tf.convert_to_tensor(state[1].reshape(1, -1))
         state_3 = tf.convert_to_tensor(state[2].reshape(1, -1))
         
-        # Gọi trực tiếp (training=False để tắt dropout/batchnorm nếu có)
         q_values = self.model([state_1, state_2, state_3], training=False)
-
-        return int(tf.argmax(q_values[0]))
+        q_values = q_values.numpy()[0]
+        
+        # Apply action masking
+        if valid_actions_mask is not None:
+            # Set invalid actions to very negative value
+            masked_q_values = np.where(valid_actions_mask, q_values, -1e9)
+            return int(np.argmax(masked_q_values))
+        
+        return int(np.argmax(q_values))

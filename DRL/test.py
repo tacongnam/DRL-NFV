@@ -5,6 +5,10 @@ import config
 from env.network import SFCNVEnv
 from env.dqn import SFC_DQN
 
+# DEBUG MODE: Set to True to see detailed action logs
+DEBUG_MODE = True
+DEBUG_TIMING = False  # Set to True to see detailed timing information
+
 def plot_exp1(types, ars, delays):
     """Vẽ biểu đồ cho Thực nghiệm 1 (Fig 2)"""
     if not types:
@@ -31,15 +35,13 @@ def plot_exp1(types, ars, delays):
     ax2.set_ylabel('Avg E2E Delay (ms)', color='r')
     ax2.tick_params(axis='y', labelcolor='r')
     
-    # Set y limit for delay comfortably above max delay
     max_delay = max(delays) if delays else 100
     ax2.set_ylim(0, max_delay * 1.2)
     
     plt.title('Experiment 1: Performance per SFC Type (Fixed 4 DCs)')
     fig.tight_layout()
-    plt.savefig('result_exp1_fig2.png')
+    plt.savefig('fig/result_exp1_fig2.png')
     print("Saved result_exp1_fig2.png")
-    # plt.show() # Uncomment nếu chạy trên môi trường có GUI
 
 def plot_exp2(dc_counts, delays, resources):
     """Vẽ biểu đồ cho Thực nghiệm 2 (Fig 3)"""
@@ -67,39 +69,79 @@ def plot_exp2(dc_counts, delays, resources):
     
     plt.suptitle('Experiment 2: Reconfigurability & Robustness')
     plt.tight_layout()
-    plt.savefig('result_exp2_fig3.png')
+    plt.savefig('fig/result_exp2_fig3.png')
     print("Saved result_exp2_fig3.png")
-    # plt.show()
 
 def run_experiment_1(env, agent):
     print("\n>>> RUNNING EXPERIMENT 1: Performance Analysis per SFC Type (4 DCs)")
     
-    # Các biến tích lũy toàn bộ kết quả của Experiment 1
     total_completed_history = []
     total_dropped_history = []
     
+    # DEBUG: Track action distribution
+    action_counts = {}
+    
     for ep in range(config.TEST_EPISODES):
-        # Reset môi trường
         state, _ = env.reset(num_dcs=4)
+        action_mask = env._get_valid_actions_mask()
         done = False
         step_count = 0
         total_reward = 0
         
+        if DEBUG_MODE and ep == 0:
+            print(f"\n  [DEBUG] Episode {ep+1} starting...")
+            print(f"  [DEBUG] Initial requests: {len(env.sfc_manager.active_requests)}")
+            if DEBUG_TIMING:
+                timing = env.get_timing_info()
+                print(f"  [DEBUG] Timing: {timing['action_inference_time_ms']:.4f}ms per action")
+                print(f"  [DEBUG] {timing['actions_per_timestep']} actions = 1 timestep = 1ms physical time")
+        
         while not done:
-            action = agent.get_action(state, epsilon=config.TEST_EPSILON)
-            state, reward, done, _, _ = env.step(action)
+            action = agent.get_action(state, epsilon=config.TEST_EPSILON, valid_actions_mask=action_mask)
+            
+            # DEBUG: Track actions
+            if DEBUG_MODE and ep == 0 and step_count < 50:  # First 50 steps only
+                if action not in action_counts:
+                    action_counts[action] = 0
+                action_counts[action] += 1
+                
+                if step_count % 10 == 0:
+                    action_type = "WAIT" if action == 0 else \
+                                 f"UNINSTALL-{config.VNF_TYPES[action-1]}" if action <= config.NUM_VNF_TYPES else \
+                                 f"ALLOC-{config.VNF_TYPES[action - config.NUM_VNF_TYPES - 1]}"
+                    
+                    if DEBUG_TIMING:
+                        timing = env.get_timing_info()
+                        print(f"    Step {step_count}: Action={action_type}, "
+                              f"SimTime={timing['sim_time_ms']}ms, "
+                              f"ActionInTimestep={timing['action_counter']}/{timing['actions_per_timestep']}, "
+                              f"Pending={len(env.sfc_manager.active_requests)}")
+                    else:
+                        print(f"    Step {step_count}: Action={action_type}, Pending={len(env.sfc_manager.active_requests)}")
+            
+            state, reward, done, _, info = env.step(action)
+            action_mask = info.get('action_mask', None)
             total_reward += reward
             step_count += 1
-            
-        # --- QUAN TRỌNG: Lưu lại history trước khi env.reset() xóa nó ở vòng lặp sau ---
+        
         total_completed_history.extend(env.sfc_manager.completed_history)
         total_dropped_history.extend(env.sfc_manager.dropped_history)
         
         print(f"\r   > Ep {ep+1}/{config.TEST_EPISODES} completed. Reward: {total_reward:.1f}. "
               f"Requests (Done/Drop): {len(env.sfc_manager.completed_history)}/{len(env.sfc_manager.dropped_history)}", end="")
+    
     print("")
+    
+    if DEBUG_MODE:
+        print("\n  [DEBUG] Action Distribution (First Episode):")
+        sorted_actions = sorted(action_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+        for action, count in sorted_actions:
+            action_type = "WAIT" if action == 0 else \
+                         f"UNINSTALL-{config.VNF_TYPES[action-1]}" if action <= config.NUM_VNF_TYPES else \
+                         f"ALLOC-{config.VNF_TYPES[action - config.NUM_VNF_TYPES - 1]}"
+            print(f"    {action_type}: {count} times")
 
-    # Tổng hợp số liệu từ danh sách tích lũy
+    # Tổng hợp số liệu
     sfc_types = config.SFC_TYPES
     acc_ratios = []
     e2e_delays = []
@@ -109,7 +151,6 @@ def run_experiment_1(env, agent):
     print("-" * 75)
     
     for s_type in sfc_types:
-        # Lọc từ danh sách tổng
         completed = [r for r in total_completed_history if r.type == s_type]
         dropped = [r for r in total_dropped_history if r.type == s_type]
         total = len(completed) + len(dropped)
@@ -121,6 +162,10 @@ def run_experiment_1(env, agent):
         e2e_delays.append(avg_delay)
         print(f"{s_type:<15} | {ar:<15.2f} | {avg_delay:<15.2f} | {len(completed)}/{total}")
     
+    print("-" * 75)
+    overall_ar = (len(total_completed_history) / (len(total_completed_history) + len(total_dropped_history)) * 100) if (len(total_completed_history) + len(total_dropped_history)) > 0 else 0.0
+    print(f"{'OVERALL':<15} | {overall_ar:<15.2f} | {'N/A':<15} | {len(total_completed_history)}/{len(total_completed_history) + len(total_dropped_history)}")
+    
     plot_exp1(sfc_types, acc_ratios, e2e_delays)
 
 def run_experiment_2(env, agent):
@@ -131,36 +176,33 @@ def run_experiment_2(env, agent):
     exp2_resources = []
     
     for n_dc in dc_counts:
-        # Biến tích lũy cho cấu hình DC hiện tại
         current_config_completed = []
         current_config_dropped = []
         cpu_usages = []
         
         for ep in range(config.TEST_EPISODES):
             state, _ = env.reset(num_dcs=n_dc)
+            action_mask = env._get_valid_actions_mask()
             done = False
             
             while not done:
-                action = agent.get_action(state, epsilon=config.TEST_EPSILON)
-                state, _, done, _, _ = env.step(action)
+                action = agent.get_action(state, epsilon=config.TEST_EPSILON, valid_actions_mask=action_mask)
+                state, _, done, _, info = env.step(action)
+                action_mask = info.get('action_mask', None)
                 
-                # Thu thập thông tin tài nguyên tại mỗi bước
                 total_cap = n_dc * config.DC_CPU_CYCLES
                 curr_cap = sum(dc.cpu for dc in env.dcs)
-                # Tránh chia cho 0
                 if total_cap > 0:
                     usage_pct = ((total_cap - curr_cap) / total_cap) * 100
                 else:
                     usage_pct = 0
                 cpu_usages.append(usage_pct)
             
-            # Tích lũy history
             current_config_completed.extend(env.sfc_manager.completed_history)
             current_config_dropped.extend(env.sfc_manager.dropped_history)
                 
             print(f"\r   > Config {n_dc} DCs: Ep {ep+1}/{config.TEST_EPISODES} done.", end="")
         
-        # Tính toán trung bình cho cấu hình này
         avg_delay = np.mean([r.elapsed_time for r in current_config_completed]) if current_config_completed else 0.0
         avg_cpu = np.mean(cpu_usages) if cpu_usages else 0.0
         
@@ -179,19 +221,24 @@ def main():
     env = SFCNVEnv()
     agent = SFC_DQN()
     
-    # 2. Load Weights
-    if os.path.exists(config.WEIGHTS_FILE):
-        print(f"Loading weights from {config.WEIGHTS_FILE}...")
-        try:
-            agent.model.load_weights(config.WEIGHTS_FILE)
-            print("Weights loaded successfully.")
-        except Exception as e:
-            print(f"Error loading weights: {e}")
-            print("Make sure you are running in the same directory as the weights file.")
-            return
-    else:
-        print(f"ERROR: Weights file '{config.WEIGHTS_FILE}' not found!")
-        print("Please run 'python train.py' first to generate the model weights.")
+    # 2. Load Weights - Try best model first, then fallback to regular
+    weights_to_try = [f'models/best_{config.WEIGHTS_FILE}', f'models/{config.WEIGHTS_FILE}']
+    
+    loaded = False
+    for weights_file in weights_to_try:
+        if os.path.exists(weights_file):
+            print(f"Loading weights from {weights_file}...")
+            try:
+                agent.model.load_weights(weights_file)
+                print(f"✓ Weights loaded successfully from {weights_file}")
+                loaded = True
+                break
+            except Exception as e:
+                print(f"✗ Error loading {weights_file}: {e}")
+    
+    if not loaded:
+        print(f"ERROR: No weights file found!")
+        print(f"Please run 'python train.py' first to generate the model weights.")
         return
 
     # 3. Run Experiments
