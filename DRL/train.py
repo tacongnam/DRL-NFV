@@ -7,6 +7,9 @@ import os
 import matplotlib.pyplot as plt
 
 def main():
+    os.makedirs("models", exist_ok=True)
+    os.makedirs("fig", exist_ok=True)
+
     # Khởi tạo môi trường và Agent
     env = SFCNVEnv()
     agent = SFC_DQN()
