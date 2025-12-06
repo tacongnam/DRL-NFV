@@ -4,11 +4,8 @@ SPEED_OF_LIGHT = 300000.0  # km/s
 
 TRAIN_UPDATES = 40          # U: Total weight updates
 EPISODES_PER_UPDATE = 20     # E: Episodes collected before each update
-ACTIONS_PER_TIME_STEP = 100   # A: Number of actions per 1ms timestep
-                              # Paper uses 100, but code uses 50 (faster training)
+ACTIONS_PER_TIME_STEP = 50   # A: Number of actions per 1ms timestep
 TIME_STEP = 1                 # T: Duration of each timestep in milliseconds
-                              # Action inference time = T / A = 1ms / 50 = 0.02ms
-
 TRAFFIC_GEN_INTERVAL = 4     # N: Generate new SFC requests every 4 timesteps (4ms)
 MAX_SIM_TIME_PER_EPISODE = 150 # Maximum simulation time per episode (ms)
 TRAFFIC_STOP_TIME = 150      # Stop generating new traffic at 150ms
