@@ -1,7 +1,7 @@
 import config
-from env.network import SFCNVEnv
-from env.dqn import SFC_DQN
-from env.utils import SFCRequest
+from environment.gym_env import Env
+from agent.agent import Agent
+from spaces.sfc_manager import request
 import numpy as np
 
 def test_config():
@@ -12,7 +12,7 @@ def test_config():
 
 def test_dqn_shape():
     print("2. Testing DQN Model Shapes...")
-    agent = SFC_DQN()
+    agent = Agent()
     # Mock inputs đúng kích thước
     s1 = np.zeros((1, 2 * config.NUM_VNF_TYPES + 2))
     s2 = np.zeros((1, config.NUM_SFC_TYPES * (1 + 2 * config.NUM_VNF_TYPES)))
@@ -24,13 +24,13 @@ def test_dqn_shape():
 
 def test_env_logic_success():
     print("3. Testing Environment Logic (Positive Scenario)...")
-    env = SFCNVEnv()
+    env = Env()
     env.reset()
     
     # --- MOCKUP: Tạo giả một Request để test ---
     # Giả sử có 1 request loại 'CloudGaming', cần chuỗi ['NAT', 'FW', ...]
     # Request này đang ở bước 0, tức là cần 'NAT'
-    mock_req = SFCRequest(999, 'CloudGaming', 0, 1, 0) 
+    mock_req = request(999, 'CloudGaming', 0, 1, 0) 
     env.sfc_manager.active_requests.append(mock_req)
     
     print(f"   Generated Mock Request: Need {mock_req.get_next_vnf()}")

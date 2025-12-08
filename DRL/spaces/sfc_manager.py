@@ -1,8 +1,8 @@
 import numpy as np
 import config
-from env.utils import SFCRequest
+import spaces.request as request
 
-class SFCManager:
+class SFC_Manager:
     def __init__(self):
         self.active_requests = [] # Các request đang được xử lý hoặc chờ
         self.request_counter = 0
@@ -21,7 +21,7 @@ class SFCManager:
                     dst = np.random.randint(0, num_dcs)
                     while dst == src: dst = np.random.randint(0, num_dcs)
                     
-                    req = SFCRequest(self.request_counter, s_type, src, dst, time_step)
+                    req = request(self.request_counter, s_type, src, dst, time_step)
                     new_reqs.append(req)
                     self.request_counter += 1
         
