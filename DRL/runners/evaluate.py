@@ -8,15 +8,15 @@ sys.path.append(parent_dir)
 
 import config
 from environment.gym_env import Env
-from agent.agent import SFC_DQN
-from utils import run_experiment_performance, run_experiment_scalability
+from agent.agent import Agent
+from runners.utils import run_experiment_performance, run_experiment_scalability
 
 def main():
     print("=== STARTING EVALUATION ===")
     
     # 1. Init Env & Agent
     env = Env()
-    agent = SFC_DQN()
+    agent = Agent()
     
     # 2. Load Weights
     weights_path = f'models/best_{config.WEIGHTS_FILE}'
@@ -27,7 +27,7 @@ def main():
         print(f"Loading weights from: {weights_path}")
         try:
             # Fake inference to build model shape before loading weights
-            dummy_state = env.reset()[0]
+            dummy_state, _ = env.reset()
             agent.get_action(dummy_state, 0.0) 
             
             agent.model.load_weights(weights_path)

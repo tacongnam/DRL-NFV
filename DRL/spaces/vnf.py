@@ -4,9 +4,8 @@ class VNFInstance:
     def __init__(self, vnf_type, dc_id):
         self.vnf_type = vnf_type
         self.dc_id = dc_id
-        self.specs = config.VNF_SPECS[vnf_type]
         self.remaining_proc_time = 0
-        self.assigned_sfc_id = None # ID của SFC đang dùng VNF này
+        self.assigned_sfc_id = None
 
     def is_idle(self):
         return self.remaining_proc_time <= 0
@@ -17,4 +16,8 @@ class VNFInstance:
 
     def tick(self):
         if self.remaining_proc_time > 0:
-            self.remaining_proc_time -= 1
+            self.remaining_proc_time -= config.TIME_STEP
+            if self.remaining_proc_time < 0: 
+                self.remaining_proc_time = 0
+            if self.remaining_proc_time == 0:
+                self.assigned_sfc_id = None

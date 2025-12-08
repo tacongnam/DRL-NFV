@@ -1,80 +1,107 @@
+# spaces/sfc_manager.py
 import numpy as np
 import config
-import spaces.request as request
+from spaces.request import SFCRequest
 
 class SFC_Manager:
     def __init__(self):
-        self.active_requests = [] # Các request đang được xử lý hoặc chờ
-        self.request_counter = 0
-
+        self.active_requests = []
         self.completed_history = []
         self.dropped_history = []
-
-    def generate_requests(self, time_step, num_dcs): # Thêm num_dcs
-        new_reqs = []
-        for s_type in config.SFC_TYPES:
-             if np.random.rand() < 0.1: 
-                min_b, max_b = config.SFC_SPECS[s_type]['bundle']
-                count = np.random.randint(min_b // 10, max_b // 10 + 1)
-                for _ in range(count):
-                    src = np.random.randint(0, num_dcs) # Dùng num_dcs thay vì config.NUM_DCS
-                    dst = np.random.randint(0, num_dcs)
-                    while dst == src: dst = np.random.randint(0, num_dcs)
-                    
-                    req = request(self.request_counter, s_type, src, dst, time_step)
-                    new_reqs.append(req)
-                    self.request_counter += 1
-        
-        self.active_requests.extend(new_reqs)
-        return len(new_reqs)
-
-    def clean_requests(self):
-        """Xóa các request đã xong hoặc bị drop"""
-        completed = [r for r in self.active_requests if r.is_completed]
-        dropped = [r for r in self.active_requests if r.is_dropped]
-        
-        self.completed_history.extend(completed)
-        self.dropped_history.extend(dropped)
-
-        self.active_requests = [r for r in self.active_requests 
-                                if not r.is_completed and not r.is_dropped]
+        self.req_counter = 0
 
     def reset_history(self):
-        """Reset stats"""
+        """Reset trạng thái cho episode mới"""
+        self.active_requests = []
         self.completed_history = []
         self.dropped_history = []
-        
+        self.req_counter = 0
+
+    def generate_requests(self, time_step, num_dcs):
+        """Sinh request mới"""
+        generated_count = 0
+        for s_type in config.SFC_TYPES:
+            # Giảm xác suất sinh xuống để tránh quá tải bộ nhớ khi demo
+            if np.random.rand() < 0.2: 
+                min_b, max_b = config.SFC_SPECS[s_type]['bundle']
+                count = np.random.randint(min_b, max_b + 1)
+                
+                for _ in range(count):
+                    # Đảm bảo src != dst
+                    src = np.random.randint(0, num_dcs)
+                    dst = np.random.randint(0, num_dcs)
+                    while dst == src:
+                        dst = np.random.randint(0, num_dcs)
+                        
+                    req = SFCRequest(self.req_counter, s_type, src, dst, time_step)
+                    self.active_requests.append(req)
+                    self.req_counter += 1
+                    generated_count += 1
+        return generated_count
+
+    def clean_requests(self):
+        """Dọn dẹp request đã hoàn thành hoặc bị drop"""
+        active = []
+        for r in self.active_requests:
+            if r.is_completed:
+                self.completed_history.append(r)
+            elif r.is_dropped:
+                self.dropped_history.append(r)
+            else:
+                active.append(r)
+        self.active_requests = active
+
     def get_global_state_info(self):
-        """Tạo Input 3 cho DRL"""
-        # Matrix [|S| x (4 + |V|)]
-        state = np.zeros((config.NUM_SFC_TYPES, 4 + config.NUM_VNF_TYPES))
+        """Tạo Input 3 cho DRL (Global State)"""
+        # Shape: [NUM_SFC_TYPES, 4 + NUM_VNF_TYPES]
+        state_matrix = np.zeros((config.NUM_SFC_TYPES, 4 + config.NUM_VNF_TYPES), dtype=np.float32)
+        vnf_to_idx = {v: i for i, v in enumerate(config.VNF_TYPES)}
         
+        # Gom nhóm request để xử lý nhanh
+        reqs_by_type = {t: [] for t in config.SFC_TYPES}
+        for r in self.active_requests:
+            if not r.is_completed and not r.is_dropped:
+                reqs_by_type[r.type].append(r)
+
         for i, s_type in enumerate(config.SFC_TYPES):
-            reqs = [r for r in self.active_requests if r.type == s_type]
+            reqs = reqs_by_type[s_type]
             count = len(reqs)
+            
+            state_matrix[i, 0] = count
+            state_matrix[i, 2] = config.SFC_SPECS[s_type]['bw']
+            
             if count > 0:
-                avg_rem_time = np.mean([r.max_delay - r.elapsed_time for r in reqs])
-                bw_req = config.SFC_SPECS[s_type]['bw']
+                # Avg remaining time
+                rem_times = [r.max_delay - r.elapsed_time for r in reqs]
+                state_matrix[i, 1] = np.mean(rem_times)
                 
-                # Cột 0: Request Count
-                state[i, 0] = count
-                # Cột 1: Min/Avg Remaining Time
-                state[i, 1] = avg_rem_time
-                # Cột 2: BW Requirement
-                state[i, 2] = bw_req
-                # Cột 3: Pending VNFs count (Total)
-                pending_vnfs = 0
+                # Pending VNFs count
+                total_pending = 0
                 vnf_counts = np.zeros(config.NUM_VNF_TYPES)
-                
                 for r in reqs:
                     next_v = r.get_next_vnf()
                     if next_v:
-                        pending_vnfs += 1
-                        v_idx = config.VNF_TYPES.index(next_v)
-                        vnf_counts[v_idx] += 1
+                        total_pending += 1
+                        vnf_counts[vnf_to_idx[next_v]] += 1
                 
-                state[i, 3] = pending_vnfs
-                # Cột 4 đến hết: Specific VNF pending counts
-                state[i, 4:] = vnf_counts
-                
-        return state.flatten()
+                state_matrix[i, 3] = total_pending
+                state_matrix[i, 4:] = vnf_counts
+
+        return state_matrix.flatten()
+
+    def get_statistics(self):
+        """Trả về thống kê hiệu năng (FIXED)"""
+        total = self.req_counter
+        acc = len(self.completed_history)
+        drop = len(self.dropped_history)
+        
+        acc_ratio = (acc / total * 100) if total > 0 else 0.0
+        drop_ratio = (drop / total * 100) if total > 0 else 0.0
+        
+        return {
+            'acceptance_ratio': acc_ratio,
+            'drop_ratio': drop_ratio,
+            'total_generated': total,
+            'total_accepted': acc,
+            'total_dropped': drop
+        }
