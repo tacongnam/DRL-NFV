@@ -2,6 +2,7 @@
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
+import tensorflow as tf
 import numpy as np
 import config
 from agent.model import build_q_network
@@ -13,6 +14,13 @@ class Agent:
         self.model = build_q_network()
         self.target_model = build_q_network()
         self.update_target_model()
+
+        self.batch_size = config.BATCH_SIZE
+        self.optimizer = self.model.optimizer      # AdamW
+        self.loss_fn = tf.keras.losses.MeanSquaredError()
+
+        # Pre-allocated buffer để giảm allocate lại
+        self.batch_size = config.BATCH_SIZE
     
     def update_target_model(self):
         """Copy weights từ model sang target_model"""
@@ -44,7 +52,7 @@ class Agent:
         s3 = state[2].reshape(1, -1)
         
         # Predict Q-values
-        q_values = self.model.predict([s1, s2, s3], verbose=0)[0]
+        q_values = self.model([s1, s2, s3], training=False)[0].numpy()
         
         # Apply mask
         if valid_actions_mask is not None:
@@ -52,88 +60,98 @@ class Agent:
         
         return np.argmax(q_values)
     
+    @tf.function
+    def train_step(self, state_batch, action_batch, reward_batch,
+                   next_state_batch, done_batch):
+        """
+        state_batch       : [3 tensor]
+        next_state_batch  : [3 tensor]
+        action_batch      : int32 tensor
+        reward_batch      : float32
+        """
+
+        # ------------------------------------------
+        # Compute target Q-values
+        # ------------------------------------------
+        next_q = self.target_model(next_state_batch, training=False)
+        max_next_q = tf.reduce_max(next_q, axis=1)
+
+        targets = reward_batch + (1.0 - tf.cast(done_batch, tf.float32)) * \
+                  config.GAMMA * max_next_q
+
+        # ------------------------------------------
+        # Train main network
+        # ------------------------------------------
+        with tf.GradientTape() as tape:
+            q_values = self.model(state_batch, training=True)
+
+            # Gather Q(s,a)
+            batch_indices = tf.range(self.batch_size, dtype=tf.int32)
+            action_indices = tf.stack([batch_indices, action_batch], axis=1)
+            predicted = tf.gather_nd(q_values, action_indices)
+
+            loss = self.loss_fn(targets, predicted)
+
+        grads = tape.gradient(loss, self.model.trainable_variables)
+        self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
+
+        return loss
+
+    # -------------------------------------------------
+    #  Wrapper train — chuẩn bị batch rồi gọi graph
+    # -------------------------------------------------
     def train(self, replay_memory):
-        """
-        Train model trên batch từ replay memory
-        
-        Args:
-            replay_memory: Deque chứa transitions
-            
-        Returns:
-            float: Loss value
-        """
-        if len(replay_memory) < config.BATCH_SIZE:
+        if len(replay_memory) < self.batch_size:
             return 0.0
-        
-        # Sample batch
-        batch_indices = np.random.choice(len(replay_memory), 
-                                        config.BATCH_SIZE, 
-                                        replace=False)
-        
-        # Get shapes from first sample
-        sample_state = replay_memory[0][0]
-        s1_shape = sample_state[0].shape
-        s2_shape = sample_state[1].shape
-        s3_shape = sample_state[2].shape
-        
-        # Initialize batches
-        state1_batch = np.zeros((config.BATCH_SIZE, *s1_shape), dtype=np.float32)
-        state2_batch = np.zeros((config.BATCH_SIZE, *s2_shape), dtype=np.float32)
-        state3_batch = np.zeros((config.BATCH_SIZE, *s3_shape), dtype=np.float32)
-        
-        next_state1_batch = np.zeros((config.BATCH_SIZE, *s1_shape), dtype=np.float32)
-        next_state2_batch = np.zeros((config.BATCH_SIZE, *s2_shape), dtype=np.float32)
-        next_state3_batch = np.zeros((config.BATCH_SIZE, *s3_shape), dtype=np.float32)
-        
-        action_batch = np.zeros(config.BATCH_SIZE, dtype=np.int32)
-        reward_batch = np.zeros(config.BATCH_SIZE, dtype=np.float32)
-        done_batch = np.zeros(config.BATCH_SIZE, dtype=bool)
-        
-        # Fill batches
-        for i, idx in enumerate(batch_indices):
-            # transition: (state, action, reward, next_state, done)
-            state, action, reward, next_state, done = replay_memory[idx]
-            
-            state1_batch[i] = state[0]
-            state2_batch[i] = state[1]
-            state3_batch[i] = state[2]
-            
-            action_batch[i] = action
-            reward_batch[i] = reward
-            
-            next_state1_batch[i] = next_state[0]
-            next_state2_batch[i] = next_state[1]
-            next_state3_batch[i] = next_state[2]
-            
-            done_batch[i] = done
-        
-        # Predict next Q-values using target network
-        next_q_values = self.target_model.predict(
-            [next_state1_batch, next_state2_batch, next_state3_batch],
-            verbose=0
+
+        idx = np.random.choice(len(replay_memory), self.batch_size, replace=False)
+
+        # Prebuild numpy arrays
+        state1 = []
+        state2 = []
+        state3 = []
+
+        next1 = []
+        next2 = []
+        next3 = []
+
+        actions = []
+        rewards = []
+        dones = []
+
+        for i in idx:
+            s, a, r, ns, d = replay_memory[i]
+            state1.append(s[0])
+            state2.append(s[1])
+            state3.append(s[2])
+
+            next1.append(ns[0])
+            next2.append(ns[1])
+            next3.append(ns[2])
+
+            actions.append(a)
+            rewards.append(r)
+            dones.append(d)
+
+        # Convert to TensorFlow
+        state_batch = [
+            tf.convert_to_tensor(np.array(state1), dtype=tf.float32),
+            tf.convert_to_tensor(np.array(state2), dtype=tf.float32),
+            tf.convert_to_tensor(np.array(state3), dtype=tf.float32),
+        ]
+
+        next_state_batch = [
+            tf.convert_to_tensor(np.array(next1), dtype=tf.float32),
+            tf.convert_to_tensor(np.array(next2), dtype=tf.float32),
+            tf.convert_to_tensor(np.array(next3), dtype=tf.float32),
+        ]
+
+        loss = self.train_step(
+            state_batch=state_batch,
+            action_batch=tf.convert_to_tensor(actions, dtype=tf.int32),
+            reward_batch=tf.convert_to_tensor(rewards, dtype=tf.float32),
+            next_state_batch=next_state_batch,
+            done_batch=tf.convert_to_tensor(dones, dtype=tf.bool),
         )
-        max_next_q = np.amax(next_q_values, axis=1)
-        
-        # Calculate targets
-        targets = reward_batch + (1 - done_batch) * config.GAMMA * max_next_q
-        
-        # Get current Q-values
-        current_q_values = self.model.predict(
-            [state1_batch, state2_batch, state3_batch],
-            verbose=0
-        )
-        
-        # Update Q-values for taken actions
-        indices = np.arange(config.BATCH_SIZE)
-        current_q_values[indices, action_batch] = targets
-        
-        # Train
-        history = self.model.fit(
-            [state1_batch, state2_batch, state3_batch],
-            current_q_values,
-            batch_size=config.BATCH_SIZE,
-            epochs=1,
-            verbose=0
-        )
-        
-        return history.history['loss'][0]
+
+        return float(loss.numpy())

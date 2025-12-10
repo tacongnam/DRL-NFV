@@ -37,18 +37,19 @@ def build_q_network():
     
     # --- Concatenation ---
     concat = layers.Concatenate(name="Concat")([dense_1, dense_2, dense_3])
+    concat_dim = concat.shape[-1]
     
     # --- Attention Mechanism ---
     # Tính attention weights
-    attention_weights = layers.Dense(160, activation='sigmoid', name="Attention_Weights")(concat)
+    attn_size = int(concat_dim)
+    attention_weights = layers.Dense(attn_size, activation='sigmoid', name="Attention_Weights")(concat)
     
     # Apply attention
     attended = layers.Multiply(name="Attention_Applied")([concat, attention_weights])
     
     # --- Fully Connected Layers ---
     fc1 = layers.Dense(96, activation='relu', name="FC1")(attended)
-    fc1 = layers.Dropout(0.2, name="Dropout1")(fc1)
-    
+    fc1 = layers.LayerNormalization(name="Norm1")(fc1)
     fc2 = layers.Dense(64, activation='relu', name="FC2")(fc1)
     
     # --- Output Layer ---
@@ -63,7 +64,7 @@ def build_q_network():
     
     # Compile
     model.compile(
-        optimizer=optimizers.Adam(learning_rate=config.LEARNING_RATE),
+        optimizer=optimizers.AdamW(learning_rate=config.LEARNING_RATE, weight_decay=1e-4),
         loss='mse'
     )
     
