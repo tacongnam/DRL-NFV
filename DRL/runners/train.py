@@ -1,3 +1,4 @@
+# runners/train.py
 import os
 import numpy as np
 from collections import deque
@@ -8,58 +9,70 @@ from agent.agent import Agent
 from runners.utils import run_single_episode, plot_training_results
 
 def main():
+    print("\n" + "="*80)
+    print("STARTING DRL TRAINING FOR SFC PROVISIONING")
+    print("="*80)
+    
+    # Create directories
     os.makedirs("models", exist_ok=True)
     os.makedirs("fig", exist_ok=True)
-
-    # Khởi tạo môi trường & agent
+    
+    # Initialize environment & agent
     env = Env()
     agent = Agent()
     
-    # Trạng thái huấn luyện
+    # Training state
     global_replay_memory = deque(maxlen=config.MEMORY_SIZE)
     epsilon = config.EPSILON_START
     
     all_rewards = []
     all_ars = []
     best_ar = 0.0
-    total_episodes_run = 0
     
-    # Buffers cho mỗi update
+    # Buffers for current update
     current_update_rewards = []
     current_update_ars = []
-
-    print(f"=== STARTING TRAINING ===")
-    print(f"Total Updates: {config.TRAIN_UPDATES}, Episodes/Update: {config.EPISODES_PER_UPDATE}")
     
-    # Vòng lặp huấn luyện chính
+    print(f"\nConfiguration:")
+    print(f"  - Total Updates: {config.TRAIN_UPDATES}")
+    print(f"  - Episodes per Update: {config.EPISODES_PER_UPDATE}")
+    print(f"  - Actions per Time Step: {config.ACTIONS_PER_TIME_STEP}")
+    print(f"  - Batch Size: {config.BATCH_SIZE}")
+    print(f"  - Memory Size: {config.MEMORY_SIZE}")
+    print(f"  - Epsilon: {config.EPSILON_START} → {config.EPSILON_MIN} (decay={config.EPSILON_DECAY})")
+    print("="*80)
+    
+    # Main training loop
     for update_idx in range(1, config.TRAIN_UPDATES + 1):
+        print(f"\n[UPDATE {update_idx}/{config.TRAIN_UPDATES}]")
         
-        # 1. Chạy các episode
+        # Run episodes
         for ep_idx in range(config.EPISODES_PER_UPDATE):
-            total_episodes_run += 1
-            
-            # Chạy 1 episode
+            # Run episode
             reward, ar, memory_trace = run_single_episode(env, agent, epsilon, training_mode=True)
             
-            # Lưu vào bộ nhớ replay
+            # Store transitions
             global_replay_memory.extend(memory_trace)
             current_update_rewards.append(reward)
             current_update_ars.append(ar)
             
-            # Cập nhật epsilon
+            # Update epsilon
             if epsilon > config.EPSILON_MIN:
                 epsilon *= config.EPSILON_DECAY
             
-            # In tiến độ
-            print(f"\r[Upd {update_idx}] Ep {ep_idx+1}/{config.EPISODES_PER_UPDATE}: "
-                  f"R={reward:.1f}, AR={ar:.1f}%, Eps={epsilon:.3f}", end="")
-
-        # 2. Cập nhật mạng neural
-        print(f"\n   >> Training Network (Update {update_idx})...", end="")
+            # Progress
+            print(f"  Ep {ep_idx+1:3d}: Reward={reward:7.1f}  |  AR={ar:5.1f}%  |  ε={epsilon:.4f}", 
+                  end="\r", flush=True)
+        
+        print()  # New line after episodes
+        
+        # Train network
+        print(f"  Training network...", end=" ", flush=True)
         loss = agent.train(global_replay_memory)
         agent.update_target_model()
+        print(f"Loss={loss:.4f}")
         
-        # 3. Tính toán và in kết quả trung bình
+        # Calculate averages
         avg_reward = np.mean(current_update_rewards)
         avg_ar = np.mean(current_update_ars)
         
@@ -70,25 +83,34 @@ def main():
         current_update_rewards = []
         current_update_ars = []
         
-        print(f"\r   >> Completed Update {update_idx}: "
-              f"Avg Reward={avg_reward:.1f}, Avg AR={avg_ar:.2f}%, Loss={loss:.4f}")
+        print(f"  → Avg Reward: {avg_reward:.1f}  |  Avg AR: {avg_ar:.2f}%")
         
-        # 4. Lưu mô hình tốt nhất
+        # Save best model
         if avg_ar > best_ar:
             best_ar = avg_ar
             agent.model.save_weights(f'models/best_{config.WEIGHTS_FILE}')
-            print(f"   >> New Best Model Saved (AR={best_ar:.2f}%)")
-
-    # Lưu mô hình cuối cùng
+            print(f"  ★ New best model saved! (AR={best_ar:.2f}%)")
+        
+        # Save checkpoint every 50 updates
+        if update_idx % 50 == 0:
+            agent.model.save_weights(f'models/checkpoint_{update_idx}_{config.WEIGHTS_FILE}')
+            print(f"  💾 Checkpoint saved at update {update_idx}")
+    
+    # Save final model
     agent.model.save_weights(f'models/{config.WEIGHTS_FILE}')
     
-    # Vẽ đồ thị huấn luyện
+    # Plot results
     plot_training_results(all_rewards, all_ars, save_path='fig/training_progress.png')
     
-    print(f"\n{'='*80}")
-    print(f"Training Completed. Final AR Avg: {np.mean(all_ars[-100:]):.2f}%")
-    print(f"Best Model AR: {best_ar:.2f}%")
-    print(f"{'='*80}")
+    # Final statistics
+    print("\n" + "="*80)
+    print("TRAINING COMPLETED")
+    print("="*80)
+    print(f"Total Episodes: {len(all_ars)}")
+    print(f"Final Avg AR (last 100 eps): {np.mean(all_ars[-100:]):.2f}%")
+    print(f"Best AR achieved: {best_ar:.2f}%")
+    print(f"Final Epsilon: {epsilon:.4f}")
+    print("="*80)
 
 if __name__ == "__main__":
     main()

@@ -1,26 +1,78 @@
+# runners/utils.py
 import os
-import sys
 import numpy as np
 import matplotlib
-# QUAN TRỌNG: Chuyển sang backend 'Agg' để không yêu cầu màn hình (tránh treo)
-matplotlib.use('Agg') 
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import config
 
+def run_single_episode(env, agent, epsilon, training_mode=True):
+    """
+    Chạy một episode
+    
+    Args:
+        env: Environment
+        agent: DQN Agent
+        epsilon: Exploration rate
+        training_mode: Nếu True, lưu transitions vào memory
+        
+    Returns:
+        Nếu training_mode: (total_reward, acceptance_ratio, episode_memory)
+        Nếu không: (total_reward, acceptance_ratio)
+    """
+    state, _ = env.reset()
+    action_mask = env._get_valid_actions_mask()
+    
+    total_reward = 0.0
+    done = False
+    episode_memory = []
+    step_count = 0
+    
+    while not done:
+        # Select action
+        action = agent.get_action(state, epsilon, valid_actions_mask=action_mask)
+        
+        # Take step
+        next_state, reward, done, _, info = env.step(action)
+        next_action_mask = info.get('action_mask', None)
+        
+        # Store transition
+        if training_mode:
+            episode_memory.append((state, action, reward, next_state, done))
+        
+        # Update
+        state = next_state
+        total_reward += reward
+        action_mask = next_action_mask
+        
+        # Progress indicator for testing
+        step_count += 1
+        if not training_mode and step_count % 500 == 0:
+            print(".", end="", flush=True)
+    
+    acc_ratio = info.get('acceptance_ratio', 0.0)
+    
+    if training_mode:
+        return total_reward, acc_ratio, episode_memory
+    else:
+        return total_reward, acc_ratio
+
 def plot_training_results(all_rewards, all_ars, save_path='fig/training_progress.png'):
-    """Vẽ biểu đồ quá trình huấn luyện"""
+    """Vẽ biểu đồ quá trình training"""
     try:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
         
-        # Plot 1: Acceptance Ratio
         episodes = list(range(1, len(all_ars) + 1))
-        ax1.plot(episodes, all_ars, alpha=0.3, label='Per Episode')
+        
+        # Plot 1: Acceptance Ratio
+        ax1.plot(episodes, all_ars, alpha=0.3, label='Per Episode', color='blue')
         
         window = 20
         if len(all_ars) >= window:
             moving_avg = np.convolve(all_ars, np.ones(window)/window, mode='valid')
-            ax1.plot(range(window, len(all_ars) + 1), moving_avg, 
+            ax1.plot(range(window, len(all_ars) + 1), moving_avg,
                     linewidth=2, color='red', label=f'Moving Avg ({window} eps)')
         
         ax1.set_xlabel('Episode')
@@ -30,7 +82,8 @@ def plot_training_results(all_rewards, all_ars, save_path='fig/training_progress
         ax1.grid(True, alpha=0.3)
         
         # Plot 2: Total Reward
-        ax2.plot(episodes, all_rewards, alpha=0.3, label='Per Episode')
+        ax2.plot(episodes, all_rewards, alpha=0.3, label='Per Episode', color='green')
+        
         if len(all_rewards) >= window:
             moving_avg_rew = np.convolve(all_rewards, np.ones(window)/window, mode='valid')
             ax2.plot(range(window, len(all_rewards) + 1), moving_avg_rew,
@@ -44,55 +97,65 @@ def plot_training_results(all_rewards, all_ars, save_path='fig/training_progress
         
         plt.tight_layout()
         plt.savefig(save_path, dpi=150)
-        print(f"\n[Graph] Training progress plot saved to: {save_path}")
+        print(f"\n[Graph] Training progress saved to: {save_path}")
         plt.close(fig)
+        
     except Exception as e:
         print(f"\n[Error] Could not create training plot: {e}")
 
-def plot_exp1_results(types, ars, delays, save_path='fig/result_exp1_fig2.png'):
+def plot_exp1_results(sfc_types, acc_ratios, e2e_delays, save_path='fig/result_exp1_fig2.png'):
     """Vẽ biểu đồ Experiment 1"""
-    if not types: return
+    if not sfc_types:
+        return
+    
     try:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        
         fig, ax1 = plt.subplots(figsize=(10, 6))
-        x = np.arange(len(types))
+        x = np.arange(len(sfc_types))
         width = 0.35
         
-        # Bar Chart: Acceptance Ratio
-        ax1.bar(x, ars, width, label='Acceptance Ratio (%)', color='b', alpha=0.6)
+        # Bar: Acceptance Ratio
+        ax1.bar(x, acc_ratios, width, label='Acceptance Ratio (%)', 
+               color='b', alpha=0.6)
         ax1.set_xlabel('SFC Types')
         ax1.set_ylabel('Acceptance Ratio (%)', color='b')
         ax1.set_ylim(0, 110)
         ax1.tick_params(axis='y', labelcolor='b')
         ax1.set_xticks(x)
-        ax1.set_xticklabels(types)
+        ax1.set_xticklabels(sfc_types, rotation=15)
         ax1.grid(True, axis='y', linestyle='--', alpha=0.5)
         
-        # Line Chart: E2E Delay
+        # Line: E2E Delay
         ax2 = ax1.twinx()
-        ax2.plot(x, delays, color='r', marker='o', linewidth=2, label='E2E Delay (ms)')
+        ax2.plot(x, e2e_delays, color='r', marker='o', 
+                linewidth=2, label='E2E Delay (ms)')
         ax2.set_ylabel('Avg E2E Delay (ms)', color='r')
         ax2.tick_params(axis='y', labelcolor='r')
         
-        max_delay = max(delays) if delays else 100
+        max_delay = max(e2e_delays) if e2e_delays else 100
         ax2.set_ylim(0, max_delay * 1.2)
         
         plt.title('Experiment 1: Performance per SFC Type (Fixed 4 DCs)')
         fig.tight_layout()
-        plt.savefig(save_path)
+        plt.savefig(save_path, dpi=150)
         print(f"\n[Graph] Saved {save_path}")
         plt.close(fig)
+        
     except Exception as e:
         print(f"\n[Error] Could not plot Exp1: {e}")
 
 def plot_exp2_results(dc_counts, delays, resources, save_path='fig/result_exp2_fig3.png'):
     """Vẽ biểu đồ Experiment 2"""
-    if not dc_counts: return
+    if not dc_counts:
+        return
+    
     try:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
         
-        # Graph 1: Delay vs DC Count
+        # Graph 1: E2E Delay
         ax1.plot(dc_counts, delays, 'g-o', linewidth=2)
         ax1.set_title('E2E Delay vs Number of DCs')
         ax1.set_xlabel('Number of DCs')
@@ -100,8 +163,8 @@ def plot_exp2_results(dc_counts, delays, resources, save_path='fig/result_exp2_f
         ax1.set_xticks(dc_counts)
         ax1.grid(True)
         
-        # Graph 2: Resource vs DC Count
-        ax2.bar(dc_counts, resources, color='orange', alpha=0.7, width=1.0)
+        # Graph 2: Resource Consumption
+        ax2.bar(dc_counts, resources, color='orange', alpha=0.7, width=0.8)
         ax2.set_title('Avg Resource Consumption vs Number of DCs')
         ax2.set_xlabel('Number of DCs')
         ax2.set_ylabel('Avg CPU Usage (%)')
@@ -110,131 +173,101 @@ def plot_exp2_results(dc_counts, delays, resources, save_path='fig/result_exp2_f
         
         plt.suptitle('Experiment 2: Reconfigurability & Robustness')
         plt.tight_layout()
-        plt.savefig(save_path)
+        plt.savefig(save_path, dpi=150)
         print(f"\n[Graph] Saved {save_path}")
         plt.close(fig)
+        
     except Exception as e:
         print(f"\n[Error] Could not plot Exp2: {e}")
 
-def run_single_episode(env, agent, epsilon, training_mode=True):
-    """
-    Chạy 1 episode.
-    """
-    state, _ = env.reset()
-    action_mask = env._get_valid_actions_mask()
-    
-    total_reward = 0
-    done = False
-    episode_memory = []
-    step_count = 0
-    
-    while not done:
-        action = agent.get_action(state, epsilon, valid_actions_mask=action_mask)
-        next_state, reward, done, _, info = env.step(action)
-        next_action_mask = info.get('action_mask', None)
-        
-        if training_mode:
-            episode_memory.append((state, action, reward, next_state, done))
-        
-        state = next_state
-        total_reward += reward
-        action_mask = next_action_mask
-        
-        # --- DEBUG LOGGING ---
-        # Nếu không phải training mode (tức là đang test), in ra tiến trình để tránh cảm giác bị treo
-        step_count += 1
-        if not training_mode and step_count % 200 == 0:
-            print(f".", end="", flush=True)
-
-    acc_ratio = info.get('acc_ratio', 0.0)
-    
-    if training_mode:
-        return total_reward, acc_ratio, episode_memory
-    else:
-        return total_reward, acc_ratio
-
 def run_experiment_performance(env, agent, episodes=10):
-    """Logic chạy Experiment 1"""
-    print(f"\n>>> RUNNING EXPERIMENT 1: Performance Analysis per SFC Type (4 DCs)")
-    print(f"    (Total Episodes: {episodes}, Max Steps/Ep: {config.MAX_SIM_TIME_PER_EPISODE * config.ACTIONS_PER_TIME_STEP})")
+    """Chạy Experiment 1: Performance Analysis"""
+    print(f"\n{'='*80}")
+    print(f"EXPERIMENT 1: Performance Analysis per SFC Type (4 DCs)")
+    print(f"{'='*80}")
     
     total_completed = []
     total_dropped = []
     
     for ep in range(episodes):
-        print(f"   > Episode {ep+1}/{episodes} running ", end="", flush=True)
+        print(f"\n[Episode {ep+1}/{episodes}] Running", end=" ", flush=True)
         env.reset(num_dcs=4)
         run_single_episode(env, agent, epsilon=config.TEST_EPSILON, training_mode=False)
         
         total_completed.extend(env.sfc_manager.completed_history)
         total_dropped.extend(env.sfc_manager.dropped_history)
-        print(" [Done]")
+        print(" ✓")
     
-    print("   Processing results...")
+    print("\nProcessing results...")
     
+    # Analyze per SFC type
     sfc_types = config.SFC_TYPES
     acc_ratios = []
     e2e_delays = []
     
-    for s_type in sfc_types:
-        completed = [r for r in total_completed if r.type == s_type]
-        dropped = [r for r in total_dropped if r.type == s_type]
+    for sfc_type in sfc_types:
+        completed = [r for r in total_completed if r.type == sfc_type]
+        dropped = [r for r in total_dropped if r.type == sfc_type]
         total = len(completed) + len(dropped)
         
         ar = (len(completed) / total * 100) if total > 0 else 0.0
-        avg_delay = np.mean([r.elapsed_time for r in completed]) if completed else 0.0
+        avg_delay = np.mean([r.get_total_e2e_delay() for r in completed]) if completed else 0.0
         
         acc_ratios.append(ar)
         e2e_delays.append(avg_delay)
-        print(f"    Type {s_type:<15}: AR={ar:>6.2f}%, Delay={avg_delay:>6.2f}ms")
         
+        print(f"  {sfc_type:15s}: AR={ar:6.2f}%  |  E2E Delay={avg_delay:6.2f} ms")
+    
     plot_exp1_results(sfc_types, acc_ratios, e2e_delays)
 
 def run_experiment_scalability(env, agent, episodes=10):
-    """Logic chạy Experiment 2"""
-    print(f"\n>>> RUNNING EXPERIMENT 2: Reconfigurability")
-    print(f"    (Configurations: {config.TEST_FIG3_DCS} DCs)")
+    """Chạy Experiment 2: Reconfigurability"""
+    print(f"\n{'='*80}")
+    print(f"EXPERIMENT 2: Reconfigurability & Scalability")
+    print(f"{'='*80}")
     
     dc_counts = config.TEST_FIG3_DCS
     exp2_delays = []
     exp2_resources = []
     
     for n_dc in dc_counts:
-        print(f"\n   [*] Testing Config: {n_dc} DCs")
+        print(f"\n[Config: {n_dc} DCs]")
         current_completed = []
         cpu_usages = []
         
         for ep in range(episodes):
-            print(f"       > Ep {ep+1}/{episodes} running ", end="", flush=True)
+            print(f"  Episode {ep+1}/{episodes} running", end=" ", flush=True)
             env.reset(num_dcs=n_dc)
-            state, _ = env._get_state()
-            action_mask = env._get_valid_actions_mask()
+            
+            state, _ = env._get_obs(), {}
             done = False
             step_count = 0
             
             while not done:
-                action = agent.get_action(state, epsilon=config.TEST_EPSILON, valid_actions_mask=action_mask)
-                state, _, done, _, info = env.step(action)
-                action_mask = info.get('action_mask', None)
+                mask = env._get_valid_actions_mask()
+                action = agent.get_action(state, epsilon=config.TEST_EPSILON, 
+                                         valid_actions_mask=mask)
+                state, _, done, _, _ = env.step(action)
                 
-                # Tính CPU usage tức thời
+                # Track CPU usage
                 total_cap = n_dc * config.DC_CPU_CYCLES
-                curr_cap = sum(dc.cpu for dc in env.dcs)
-                usage_pct = ((total_cap - curr_cap) / total_cap) * 100 if total_cap > 0 else 0
+                used_cap = sum(config.DC_CPU_CYCLES - dc.cpu for dc in env.dcs)
+                usage_pct = (used_cap / total_cap * 100) if total_cap > 0 else 0
                 cpu_usages.append(usage_pct)
                 
                 step_count += 1
-                if step_count % 200 == 0:
+                if step_count % 500 == 0:
                     print(".", end="", flush=True)
             
             current_completed.extend(env.sfc_manager.completed_history)
-            print(" [Done]")
-            
-        avg_delay = np.mean([r.elapsed_time for r in current_completed]) if current_completed else 0.0
+            print(" ✓")
+        
+        avg_delay = np.mean([r.get_total_e2e_delay() for r in current_completed]) if current_completed else 0.0
         avg_cpu = np.mean(cpu_usages) if cpu_usages else 0.0
         
         exp2_delays.append(avg_delay)
         exp2_resources.append(avg_cpu)
-        print(f"       -> Avg Delay={avg_delay:.2f}ms, Avg CPU={avg_cpu:.2f}%")
-
+        
+        print(f"  → Avg E2E Delay: {avg_delay:.2f} ms  |  Avg CPU Usage: {avg_cpu:.2f}%")
+    
     plot_exp2_results(dc_counts, exp2_delays, exp2_resources)

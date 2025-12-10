@@ -1,53 +1,87 @@
+# scripts.py
+"""
+Main entry point cho DRL SFC Provisioning Project
+
+Usage:
+    python scripts.py train    # Train model
+    python scripts.py eval     # Evaluate model
+    python scripts.py demo     # Run demo tests
+"""
+
 import sys
 import argparse
 import os
 
 def run_train():
-    """Import và chạy module Training"""
-    print("\n[INFO] Initializing Training Process...")
+    """Chạy training"""
+    print("\n[INFO] Starting Training Process...")
     try:
         from runners import train
         train.main()
     except ImportError as e:
-        print(f"[ERROR] Could not import 'runners.train'. Check your folder structure. Details: {e}")
+        print(f"[ERROR] Import failed: {e}")
+        print("Make sure all dependencies are installed and folder structure is correct.")
     except Exception as e:
-        print(f"[ERROR] Runtime error in Training: {e}")
+        print(f"[ERROR] Runtime error: {e}")
+        import traceback
+        traceback.print_exc()
 
 def run_eval():
-    """Import và chạy module Evaluation (Test)"""
-    print("\n[INFO] Initializing Evaluation Process...")
+    """Chạy evaluation"""
+    print("\n[INFO] Starting Evaluation Process...")
     try:
         from runners import evaluate
         evaluate.main()
     except ImportError as e:
-        print(f"[ERROR] Could not import 'runners.evaluate'. Check your folder structure. Details: {e}")
+        print(f"[ERROR] Import failed: {e}")
+        print("Make sure all dependencies are installed and folder structure is correct.")
     except Exception as e:
-        print(f"[ERROR] Runtime error in Evaluation: {e}")
+        print(f"[ERROR] Runtime error: {e}")
+        import traceback
+        traceback.print_exc()
 
 def run_demo():
-    """Import và chạy module Demo"""
-    print("\n[INFO] Initializing Demo Mode...")
+    """Chạy demo tests"""
+    print("\n[INFO] Starting Demo & Validation Tests...")
     try:
         from runners import demo
         demo.main()
     except ImportError as e:
-        print(f"[ERROR] Could not import 'runners.demo'. Check your folder structure. Details: {e}")
+        print(f"[ERROR] Import failed: {e}")
+        print("Make sure all dependencies are installed and folder structure is correct.")
     except Exception as e:
-        print(f"[ERROR] Runtime error in Demo: {e}")
+        print(f"[ERROR] Runtime error: {e}")
+        import traceback
+        traceback.print_exc()
+
+def run_debug():
+    """Chạy debug mode"""
+    print("\n[INFO] Starting Debug Mode...")
+    try:
+        from runners import debug
+        debug.main()
+    except ImportError as e:
+        print(f"[ERROR] Import failed: {e}")
+        print("Make sure all dependencies are installed and folder structure is correct.")
+    except Exception as e:
+        print(f"[ERROR] Runtime error: {e}")
+        import traceback
+        traceback.print_exc()
 
 def interactive_menu():
-    """Hiển thị menu nếu người dùng không truyền tham số"""
+    """Menu tương tác"""
     while True:
-        print("\n" + "="*30)
-        print("   DRL SFC PROJECT MANAGER")
-        print("="*30)
-        print("1. Train Model  (runners/train.py)")
-        print("2. Evaluate     (runners/evaluate.py)")
-        print("3. Run Demo     (runners/demo.py)")
+        print("\n" + "="*60)
+        print("   DRL SFC PROVISIONING - PROJECT MANAGER")
+        print("="*60)
+        print("1. Train Model       (runners/train.py)")
+        print("2. Evaluate Model    (runners/evaluate.py)")
+        print("3. Run Demo Tests    (runners/demo.py)")
+        print("4. Debug Mode        (runners/debug.py)")
         print("0. Exit")
-        print("-" * 30)
+        print("-" * 60)
         
-        choice = input("Select an option (0-3): ").strip()
+        choice = input("Select option (0-4): ").strip()
         
         if choice == '1':
             run_train()
@@ -55,30 +89,50 @@ def interactive_menu():
             run_eval()
         elif choice == '3':
             run_demo()
+        elif choice == '4':
+            run_debug()
         elif choice == '0':
-            print("Exiting.")
+            print("\nExiting. Goodbye!")
             sys.exit(0)
         else:
-            print("Invalid selection. Please try again.")
+            print("\n[ERROR] Invalid choice. Please try again.")
 
-if __name__ == "__main__":
-    # Cấu hình Argument Parser
-    parser = argparse.ArgumentParser(description="Run DRL scripts for NFV-SFC project.")
-    parser.add_argument('mode', nargs='?', choices=['train', 'eval', 'demo'], 
-                        help="Mode to run: 'train', 'eval' (evaluate), or 'demo'")
-
-    args = parser.parse_args()
-
-    # Thêm thư mục hiện tại vào sys.path để đảm bảo python tìm thấy các packages
+def main():
+    # Add current directory to path
     sys.path.append(os.getcwd())
-
-    # Điều hướng dựa trên tham số dòng lệnh
+    
+    # Parse arguments
+    parser = argparse.ArgumentParser(
+        description="DRL SFC Provisioning Project Manager",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python scripts.py train    # Train the DQN model
+  python scripts.py eval     # Evaluate trained model
+  python scripts.py demo     # Run validation tests
+        """
+    )
+    parser.add_argument(
+        'mode', 
+        nargs='?', 
+        choices=['train', 'eval', 'demo', 'debug'],
+        help="Execution mode"
+    )
+    
+    args = parser.parse_args()
+    
+    # Execute based on mode
     if args.mode == 'train':
         run_train()
     elif args.mode == 'eval':
         run_eval()
     elif args.mode == 'demo':
         run_demo()
+    elif args.mode == 'debug':
+        run_debug()
     else:
-        # Nếu không có tham số, hiện menu
+        # No arguments: show interactive menu
         interactive_menu()
+
+if __name__ == "__main__":
+    main()
