@@ -6,6 +6,7 @@ import tensorflow as tf
 import numpy as np
 import config
 from agent.model import build_q_network
+from collections import deque
 
 class Agent:
     """DQN Agent cho SFC Provisioning"""
@@ -19,8 +20,13 @@ class Agent:
         self.optimizer = self.model.optimizer      # AdamW
         self.loss_fn = tf.keras.losses.MeanSquaredError()
 
+        self.global_replay_memory = deque(maxlen=config.MEMORY_SIZE)
+
         # Pre-allocated buffer để giảm allocate lại
         self.batch_size = config.BATCH_SIZE
+
+    def reset_global_replay_memory(self):
+        self.global_replay_memory = deque(maxlen=config.MEMORY_SIZE)
     
     def update_target_model(self):
         """Copy weights từ model sang target_model"""
@@ -100,11 +106,11 @@ class Agent:
     # -------------------------------------------------
     #  Wrapper train — chuẩn bị batch rồi gọi graph
     # -------------------------------------------------
-    def train(self, replay_memory):
-        if len(replay_memory) < self.batch_size:
+    def train(self):
+        if len(self.global_replay_memory) < self.batch_size:
             return 0.0
 
-        idx = np.random.choice(len(replay_memory), self.batch_size, replace=False)
+        idx = np.random.choice(len(self.global_replay_memory), self.batch_size, replace=False)
 
         # Prebuild numpy arrays
         state1 = []
@@ -120,7 +126,7 @@ class Agent:
         dones = []
 
         for i in idx:
-            s, a, r, ns, d = replay_memory[i]
+            s, a, r, ns, d = self.global_replay_memory[i]
             state1.append(s[0])
             state2.append(s[1])
             state3.append(s[2])

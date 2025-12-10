@@ -1,7 +1,6 @@
 # runners/train.py
 import os
 import numpy as np
-from collections import deque
 
 import config
 from environment.gym_env import Env
@@ -22,7 +21,6 @@ def main():
     agent = Agent()
     
     # Training state
-    global_replay_memory = deque(maxlen=config.MEMORY_SIZE)
     epsilon = config.EPSILON_START
     
     all_rewards = []
@@ -41,7 +39,7 @@ def main():
     print(f"  - Memory Size: {config.MEMORY_SIZE}")
     print(f"  - Epsilon: {config.EPSILON_START} → {config.EPSILON_MIN} (decay={config.EPSILON_DECAY})")
     print("="*80)
-    
+
     # Main training loop
     for update_idx in range(1, config.TRAIN_UPDATES + 1):
         print(f"\n[UPDATE {update_idx}/{config.TRAIN_UPDATES}]")
@@ -50,9 +48,11 @@ def main():
         for ep_idx in range(config.EPISODES_PER_UPDATE):
             # Run episode
             reward, ar, memory_trace = run_single_episode(env, agent, epsilon, training_mode=True)
+
+            episode_epsilon = config.EPSILON_MIN + (config.EPSILON_START - config.EPSILON_MIN) * np.exp(- env.count_step * 3 / config.DECAY_STEP)
             
             # Store transitions
-            global_replay_memory.extend(memory_trace)
+            agent.global_replay_memory.extend(memory_trace)
             current_update_rewards.append(reward)
             current_update_ars.append(ar)
             
@@ -61,17 +61,11 @@ def main():
                 epsilon *= config.EPSILON_DECAY
             
             # Progress
-            print(f"  Ep {ep_idx+1:3d}: Reward={reward:7.1f}  |  AR={ar:5.1f}%  |  ε={epsilon:.4f}", 
+            print(f"  Ep {ep_idx+1:3d}: Reward={reward:7.1f}  |  AR={ar:5.1f}%  |  ε={episode_epsilon:.4f} | total step={env.count_step}", 
                   end="\r", flush=True)
-        
+                
         print()  # New line after episodes
-        
-        # Train network
-        print(f"  Training network...", end=" ", flush=True)
-        loss = agent.train(global_replay_memory)
-        agent.update_target_model()
-        print(f"Loss={loss:.4f}")
-        
+
         # Calculate averages
         avg_reward = np.mean(current_update_rewards)
         avg_ar = np.mean(current_update_ars)

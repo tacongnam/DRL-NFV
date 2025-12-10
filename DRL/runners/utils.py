@@ -13,7 +13,7 @@ def run_single_episode(env, agent, epsilon, training_mode=True):
     Args:
         env: Environment
         agent: DQN Agent
-        epsilon: Exploration rate
+        epsilon: Exploration rate (currently not use)
         training_mode: Nếu True, lưu transitions vào memory
         
     Returns:
@@ -30,6 +30,7 @@ def run_single_episode(env, agent, epsilon, training_mode=True):
     
     while not done:
         # Select action
+        epsilon = config.EPSILON_MIN + (config.EPSILON_START - config.EPSILON_MIN) * np.exp(- env.count_step * 3 / config.DECAY_STEP)
         action = agent.get_action(state, epsilon, valid_actions_mask=action_mask)
         
         # Take step
@@ -46,9 +47,18 @@ def run_single_episode(env, agent, epsilon, training_mode=True):
         action_mask = next_action_mask
         
         # Progress indicator for testing
-        step_count += 1
-        if not training_mode and step_count % 500 == 0:
+        env.count_step += 1
+        if not training_mode and env.count_step % 500 == 0:
             print(".", end="", flush=True)
+
+        if training_mode == False and env.count_step % config.TARGET_NETWORK_UPDATE == 0:
+            print()  # New line after episodes
+        
+            # Train network
+            print(f"  Training network...", end=" ", flush=True)
+            loss = agent.train()
+            agent.update_target_model()
+            print(f"Loss={loss:.4f}")
     
     acc_ratio = info.get('acceptance_ratio', 0.0)
     

@@ -39,6 +39,8 @@ class Env(gym.Env):
         self.simulator = None
         self.controller = None
         self.priority_manager = None
+
+        self.count_step = 0
         
         # Episode state
         self.current_dc_idx = 0
