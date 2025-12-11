@@ -6,7 +6,7 @@ SPEED_OF_LIGHT = 300000.0  # km/s
 
 # --- TRAINING HYPERPARAMETERS ---
 # IMPORTANT Reduced specs
-TRAIN_UPDATES = 50             # U: Total updates
+TRAIN_UPDATES = 40             # U: Total updates
 EPISODES_PER_UPDATE = 10       # E: Episodes per update
 ACTIONS_PER_TIME_STEP = 50     # A: Actions per time step
 TIME_STEP = 1                  # T: 1ms per step

@@ -50,6 +50,8 @@ class Env(gym.Env):
     def reset(self, num_dcs=None, seed=None):
         """Reset environment"""
         super().reset(seed=seed)
+
+        self.count_step = 0
         
         # 1. Setup DCs
         n = num_dcs if num_dcs else np.random.randint(2, config.MAX_NUM_DCS + 1)

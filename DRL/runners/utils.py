@@ -48,10 +48,10 @@ def run_single_episode(env, agent, epsilon, training_mode=True):
         
         # Progress indicator for testing
         env.count_step += 1
-        if not training_mode and env.count_step % 500 == 0:
+        if training_mode == False and env.count_step % 500 == 0:
             print(".", end="", flush=True)
 
-        if training_mode == False and env.count_step % config.TARGET_NETWORK_UPDATE == 0:
+        if training_mode == True and env.count_step % config.TARGET_NETWORK_UPDATE == 0:
             print()  # New line after episodes
         
             # Train network
