@@ -11,8 +11,8 @@ EPISODES_PER_UPDATE = 10       # E: Episodes per update
 ACTIONS_PER_TIME_STEP = 100    # A: Actions per time step
 TIME_STEP = 1                  # T: 1ms per step
 TRAFFIC_GEN_INTERVAL = 5       # N: Generate every 5ms
-TRAFFIC_STOP_TIME = 100        # Generate traffic until 50ms
-MAX_SIM_TIME_PER_EPISODE = 250 # Maximum simulation time (increased for processing)
+TRAFFIC_STOP_TIME = 50         # Generate traffic until 50ms
+MAX_SIM_TIME_PER_EPISODE = 150 # Maximum simulation time (increased for processing)
 
 # --- RESOURCES ---
 DC_CPU_CYCLES = 12000  # cycles/sec
@@ -50,12 +50,12 @@ LEARNING_RATE = 0.001
 GAMMA = 0.95
 EPSILON_START = 1.0
 EPSILON_DECAY = 0.99
-DECAY_STEP = 2500000
+DECAY_STEP = 6000000
 EPSILON_MIN = 0.01
 BATCH_SIZE = 64
 MEMORY_SIZE = 50000
 
-TARGET_NETWORK_UPDATE = 30000
+TARGET_NETWORK_UPDATE = 25000
 
 # --- REWARDS ---
 REWARD_SATISFIED = 2.0
