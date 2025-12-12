@@ -1,0 +1,4 @@
+gymnasium==0.29.1
+tensorflow==2.15.0
+numpy==1.26.2
+networkx==3.2.1
