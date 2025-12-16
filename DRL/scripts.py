@@ -1,44 +1,49 @@
-# scripts.py
-"""
-Main entry point cho DRL SFC Provisioning Project
-
-Usage:
-    python scripts.py train    # Train model
-    python scripts.py eval     # Evaluate model
-    python scripts.py demo     # Run demo tests
-"""
-
 import sys
 import argparse
 import os
 
-def run_train():
+def run_train(mode='drl'):
     """Chạy training"""
-    print("\n[INFO] Starting Training Process...")
-    try:
-        from runners import train
-        train.main()
-    except ImportError as e:
-        print(f"[ERROR] Import failed: {e}")
-        print("Make sure all dependencies are installed and folder structure is correct.")
-    except Exception as e:
-        print(f"[ERROR] Runtime error: {e}")
-        import traceback
-        traceback.print_exc()
+    if mode == 'genai':
+        print("\n[INFO] Starting GenAI-DRL Training...")
+        try:
+            from runners import train_genai
+            train_genai.main()
+        except ImportError as e:
+            print(f"[ERROR] Import failed: {e}")
+    else:
+        print("\n[INFO] Starting DRL Training...")
+        try:
+            from runners import train
+            train.main()
+        except ImportError as e:
+            print(f"[ERROR] Import failed: {e}")
 
-def run_eval():
+def run_eval(mode='drl'):
     """Chạy evaluation"""
-    print("\n[INFO] Starting Evaluation Process...")
+    if mode == 'genai':
+        print("\n[INFO] Starting GenAI-DRL Evaluation...")
+        try:
+            from runners import evaluate_genai
+            evaluate_genai.main()
+        except ImportError as e:
+            print(f"[ERROR] Import failed: {e}")
+    else:
+        print("\n[INFO] Starting DRL Evaluation...")
+        try:
+            from runners import evaluate
+            evaluate.main()
+        except ImportError as e:
+            print(f"[ERROR] Import failed: {e}")
+
+def run_collect_data():
+    """Chạy data collection cho GenAI"""
+    print("\n[INFO] Starting Data Collection for GenAI...")
     try:
-        from runners import evaluate
-        evaluate.main()
+        from runners import collect_data
+        collect_data.main()
     except ImportError as e:
         print(f"[ERROR] Import failed: {e}")
-        print("Make sure all dependencies are installed and folder structure is correct.")
-    except Exception as e:
-        print(f"[ERROR] Runtime error: {e}")
-        import traceback
-        traceback.print_exc()
 
 def run_demo():
     """Chạy demo tests"""
@@ -48,11 +53,6 @@ def run_demo():
         demo.main()
     except ImportError as e:
         print(f"[ERROR] Import failed: {e}")
-        print("Make sure all dependencies are installed and folder structure is correct.")
-    except Exception as e:
-        print(f"[ERROR] Runtime error: {e}")
-        import traceback
-        traceback.print_exc()
 
 def run_debug():
     """Chạy debug mode"""
@@ -62,11 +62,6 @@ def run_debug():
         debug.main()
     except ImportError as e:
         print(f"[ERROR] Import failed: {e}")
-        print("Make sure all dependencies are installed and folder structure is correct.")
-    except Exception as e:
-        print(f"[ERROR] Runtime error: {e}")
-        import traceback
-        traceback.print_exc()
 
 def interactive_menu():
     """Menu tương tác"""
@@ -74,64 +69,85 @@ def interactive_menu():
         print("\n" + "="*60)
         print("   DRL SFC PROVISIONING - PROJECT MANAGER")
         print("="*60)
-        print("1. Train Model       (runners/train.py)")
-        print("2. Evaluate Model    (runners/evaluate.py)")
-        print("3. Run Demo Tests    (runners/demo.py)")
-        print("4. Debug Mode        (runners/debug.py)")
-        print("0. Exit")
+        print("Standard DRL:")
+        print("  1. Train DRL Model")
+        print("  2. Evaluate DRL Model")
+        print()
+        print("GenAI-DRL:")
+        print("  3. Collect GenAI Data")
+        print("  4. Train GenAI-DRL Model")
+        print("  5. Evaluate GenAI-DRL Model")
+        print()
+        print("Others:")
+        print("  6. Run Demo Tests")
+        print("  7. Debug Mode")
+        print("  0. Exit")
         print("-" * 60)
         
-        choice = input("Select option (0-4): ").strip()
+        choice = input("Select (0-7): ").strip()
         
         if choice == '1':
-            run_train()
+            run_train(mode='drl')
         elif choice == '2':
-            run_eval()
+            run_eval(mode='drl')
         elif choice == '3':
-            run_demo()
+            run_collect_data()
         elif choice == '4':
+            run_train(mode='genai')
+        elif choice == '5':
+            run_eval(mode='genai')
+        elif choice == '6':
+            run_demo()
+        elif choice == '7':
             run_debug()
         elif choice == '0':
             print("\nExiting. Goodbye!")
             sys.exit(0)
         else:
-            print("\n[ERROR] Invalid choice. Please try again.")
+            print("\n[ERROR] Invalid choice.")
 
 def main():
-    # Add current directory to path
     sys.path.append(os.getcwd())
     
-    # Parse arguments
     parser = argparse.ArgumentParser(
         description="DRL SFC Provisioning Project Manager",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python scripts.py train    # Train the DQN model
-  python scripts.py eval     # Evaluate trained model
-  python scripts.py demo     # Run validation tests
+  python scripts.py train               # Train DRL
+  python scripts.py train --mode genai  # Train GenAI-DRL
+  python scripts.py eval                # Evaluate DRL
+  python scripts.py eval --mode genai   # Evaluate GenAI-DRL
+  python scripts.py collect             # Collect data for GenAI
+  python scripts.py demo                # Run tests
         """
     )
     parser.add_argument(
-        'mode', 
+        'command', 
         nargs='?', 
-        choices=['train', 'eval', 'demo', 'debug'],
-        help="Execution mode"
+        choices=['train', 'eval', 'collect', 'demo', 'debug'],
+        help="Command to execute"
+    )
+    parser.add_argument(
+        '--mode',
+        choices=['drl', 'genai'],
+        default='drl',
+        help="Training/Evaluation mode (default: drl)"
     )
     
     args = parser.parse_args()
     
-    # Execute based on mode
-    if args.mode == 'train':
-        run_train()
-    elif args.mode == 'eval':
-        run_eval()
-    elif args.mode == 'demo':
+    if args.command == 'train':
+        run_train(mode=args.mode)
+    elif args.command == 'eval':
+        run_eval(mode=args.mode)
+    elif args.command == 'collect':
+        run_collect_data()
+    elif args.command == 'demo':
         run_demo()
-    elif args.mode == 'debug':
+    elif args.command == 'debug':
         run_debug()
     else:
-        # No arguments: show interactive menu
         interactive_menu()
 
 if __name__ == "__main__":

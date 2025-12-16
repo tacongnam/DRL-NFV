@@ -6,11 +6,6 @@ __pycache__/
 .Python
 venv/
 
-# Models
-models/
-*.h5
-*.weights.h5
-
 # Results
 *.png
 *.pdf
