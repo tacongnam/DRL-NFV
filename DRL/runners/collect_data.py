@@ -1,8 +1,8 @@
 import os
 import sys
 import numpy as np
+import time
 
-# Add parent directory
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
@@ -12,71 +12,68 @@ from environment.genai_env import GenAIEnv
 from agent.agent import Agent
 from genai.trainer import GenAITrainer
 
-def collect_data(num_episodes=100):
-    """
-    Thu thập dữ liệu để train GenAI model
+def collect_data(num_episodes=None):
+    """Optimized data collection"""
+    if num_episodes is None:
+        num_episodes = config.GENAI_DATA_EPISODES
     
-    Quy trình:
-    1. Chạy environment với random DC selection
-    2. Sử dụng pre-trained DRL agent để thực hiện actions
-    3. Thu thập DC transitions (current_state, next_state, value)
-    """
     print("\n" + "="*80)
-    print("DATA COLLECTION FOR GenAI TRAINING")
+    print("DATA COLLECTION FOR GenAI")
     print("="*80)
     
-    # Load pre-trained DRL agent
+    # Load DRL
     agent = Agent()
     weights_path = f'models/best_{config.WEIGHTS_FILE}'
     if not os.path.exists(weights_path):
         weights_path = f'models/{config.WEIGHTS_FILE}'
     
     if not os.path.exists(weights_path):
-        print(f"\n✗ No pre-trained DRL weights found!")
-        print("Please train DRL model first: python scripts.py train")
+        print(f"\n✗ No DRL weights found!")
+        print("Run: python scripts.py train")
         return
     
-    print(f"\nLoading DRL weights: {weights_path}")
+    print(f"Loading DRL: {weights_path}")
     env = GenAIEnv(genai_model=None, data_collection_mode=True)
     state, _ = env.reset()
-    agent.get_action(state, 0.0)  # Build model
+    agent.get_action(state, 0.0)
     agent.model.load_weights(weights_path)
-    print("✓ DRL model loaded")
+    print("✓ DRL loaded")
     
     # Initialize trainer
     trainer = GenAITrainer()
     
-    # Collect data
-    print(f"\nCollecting data from {num_episodes} episodes...")
-    print(f"  - Random DC selection for exploration")
-    print(f"  - Using pre-trained DRL for actions")
+    print(f"\nCollecting from {num_episodes} episodes (random DC, trained DRL)")
+    print(f"Sample interval: every {config.GENAI_SAMPLE_INTERVAL} steps")
+    
+    start_time = time.time()
     
     for ep in range(num_episodes):
-        state, _ = env.reset(num_dcs=np.random.randint(2, 7))
+        ep_start = time.time()
+        
+        state, _ = env.reset(num_dcs=np.random.randint(3, 7))
         done = False
         step_count = 0
+        ep_samples = 0
         
         while not done:
-            # Select action with low epsilon (mostly exploitation)
             mask = env._get_valid_actions_mask()
-            action = agent.get_action(state, epsilon=0.1, valid_actions_mask=mask)
+            action = agent.get_action(state, epsilon=0.05, valid_actions_mask=mask)
             
-            # Execute
             state, reward, done, _, info = env.step(action)
             step_count += 1
             
-            # Collect transitions periodically
-            if step_count % 100 == 0:
+            # Sample less frequently
+            if step_count % config.GENAI_SAMPLE_INTERVAL == 0:
                 transitions = env.get_dc_transitions()
-                
                 for dc_id, prev_state, curr_state, value in transitions:
                     trainer.collect_transition(
                         env.dcs[dc_id], 
                         env.sfc_manager, 
                         prev_state
                     )
+                    ep_samples += 1
         
-        # End of episode: collect remaining transitions
+        # End of episode
         transitions = env.get_dc_transitions()
         for dc_id, prev_state, curr_state, value in transitions:
             trainer.collect_transition(
@@ -84,63 +81,68 @@ def collect_data(num_episodes=100):
                 env.sfc_manager,
                 prev_state
             )
+            ep_samples += 1
         
-        # Progress
+        ep_time = time.time() - ep_start
         stats = trainer.get_dataset_stats()
-        print(f"Ep {ep+1}/{num_episodes}: "
-              f"VAE samples={stats['vae_samples']}, "
-              f"Value samples={stats['value_samples']}", 
-              end="\r", flush=True)
+        
+        # Log after each episode
+        print(f"Ep {ep+1:2d}/{num_episodes}: "
+              f"samples={ep_samples:3d} | "
+              f"total={stats['vae_samples']:5d} | "
+              f"time={ep_time:.1f}s")
     
-    print()  # New line
+    total_time = time.time() - start_time
     
-    # Final stats
     final_stats = trainer.get_dataset_stats()
     print(f"\n{'='*80}")
-    print(f"DATA COLLECTION COMPLETED")
+    print(f"COLLECTION COMPLETED in {total_time/60:.1f} min")
     print(f"{'='*80}")
-    print(f"  VAE dataset: {final_stats['vae_samples']} samples")
-    print(f"  Value dataset: {final_stats['value_samples']} samples")
+    print(f"  VAE samples: {final_stats['vae_samples']}")
+    print(f"  Value samples: {final_stats['value_samples']}")
+    print(f"  Avg time/episode: {total_time/num_episodes:.1f}s")
     
     return trainer
 
 def train_genai_model(trainer):
-    """Train GenAI model"""
+    """Train GenAI"""
     print(f"\n{'='*80}")
     print("TRAINING GenAI MODEL")
     print(f"{'='*80}")
     
-    # Train VAE
-    trainer.train_vae(epochs=50, batch_size=64)
+    start_time = time.time()
     
-    # Train Value Network
-    trainer.train_value_network(epochs=30, batch_size=64)
+    trainer.train_vae()
+    trainer.train_value_network()
     
-    # Save model
+    train_time = time.time() - start_time
+    
     os.makedirs('models', exist_ok=True)
     trainer.save_model('models/genai_model')
     
     print(f"\n{'='*80}")
-    print("GenAI TRAINING COMPLETED")
+    print(f"GenAI TRAINING COMPLETED in {train_time/60:.1f} min")
     print(f"{'='*80}")
 
 def main():
-    """Main pipeline"""
-    # Step 1: Collect data
-    trainer = collect_data(num_episodes=100)
+    total_start = time.time()
     
-    if trainer.get_dataset_stats()['vae_samples'] < 1000:
-        print(f"\n⚠ Warning: Dataset too small. Consider collecting more episodes.")
+    # Collect
+    trainer = collect_data()
+    
+    if trainer.get_dataset_stats()['vae_samples'] < 500:
+        print(f"\n⚠ Dataset too small, consider more episodes")
         return
     
-    # Step 2: Train GenAI
+    # Train
     train_genai_model(trainer)
     
+    total_time = time.time() - total_start
+    
     print(f"\n{'='*80}")
-    print("NEXT STEPS:")
+    print(f"TOTAL TIME: {total_time/60:.1f} min ({total_time/3600:.2f} hours)")
     print(f"{'='*80}")
-    print("1. Train with GenAI-DRL: python scripts.py train --mode genai")
-    print("2. Evaluate: python scripts.py eval --mode genai")
+    print("\nNext: python scripts.py train --mode genai")
 
 if __name__ == "__main__":
     main()
