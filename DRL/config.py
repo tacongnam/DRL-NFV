@@ -14,7 +14,7 @@ TRAFFIC_STOP_TIME = 50         # Generate traffic until 50ms
 MAX_SIM_TIME_PER_EPISODE = 150 # Maximum simulation time
 
 # --- GENAI MODE SELECTION ---
-GENAI_MODE = 'offline'  # 'offline' or 'online'
+GENAI_MODE = 'online'  # 'offline' or 'online'
 # - offline: Collect data → Train GenAI → Train DRL (4 hours)
 # - online: Train DRL + GenAI together (2.5 hours, 40% faster!)
 
