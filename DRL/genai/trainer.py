@@ -2,7 +2,6 @@ import numpy as np
 import tensorflow as tf
 from collections import deque
 import config
-from genai.model import GenAIModel
 from genai.observer import DCStateObserver
 
 class GenAITrainer:
@@ -10,7 +9,16 @@ class GenAITrainer:
     
     def __init__(self):
         state_dim = DCStateObserver.get_state_dim()
-        self.model = GenAIModel(state_dim, latent_dim=config.GENAI_LATENT_DIM)
+        
+        # Select architecture based on config
+        if config.GENAI_ARCHITECTURE == 'balanced':
+            from genai.vae_model_balance import GenAIModelBalanced
+            self.model = GenAIModelBalanced(state_dim, latent_dim=config.GENAI_LATENT_DIM)
+            print(f"Using BALANCED architecture (latent={config.GENAI_LATENT_DIM})")
+        else:
+            from genai.model import GenAIModel
+            self.model = GenAIModel(state_dim, latent_dim=config.GENAI_LATENT_DIM)
+            print(f"Using {config.GENAI_ARCHITECTURE.upper()} architecture (latent={config.GENAI_LATENT_DIM})")
         
         # Smaller buffers
         self.vae_dataset = deque(maxlen=config.GENAI_MEMORY_SIZE)

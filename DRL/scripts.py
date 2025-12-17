@@ -5,10 +5,17 @@ import os
 def run_train(mode='drl'):
     """Chạy training"""
     if mode == 'genai':
-        print("\n[INFO] Starting GenAI-DRL Training...")
+        print("\n[INFO] Starting GenAI-DRL Training (Offline)...")
         try:
             from runners import train_genai
             train_genai.main()
+        except ImportError as e:
+            print(f"[ERROR] Import failed: {e}")
+    elif mode == 'genai-online':
+        print("\n[INFO] Starting GenAI-DRL Training (Online)...")
+        try:
+            from runners import train_online_genai
+            train_online_genai.main()
         except ImportError as e:
             print(f"[ERROR] Import failed: {e}")
     else:
@@ -40,8 +47,8 @@ def run_collect_data():
     """Chạy data collection cho GenAI"""
     print("\n[INFO] Starting Data Collection for GenAI...")
     try:
-        from runners import collect_data
-        collect_data.main()
+        from runners import collect_genai_data
+        collect_genai_data.main()
     except ImportError as e:
         print(f"[ERROR] Import failed: {e}")
 
@@ -73,18 +80,21 @@ def interactive_menu():
         print("  1. Train DRL Model")
         print("  2. Evaluate DRL Model")
         print()
-        print("GenAI-DRL:")
+        print("GenAI-DRL (Offline):")
         print("  3. Collect GenAI Data")
-        print("  4. Train GenAI-DRL Model")
-        print("  5. Evaluate GenAI-DRL Model")
+        print("  4. Train GenAI-DRL (Offline)")
+        print("  5. Evaluate GenAI-DRL")
+        print()
+        print("GenAI-DRL (Online - NEW!):")
+        print("  6. Train GenAI-DRL (Online) ⚡ 40% faster")
         print()
         print("Others:")
-        print("  6. Run Demo Tests")
-        print("  7. Debug Mode")
+        print("  7. Run Demo Tests")
+        print("  8. Debug Mode")
         print("  0. Exit")
         print("-" * 60)
         
-        choice = input("Select (0-7): ").strip()
+        choice = input("Select (0-8): ").strip()
         
         if choice == '1':
             run_train(mode='drl')
@@ -97,8 +107,10 @@ def interactive_menu():
         elif choice == '5':
             run_eval(mode='genai')
         elif choice == '6':
-            run_demo()
+            run_train(mode='genai-online')
         elif choice == '7':
+            run_demo()
+        elif choice == '8':
             run_debug()
         elif choice == '0':
             print("\nExiting. Goodbye!")
@@ -130,7 +142,7 @@ Examples:
     )
     parser.add_argument(
         '--mode',
-        choices=['drl', 'genai'],
+        choices=['drl', 'genai', 'genai-online'],
         default='drl',
         help="Training/Evaluation mode (default: drl)"
     )

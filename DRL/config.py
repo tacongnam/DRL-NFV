@@ -5,7 +5,7 @@ LINK_BW_CAPACITY = 1000  # Mbps
 SPEED_OF_LIGHT = 300000.0  # km/s
 
 # --- TRAINING HYPERPARAMETERS ---
-TRAIN_UPDATES = 5              # U: Total updates
+TRAIN_UPDATES = 40             # U: Total updates
 EPISODES_PER_UPDATE = 10       # E: Episodes per update
 ACTIONS_PER_TIME_STEP = 100    # A: Actions per time step
 TIME_STEP = 1                  # T: 1ms per step
@@ -13,14 +13,61 @@ TRAFFIC_GEN_INTERVAL = 5       # N: Generate every 5ms
 TRAFFIC_STOP_TIME = 50         # Generate traffic until 50ms
 MAX_SIM_TIME_PER_EPISODE = 150 # Maximum simulation time
 
-# --- GENAI SPECIFIC PARAMS ---
-GENAI_DATA_EPISODES = 5       # Reduced from 100
-GENAI_VAE_EPOCHS = 5          # Reduced from 50
-GENAI_VALUE_EPOCHS = 5        # Reduced from 30
-GENAI_BATCH_SIZE = 64         # Increased for efficiency
-GENAI_LATENT_DIM = 16          # Reduced from 32
-GENAI_MEMORY_SIZE = 20000      # Reduced from 50000
-GENAI_SAMPLE_INTERVAL = 200    # Collect every 200 steps instead of 100
+# --- GENAI MODE SELECTION ---
+GENAI_MODE = 'offline'  # 'offline' or 'online'
+# - offline: Collect data → Train GenAI → Train DRL (4 hours)
+# - online: Train DRL + GenAI together (2.5 hours, 40% faster!)
+
+# --- GENAI ARCHITECTURE ---
+# Architecture choice: 'optimized', 'balanced', or 'full'
+GENAI_ARCHITECTURE = 'optimized'  # Change to 'balanced' if you have 5-6 hours
+
+# --- OFFLINE MODE PARAMS ---
+# Optimized (fastest - 4 hours total)
+if GENAI_ARCHITECTURE == 'optimized':
+    GENAI_DATA_EPISODES = 30
+    GENAI_VAE_EPOCHS = 20
+    GENAI_VALUE_EPOCHS = 15
+    GENAI_BATCH_SIZE = 128
+    GENAI_LATENT_DIM = 16
+    GENAI_MEMORY_SIZE = 20000
+    GENAI_SAMPLE_INTERVAL = 200
+
+# Balanced (middle ground - 5 hours total)
+elif GENAI_ARCHITECTURE == 'balanced':
+    GENAI_DATA_EPISODES = 40
+    GENAI_VAE_EPOCHS = 30
+    GENAI_VALUE_EPOCHS = 20
+    GENAI_BATCH_SIZE = 128
+    GENAI_LATENT_DIM = 24
+    GENAI_MEMORY_SIZE = 30000
+    GENAI_SAMPLE_INTERVAL = 200
+
+# Full (paper-like - 8+ hours total)
+elif GENAI_ARCHITECTURE == 'full':
+    GENAI_DATA_EPISODES = 100
+    GENAI_VAE_EPOCHS = 50
+    GENAI_VALUE_EPOCHS = 30
+    GENAI_BATCH_SIZE = 64
+    GENAI_LATENT_DIM = 32
+    GENAI_MEMORY_SIZE = 50000
+    GENAI_SAMPLE_INTERVAL = 100
+else:
+    raise ValueError(f"Invalid GENAI_ARCHITECTURE: {GENAI_ARCHITECTURE}")
+
+# --- ONLINE MODE PARAMS ---
+# Update frequencies
+DRL_UPDATE_INTERVAL = 25000      # Train DRL every N actions
+GENAI_UPDATE_INTERVAL = 100000   # Train GenAI every N actions (4x less frequent)
+
+# Progressive strategy
+GENAI_WARMUP_STEPS = 50000       # Use random DC first
+GENAI_PROGRESSIVE_STEPS = 200000 # Steps to go from 0 → 100% GenAI
+
+# Online training settings
+GENAI_MINI_EPOCHS = 5            # Mini-epochs per update (vs 20 offline)
+GENAI_BUFFER_SIZE = 20000        # DC transition buffer size
+GENAI_MIN_BUFFER = 5000          # Minimum samples before first update
 
 # --- RESOURCES ---
 DC_CPU_CYCLES = 12000  # cycles/sec
@@ -56,7 +103,7 @@ LEARNING_RATE = 0.001
 GAMMA = 0.95
 EPSILON_START = 1.0
 EPSILON_DECAY = 0.99
-DECAY_STEP = 1000000
+DECAY_STEP = 6000000
 EPSILON_MIN = 0.01
 BATCH_SIZE = 64
 MEMORY_SIZE = 50000
