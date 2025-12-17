@@ -183,7 +183,7 @@ class OnlineGenAIDRLTrainer:
             # Update DRL
             if self.step_count % config.DRL_UPDATE_INTERVAL == 0:
                 loss = self.agent.train()
-                self.agent.update_target_network()
+                self.agent.update_target_model()
                 self.drl_update_count += 1
                 print(f"\n  [DRL Update #{self.drl_update_count}] "
                       f"Step={self.step_count}, Loss={loss:.4f}")
