@@ -1,7 +1,3 @@
-# environment/priority.py
-import numpy as np
-import config
-
 class PriorityManager:
     """Quản lý priority của DC cho việc iteration"""
     

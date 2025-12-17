@@ -8,9 +8,9 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
 import config
-from environment.gym_env import Env
-from agent.agent import Agent
-from runners.utils import run_experiment_performance, run_experiment_scalability
+from envs.drl_env import Env
+from agents.dqn_agent import Agent
+from runners.experiments import run_experiment_performance, run_experiment_scalability
 
 def main():
     print("\n" + "="*80)
@@ -22,9 +22,7 @@ def main():
     agent = Agent()
     
     # Load weights
-    weights_path = f'models/best_{config.WEIGHTS_FILE}'
-    if not os.path.exists(weights_path):
-        weights_path = f'models/{config.WEIGHTS_FILE}'
+    weights_path = f'models/{config.WEIGHTS_FILE}'
     
     if os.path.exists(weights_path):
         print(f"\nLoading weights from: {weights_path}")

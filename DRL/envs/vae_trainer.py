@@ -1,27 +1,41 @@
 import numpy as np
 import tensorflow as tf
-from collections import deque
 import config
-from genai.model import GenAIModel
-from genai.observer import DCStateObserver
+from agents.vae_model import VAEModel
+from envs.observer import Observer
 
-class GenAITrainer:
+class VAETrainer:
     """Optimized training pipeline"""
     
     def __init__(self):
-        state_dim = DCStateObserver.get_state_dim()
-        self.model = GenAIModel(state_dim, latent_dim=config.GENAI_LATENT_DIM)
+        state_dim = Observer.get_state_dim()
+        self.model = VAEModel(state_dim, latent_dim=config.GENAI_LATENT_DIM)
         
         # Smaller buffers
-        self.vae_dataset = deque(maxlen=config.GENAI_MEMORY_SIZE)
-        self.value_dataset = deque(maxlen=config.GENAI_MEMORY_SIZE)
-    
-    def collect_transition(self, dc, sfc_manager, dc_prev_state):
-        current_state = DCStateObserver.get_dc_state(dc, sfc_manager)
-        value = DCStateObserver.calculate_dc_value(dc, sfc_manager, dc_prev_state)
+        self.max_size = config.GENAI_MEMORY_SIZE
+        self.ptr = 0
+        self.size = 0
         
-        self.vae_dataset.append((dc_prev_state, current_state))
-        self.value_dataset.append((dc_prev_state, value))
+        # Buffer cho VAE: (current_state, next_state)
+        self.vae_curr_states = np.zeros((self.max_size, state_dim), dtype=np.float32)
+        self.vae_next_states = np.zeros((self.max_size, state_dim), dtype=np.float32)
+        
+        # Buffer cho Value: (state, value)
+        self.val_states = np.zeros((self.max_size, state_dim), dtype=np.float32)
+        self.val_values = np.zeros((self.max_size,), dtype=np.float32)
+    
+    def collect_transition(self, prev_state, curr_state, value):
+        # Ghi đè theo vòng tròn (Circular Buffer)
+        idx = self.ptr
+        
+        self.vae_curr_states[idx] = prev_state
+        self.vae_next_states[idx] = curr_state
+        
+        self.val_states[idx] = prev_state
+        self.val_values[idx] = value
+        
+        self.ptr = (self.ptr + 1) % self.max_size
+        self.size = min(self.size + 1, self.max_size)
     
     def train_vae(self, epochs=None, batch_size=None):
         if epochs is None:
@@ -29,18 +43,18 @@ class GenAITrainer:
         if batch_size is None:
             batch_size = config.GENAI_BATCH_SIZE
             
-        if len(self.vae_dataset) < batch_size:
-            print(f"Not enough VAE data: {len(self.vae_dataset)}")
+        if self.size < batch_size:
+            print(f"Not enough VAE data: {self.size}")
             return
         
-        print(f"\nTraining VAE: {len(self.vae_dataset)} samples, {epochs} epochs")
+        print(f"\nTraining VAE: {self.size} samples, {epochs} epochs")
         
-        data = list(self.vae_dataset)
-        current_states = np.array([d[0] for d in data], dtype=np.float32)
-        next_states = np.array([d[1] for d in data], dtype=np.float32)
+        curr_data = self.vae_curr_states[:self.size]
+        next_data = self.vae_next_states[:self.size]
         
-        dataset = tf.data.Dataset.from_tensor_slices((current_states, next_states))
-        dataset = dataset.shuffle(10000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+        # Tận dụng tf.data với prefetch để pipeline GPU không bị đói
+        dataset = tf.data.Dataset.from_tensor_slices((curr_data, next_data))
+        dataset = dataset.shuffle(10000).batch(batch_size).prefetch(tf.data.AUTOTUNE) # Quan trọng
         
         for epoch in range(epochs):
             total_loss = 0.0

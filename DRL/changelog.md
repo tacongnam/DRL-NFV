@@ -55,7 +55,7 @@ Tích hợp **Variational Autoencoder (VAE)** vào hệ thống DRL để thay t
   - Output: Scalar value score
   - Architecture: FC(32) → FC(16) → Output(1)
 
-- **GenAIModel**: Wrapper quản lý toàn bộ module
+- **VAEModel**: Wrapper quản lý toàn bộ module
   - Integrated training cho VAE và Value Network
   - Loss functions:
     - VAE: Reconstruction + 0.1 * KL Divergence
@@ -75,12 +75,12 @@ Tích hợp **Variational Autoencoder (VAE)** vào hệ thống DRL để thay t
     - Factor 3: Source DC bonus
 
 #### `genai/dc_selector.py`
-- **GenAIDCSelector**: Runtime DC selection
+- **VAEDCSelector**: Runtime DC selection
   - `select_dc()`: Chọn DC có value cao nhất
   - `get_dc_ranking()`: Ranking tất cả DC theo value
 
 #### `genai/trainer.py`
-- **GenAITrainer**: Training pipeline
+- **VAETrainer**: Training pipeline
   - Dataset management: deque(maxlen=50000)
   - `collect_transition()`: Thu thập (current_state, next_state, value)
   - `train_vae()`: Train VAE với reconstruction + KL loss
@@ -90,7 +90,7 @@ Tích hợp **Variational Autoencoder (VAE)** vào hệ thống DRL để thay t
 ### 2. Environment Integration
 
 #### `environment/gym_env_genai.py`
-- **GenAIEnv**: Environment với GenAI DC selection
+- **VAEEnv**: Environment với GenAI DC selection
   - Modes:
     - `data_collection_mode=True`: Random DC selection
     - `data_collection_mode=False`: GenAI selection
@@ -112,7 +112,7 @@ Tích hợp **Variational Autoencoder (VAE)** vào hệ thống DRL để thay t
 #### `runners/train_genai.py`
 - Training GenAI-DRL:
   1. Load trained GenAI model
-  2. Initialize GenAIEnv với GenAI DC selection
+  2. Initialize VAEEnv với GenAI DC selection
   3. Train DRL với GenAI-selected DCs
   4. Save as `models/genai_{WEIGHTS_FILE}`
 
@@ -247,11 +247,11 @@ Không cần thêm dependencies mới. Sử dụng:
 
 ### Validate GenAI Module
 ```python
-from genai.vae_model import GenAIModel
+from genai.vae_model import VAEModel
 from genai.dc_state_observer import DCStateObserver
 
 state_dim = DCStateObserver.get_state_dim()
-model = GenAIModel(state_dim, latent_dim=32)
+model = VAEModel(state_dim, latent_dim=32)
 
 # Test forward pass
 import numpy as np

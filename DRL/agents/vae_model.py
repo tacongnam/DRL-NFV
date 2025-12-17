@@ -3,7 +3,6 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 import tensorflow as tf
 from keras import layers, models, optimizers
-import config
 
 class VAEEncoder(models.Model):
     """Encoder: DC_State → Latent z (Optimized)"""
@@ -55,7 +54,7 @@ class ValueNetwork(models.Model):
         return tf.squeeze(self.output_layer(x), axis=-1)
 
 
-class GenAIModel:
+class VAEModel:
     """Complete GenAI module (Optimized)"""
     
     def __init__(self, state_dim, latent_dim=16):

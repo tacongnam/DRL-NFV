@@ -1,7 +1,7 @@
-# spaces/sfc_manager.py
+# core/sfc_manager.py
 import numpy as np
 import config
-from spaces.request import SFCRequest
+from core.request import SFCRequest
 
 class SFC_Manager:
     """Quản lý tất cả SFC requests"""
@@ -68,24 +68,33 @@ class SFC_Manager:
         
         self.active_requests = still_active
 
-    def get_statistics(self):
+    def get_drop_rate(self, sfc_type):
         """
-        Tính toán statistics
+        [NEW] Tính tỷ lệ rớt gói cho một loại SFC cụ thể.
+        Được gọi bởi DRL Observer để làm input state.
         
         Returns:
-            dict: {
-                'acceptance_ratio': float,
-                'drop_ratio': float,
-                'total_generated': int,
-                'total_accepted': int,
-                'total_dropped': int,
-                'avg_e2e_delay': float
-            }
+            float: Tỷ lệ rớt (0.0 -> 1.0)
+        """
+        # Đếm số lượng request thuộc loại sfc_type trong lịch sử
+        dropped_count = sum(1 for r in self.dropped_history if r.type == sfc_type)
+        completed_count = sum(1 for r in self.completed_history if r.type == sfc_type)
+        
+        total_finished = dropped_count + completed_count
+        
+        if total_finished > 0:
+            return dropped_count / total_finished
+        return 0.0
+
+    def get_statistics(self):
+        """
+        Tính toán statistics tổng quan
         """
         total = self.req_counter
         accepted = len(self.completed_history)
         dropped = len(self.dropped_history)
         
+        # Acc Ratio tính trên tổng request đã sinh ra
         acc_ratio = (accepted / total * 100) if total > 0 else 0.0
         drop_ratio = (dropped / total * 100) if total > 0 else 0.0
         

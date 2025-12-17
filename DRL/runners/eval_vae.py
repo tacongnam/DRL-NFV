@@ -8,11 +8,11 @@ sys.path.append(parent_dir)
 
 import numpy as np
 import config
-from environment.genai_env import GenAIEnv
-from agent.agent import Agent
-from genai.model import GenAIModel
-from genai.observer import DCStateObserver
-from runners.utils import plot_exp1_results, plot_exp2_results
+from envs.vae_env import VAEEnv
+from agents.dqn_agent import Agent
+from agents.vae_model import VAEModel
+from envs.observer import Observer
+from runners.experiments import plot_exp1_results, plot_exp2_results
 
 def run_episode_eval(env, agent):
     """Run evaluation episode"""
@@ -144,8 +144,8 @@ def main():
     start_time = time.time()
     
     # Load GenAI
-    state_dim = DCStateObserver.get_state_dim()
-    genai_model = GenAIModel(state_dim, latent_dim=config.GENAI_LATENT_DIM)
+    state_dim = Observer.get_state_dim()
+    genai_model = VAEModel(state_dim, latent_dim=config.GENAI_LATENT_DIM)
     
     genai_path = 'models/genai_model'
     if os.path.exists(f'{genai_path}_encoder.weights.h5'):
@@ -156,13 +156,11 @@ def main():
         print(f"\n✗ GenAI not found!")
         return
     
-    env = GenAIEnv(genai_model=genai_model, data_collection_mode=False)
+    env = VAEEnv(genai_model=genai_model, data_collection_mode=False)
     agent = Agent()
     
     # Load DRL
-    weights_path = f'models/best_genai_{config.WEIGHTS_FILE}'
-    if not os.path.exists(weights_path):
-        weights_path = f'models/genai_{config.WEIGHTS_FILE}'
+    weights_path = f'models/genai_{config.WEIGHTS_FILE}'
     
     if os.path.exists(weights_path):
         print(f"Loading DRL: {weights_path}")

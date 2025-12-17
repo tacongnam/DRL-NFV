@@ -1,6 +1,6 @@
 # spaces/dc.py
 import config
-from spaces.vnf import VNFInstance
+from core.vnf import VNFInstance
 
 class DataCenter:
     """Đại diện cho một Data Center"""

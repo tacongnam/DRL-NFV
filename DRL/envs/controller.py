@@ -1,7 +1,6 @@
 # environment/controller.py
-import numpy as np
 import config
-from spaces.vnf import VNFInstance
+from core.vnf import VNFInstance
 
 class ActionController:
     """Controller xử lý các action từ DRL model"""

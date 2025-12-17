@@ -5,7 +5,7 @@ LINK_BW_CAPACITY = 1000  # Mbps
 SPEED_OF_LIGHT = 300000.0  # km/s
 
 # --- TRAINING HYPERPARAMETERS ---
-TRAIN_UPDATES = 5              # U: Total updates
+TRAIN_UPDATES = 1              # U: Total updates
 EPISODES_PER_UPDATE = 10       # E: Episodes per update
 ACTIONS_PER_TIME_STEP = 100    # A: Actions per time step
 TIME_STEP = 1                  # T: 1ms per step
@@ -29,21 +29,21 @@ DC_STORAGE = 2048      # GB
 
 # --- VNF & SFC SPECS ---
 VNF_SPECS = {
-    'NAT':  {'cpu': 1,  'ram': 4,  'storage': 7,  'proc_time': 0.06},
-    'FW':   {'cpu': 9,  'ram': 5,  'storage': 1,  'proc_time': 0.03},
-    'VOC':  {'cpu': 5,  'ram': 11, 'storage': 13, 'proc_time': 0.11},
-    'TM':   {'cpu': 13, 'ram': 7,  'storage': 7,  'proc_time': 0.07},
-    'WO':   {'cpu': 5,  'ram': 2,  'storage': 5,  'proc_time': 0.08},
-    'IDPS': {'cpu': 11, 'ram': 15, 'storage': 2,  'proc_time': 0.02},
+    'NAT':  {'cpu': 1,  'ram': 4,  'storage': 7,  'proc_time': 0.12},
+    'FW':   {'cpu': 9,  'ram': 5,  'storage': 1,  'proc_time': 0.06},
+    'VOC':  {'cpu': 5,  'ram': 11, 'storage': 13, 'proc_time': 0.22},
+    'TM':   {'cpu': 13, 'ram': 7,  'storage': 7,  'proc_time': 0.14},
+    'WO':   {'cpu': 5,  'ram': 2,  'storage': 5,  'proc_time': 0.16},
+    'IDPS': {'cpu': 11, 'ram': 15, 'storage': 2,  'proc_time': 0.04},
 }
 VNF_TYPES = list(VNF_SPECS.keys())  
 NUM_VNF_TYPES = len(VNF_TYPES)
 
 SFC_SPECS = {
-    'CloudGaming': {'chain': ['NAT', 'FW', 'VOC', 'WO', 'IDPS'], 'bw': 4,   'delay': 80,  'bundle': (40, 55)},
+    'CloudGaming': {'chain': ['NAT', 'FW', 'VOC', 'WO', 'IDPS'], 'bw': 4,   'delay': 80,  'bundle': (20, 22)},
     'AR':          {'chain': ['NAT', 'FW', 'TM', 'VOC', 'IDPS'], 'bw': 100, 'delay': 10,  'bundle': (1, 4)},
-    'VoIP':        {'chain': ['NAT', 'FW', 'TM', 'FW', 'NAT'],   'bw': 0.064,'delay': 100, 'bundle': (100, 200)},
-    'VideoStream': {'chain': ['NAT', 'FW', 'TM', 'VOC', 'IDPS'], 'bw': 4,   'delay': 100, 'bundle': (50, 100)},
+    'VoIP':        {'chain': ['NAT', 'FW', 'TM', 'FW', 'NAT'],   'bw': 0.064,'delay': 100, 'bundle': (50, 100)},
+    'VideoStream': {'chain': ['NAT', 'FW', 'TM', 'VOC', 'IDPS'], 'bw': 4,   'delay': 100, 'bundle': (25, 50)},
     'MIoT':        {'chain': ['NAT', 'FW', 'IDPS'],               'bw': 1,   'delay': 5,   'bundle': (10, 15)},
     'Ind4.0':      {'chain': ['NAT', 'FW'],                       'bw': 70,  'delay': 8,   'bundle': (1, 4)},
 }
@@ -56,12 +56,12 @@ LEARNING_RATE = 0.001
 GAMMA = 0.95
 EPSILON_START = 1.0
 EPSILON_DECAY = 0.99
-DECAY_STEP = 1000000
 EPSILON_MIN = 0.01
 BATCH_SIZE = 64
 MEMORY_SIZE = 50000
 
 TARGET_NETWORK_UPDATE = 25000
+TRAIN_INTERVAL = 100
 
 # --- REWARDS ---
 REWARD_SATISFIED = 2.0

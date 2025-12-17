@@ -77,7 +77,6 @@ python scripts.py demo
 python scripts.py train
 
 # Results will be saved to:
-# - models/best_sfc_dqn.weights.h5    # Best model
 # - models/sfc_dqn.weights.h5         # Final model
 # - fig/training_progress.png         # Training curves
 ```

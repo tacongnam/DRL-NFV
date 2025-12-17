@@ -1,13 +1,13 @@
 import numpy as np
-from genai.observer import DCStateObserver
+from envs.observer import Observer
 
-class GenAIDCSelector:
+class VAEDCSelector:
     """Chọn DC dựa trên GenAI model"""
     
     def __init__(self, genai_model):
         """
         Args:
-            genai_model: GenAIModel instance (trained)
+            genai_model: VAEModel instance (trained)
         """
         self.model = genai_model
     
@@ -23,7 +23,7 @@ class GenAIDCSelector:
             int: DC ID được chọn
         """
         # Get all DC states
-        dc_states = DCStateObserver.get_all_dc_states(dcs, sfc_manager)
+        dc_states = Observer.get_all_dc_states(dcs, sfc_manager)
         
         # Predict values
         values = self.model.predict_dc_values(dc_states)
@@ -40,7 +40,7 @@ class GenAIDCSelector:
         Returns:
             List[int]: DC IDs sorted by value (descending)
         """
-        dc_states = DCStateObserver.get_all_dc_states(dcs, sfc_manager)
+        dc_states = Observer.get_all_dc_states(dcs, sfc_manager)
         values = self.model.predict_dc_values(dc_states)
         
         # Sort indices by value
