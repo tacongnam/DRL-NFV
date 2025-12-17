@@ -49,12 +49,12 @@ class VAETrainer:
         
         print(f"\nTraining VAE: {self.size} samples, {epochs} epochs")
         
+        # Slicing trực tiếp từ Numpy Buffer
         curr_data = self.vae_curr_states[:self.size]
         next_data = self.vae_next_states[:self.size]
         
-        # Tận dụng tf.data với prefetch để pipeline GPU không bị đói
         dataset = tf.data.Dataset.from_tensor_slices((curr_data, next_data))
-        dataset = dataset.shuffle(10000).batch(batch_size).prefetch(tf.data.AUTOTUNE) # Quan trọng
+        dataset = dataset.shuffle(10000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
         
         for epoch in range(epochs):
             total_loss = 0.0
@@ -76,15 +76,16 @@ class VAETrainer:
         if batch_size is None:
             batch_size = config.GENAI_BATCH_SIZE
             
-        if len(self.value_dataset) < batch_size:
-            print(f"Not enough Value data: {len(self.value_dataset)}")
+        # SỬA LỖI: Dùng self.size thay vì len(dataset)
+        if self.size < batch_size:
+            print(f"Not enough Value data: {self.size}")
             return
         
-        print(f"\nTraining Value Network: {len(self.value_dataset)} samples, {epochs} epochs")
+        print(f"\nTraining Value Network: {self.size} samples, {epochs} epochs")
         
-        data = list(self.value_dataset)
-        states = np.array([d[0] for d in data], dtype=np.float32)
-        values = np.array([d[1] for d in data], dtype=np.float32)
+        # SỬA LỖI: Slicing trực tiếp từ Numpy Buffer thay vì list comprehension
+        states = self.val_states[:self.size]
+        values = self.val_values[:self.size]
         
         dataset = tf.data.Dataset.from_tensor_slices((states, values))
         dataset = dataset.shuffle(10000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
@@ -112,7 +113,8 @@ class VAETrainer:
         print(f"✓ Loaded from {path}")
     
     def get_dataset_stats(self):
+        # SỬA LỖI: Trả về self.size
         return {
-            'vae_samples': len(self.vae_dataset),
-            'value_samples': len(self.value_dataset)
+            'vae_samples': self.size,
+            'value_samples': self.size
         }

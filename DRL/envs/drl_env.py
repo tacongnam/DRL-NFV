@@ -23,16 +23,3 @@ class Env(SFCBaseEnv):
         else:
             # Fallback nếu chưa init
             self.dc_order = [dc.id for dc in self.dcs]
-
-    def _get_obs(self):
-        """
-        Override hàm của cha để lấy Tuple State cho DRL
-        thay vì Flat State cho VAE.
-        """
-        if not self.dc_order:
-            self._update_dc_order()
-            
-        curr_dc = self.dcs[self.dc_order[self.current_dc_idx]]
-        
-        # GỌI HÀM MỚI
-        return Observer.get_drl_observation(curr_dc, self.sfc_manager)

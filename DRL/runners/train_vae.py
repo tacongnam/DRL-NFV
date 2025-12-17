@@ -25,7 +25,7 @@ def main():
         genai_model.load_weights(genai_path)
     else:
         print(f"[Error] GenAI weights not found at {genai_path}!")
-        print("Please run: python runners/collect_data.py first.")
+        print("Please run: python scripts.py collect first.")
         return
 
     # 2. Setup Environment (GenAI Mode)

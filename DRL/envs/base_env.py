@@ -136,11 +136,14 @@ class SFCBaseEnv(gym.Env):
         return self._get_obs(), reward, done, False, info
 
     def _get_obs(self):
-        """Lấy observation dựa trên dc_order hiện tại"""
+        """Lấy observation dựa trên dc_order hiện tại"""    
         if not self.dc_order:
             self._update_dc_order()
+            
         curr_dc = self.dcs[self.dc_order[self.current_dc_idx]]
-        return Observer.get_dc_state(curr_dc, self.sfc_manager, None)
+        
+        # GỌI HÀM MỚI
+        return Observer.get_drl_observation(curr_dc, self.sfc_manager)
 
     def _get_valid_actions_mask(self):
         """Lấy mask dựa trên dc_order hiện tại"""

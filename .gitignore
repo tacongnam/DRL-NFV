@@ -11,6 +11,9 @@ venv/
 *.pdf
 *.log
 
+models/
+*.h5
+
 # IDE
 .vscode/
 .idea/
