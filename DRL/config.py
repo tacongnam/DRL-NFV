@@ -5,22 +5,22 @@ LINK_BW_CAPACITY = 1000  # Mbps
 SPEED_OF_LIGHT = 300000.0  # km/s
 
 # --- TRAINING HYPERPARAMETERS ---
-TRAIN_UPDATES = 30             # U: Total updates
+TRAIN_UPDATES = 40             # U: Total updates
 EPISODES_PER_UPDATE = 10       # E: Episodes per update
 ACTIONS_PER_TIME_STEP = 50     # A: Actions per time step
 TIME_STEP = 1                  # T: 1ms per step
 TRAFFIC_GEN_INTERVAL = 5       # N: Generate every 5ms
-TRAFFIC_STOP_TIME = 50         # Generate traffic until 50ms
-MAX_SIM_TIME_PER_EPISODE = 150 # Maximum simulation time
+TRAFFIC_STOP_TIME = 100         # Generate traffic until 50ms
+MAX_SIM_TIME_PER_EPISODE = 200 # Maximum simulation time
 
 # --- GENAI SPECIFIC PARAMS ---
-GENAI_DATA_EPISODES = 20       # Reduced from 100
-GENAI_VAE_EPOCHS = 20          # Reduced from 50
-GENAI_VALUE_EPOCHS = 10        # Reduced from 30
+GENAI_DATA_EPISODES = 100      # Reduced from 100
+GENAI_VAE_EPOCHS = 50          # Reduced from 50
+GENAI_VALUE_EPOCHS = 100       # Reduced from 30
 GENAI_BATCH_SIZE = 64          # Increased for efficiency
-GENAI_LATENT_DIM = 16          # Reduced from 32
-GENAI_MEMORY_SIZE = 20000      # Reduced from 50000
-GENAI_SAMPLE_INTERVAL = 200    # Collect every 200 steps instead of 100
+GENAI_LATENT_DIM = 32          # Reduced from 32
+GENAI_MEMORY_SIZE = 50000      # Reduced from 50000
+GENAI_SAMPLE_INTERVAL = 100    # Collect every 200 steps instead of 100
 
 # --- RESOURCES ---
 DC_CPU_CYCLES = 12000  # cycles/sec
@@ -61,7 +61,7 @@ BATCH_SIZE = 64
 MEMORY_SIZE = 50000
 
 TARGET_NETWORK_UPDATE = 50000
-TRAIN_INTERVAL = 200
+TRAIN_INTERVAL = 100
 
 # --- REWARDS ---
 REWARD_SATISFIED = 2.0
@@ -81,5 +81,5 @@ WEIGHTS_FILE = 'sfc_dqn.weights.h5'
 
 # Test parameters
 TEST_EPSILON = 0.0
-TEST_EPISODES = 3  # Reduced from 10
+TEST_EPISODES = 5
 TEST_FIG3_DCS = [2, 4, 6, 8]
