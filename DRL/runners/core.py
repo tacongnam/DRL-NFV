@@ -97,8 +97,8 @@ def train_agent_common(env, agent, title, save_prefix=""):
         
         if avg_ar > best_ar:
             best_ar = avg_ar
-            agent.model.save_weights(f'models/best_{save_prefix}{update_idx}_{config.WEIGHTS_FILE}')
-            print(f"  ★ Best Model Saved: models/best_{save_prefix}{update_idx}_{config.WEIGHTS_FILE} (AR={best_ar:.2f}%)")
+            agent.model.save_weights(f'models/best_{save_prefix}_{config.WEIGHTS_FILE}')
+            print(f"  ★ Best Model Saved: models/best_{save_prefix}_{config.WEIGHTS_FILE} (AR={best_ar:.2f}%)")
             
         if update_idx % 50 == 0:
             agent.model.save_weights(f'models/checkpoint_{save_prefix}{update_idx}_{config.WEIGHTS_FILE}')
