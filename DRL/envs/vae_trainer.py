@@ -1,7 +1,7 @@
 import numpy as np
 import tensorflow as tf
 import config
-from agents.vae_model import VAEModel
+from agents.vae_agent import VAEModel
 from envs.observer import Observer
 
 class VAETrainer:

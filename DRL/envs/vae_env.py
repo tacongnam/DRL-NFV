@@ -7,12 +7,12 @@ from envs.observer import Observer
 class VAEEnv(SFCBaseEnv):
     """Environment với GenAI DC selection"""
     
-    def __init__(self, genai_model=None, data_collection_mode=False):
+    def __init__(self, vae_model=None, data_collection_mode=False):
         super().__init__()
         
         # GenAI components
-        self.genai_model = genai_model
-        self.dc_selector = VAEDCSelector(genai_model) if genai_model else None
+        self.vae_model = vae_model
+        self.dc_selector = VAEDCSelector(vae_model) if vae_model else None
         self.data_collection_mode = data_collection_mode
         
         # Data collection specific

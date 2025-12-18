@@ -9,7 +9,7 @@ sys.path.append(parent_dir)
 
 from envs.drl_env import Env
 from agents.dqn_agent import Agent
-from runners.core import train_agent_common
+from runners.core import train_model_common
 
 def main():
     # 1. Setup Environment
@@ -19,7 +19,7 @@ def main():
     agent = Agent()
     
     # 3. Run Common Training Loop
-    train_agent_common(
+    train_model_common(
         env=env,
         agent=agent,
         title="Standard DRL (Priority-based)",

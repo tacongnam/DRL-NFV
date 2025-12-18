@@ -4,12 +4,12 @@ from envs.observer import Observer
 class VAEDCSelector:
     """Chọn DC dựa trên GenAI model"""
     
-    def __init__(self, genai_model):
+    def __init__(self, vae_model):
         """
         Args:
-            genai_model: VAEModel instance (trained)
+            vae_model: VAEModel instance (trained)
         """
-        self.model = genai_model
+        self.model = vae_model
     
     def select_dc(self, dcs, sfc_manager):
         """

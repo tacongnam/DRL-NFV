@@ -10,7 +10,7 @@ sys.path.append(parent_dir)
 import config
 from envs.vae_env import VAEEnv
 from agents.dqn_agent import Agent
-from agents.vae_model import VAEModel # Hoặc VAEModel
+from agents.vae_agent import VAEModel
 from envs.observer import Observer
 
 # Import các hàm experiment đã refactor
@@ -25,18 +25,18 @@ def main():
     
     # 1. Load GenAI Model
     state_dim = Observer.get_state_dim()
-    genai_model = VAEModel(state_dim, latent_dim=config.GENAI_LATENT_DIM)
+    vae_model = VAEModel(state_dim, latent_dim=config.GENAI_LATENT_DIM)
     
     genai_path = 'models/genai_model'
     if os.path.exists(f'{genai_path}_encoder.weights.h5'):
         print(f"Loading GenAI: {genai_path}")
-        genai_model.load_weights(genai_path)
+        vae_model.load_weights(genai_path)
     else:
         print(f"\n✗ GenAI not found at {genai_path}!")
         return
     
     # 2. Setup Env
-    env = VAEEnv(genai_model=genai_model, data_collection_mode=False)
+    env = VAEEnv(vae_model=vae_model, data_collection_mode=False)
     agent = Agent()
     
     # 3. Load DRL Weights (Best GenAI version)

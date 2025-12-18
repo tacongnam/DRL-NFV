@@ -29,7 +29,7 @@ def collect_data():
         return
     
     print(f"Loading DRL: {weights_path}")
-    env = VAEEnv(genai_model=None, data_collection_mode=True)
+    env = VAEEnv(vae_model=None, data_collection_mode=True)
     state, _ = env.reset()
     agent.model.load_weights(weights_path)  
     print("✓ DRL loaded")
@@ -84,7 +84,7 @@ def collect_data():
     
     return trainer
 
-def train_genai_model(trainer):
+def train_vae_model(trainer):
     """Train GenAI"""
     print(f"\n{'='*80}")
     print("TRAINING GenAI MODEL")
@@ -109,7 +109,7 @@ def main():
         return
     
     # Train
-    train_genai_model(trainer)
+    train_vae_model(trainer)
     
     print(f"\n{'='*80}")
     print("\nNext: python scripts.py train --mode genai")

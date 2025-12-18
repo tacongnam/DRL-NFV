@@ -49,7 +49,7 @@ def run_single_episode(env, agent, epsilon, training_mode=True):
     else:
         return total_reward, acc_ratio
 
-def train_agent_common(env, agent, title, save_prefix=""):
+def train_model_common(env, agent, title, save_prefix=""):
     """
     Hàm training chung
     """
