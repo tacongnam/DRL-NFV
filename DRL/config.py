@@ -7,11 +7,11 @@ SPEED_OF_LIGHT = 300000.0  # km/s
 # --- TRAINING HYPERPARAMETERS ---
 TRAIN_UPDATES = 40             # U: Total updates
 EPISODES_PER_UPDATE = 10       # E: Episodes per update
-ACTIONS_PER_TIME_STEP = 50     # A: Actions per time step
+ACTIONS_PER_TIME_STEP = 100    # A: Actions per time step
 TIME_STEP = 1                  # T: 1ms per step
 TRAFFIC_GEN_INTERVAL = 5       # N: Generate every 5ms
-TRAFFIC_STOP_TIME = 100         # Generate traffic until 50ms
-MAX_SIM_TIME_PER_EPISODE = 200 # Maximum simulation time
+TRAFFIC_STOP_TIME = 50         # Generate traffic until 50ms
+MAX_SIM_TIME_PER_EPISODE = 150 # Maximum simulation time
 
 # --- GENAI SPECIFIC PARAMS ---
 GENAI_DATA_EPISODES = 100      # Reduced from 100
@@ -29,21 +29,21 @@ DC_STORAGE = 2048      # GB
 
 # --- VNF & SFC SPECS ---
 VNF_SPECS = {
-    'NAT':  {'cpu': 1,  'ram': 4,  'storage': 7,  'proc_time': 0.12},
-    'FW':   {'cpu': 9,  'ram': 5,  'storage': 1,  'proc_time': 0.06},
-    'VOC':  {'cpu': 5,  'ram': 11, 'storage': 13, 'proc_time': 0.22},
-    'TM':   {'cpu': 13, 'ram': 7,  'storage': 7,  'proc_time': 0.14},
-    'WO':   {'cpu': 5,  'ram': 2,  'storage': 5,  'proc_time': 0.16},
-    'IDPS': {'cpu': 11, 'ram': 15, 'storage': 2,  'proc_time': 0.04},
+    'NAT':  {'cpu': 1,  'ram': 4,  'storage': 7,  'proc_time': 0.06},
+    'FW':   {'cpu': 9,  'ram': 5,  'storage': 1,  'proc_time': 0.03},
+    'VOC':  {'cpu': 5,  'ram': 11, 'storage': 13, 'proc_time': 0.11},
+    'TM':   {'cpu': 13, 'ram': 7,  'storage': 7,  'proc_time': 0.07},
+    'WO':   {'cpu': 5,  'ram': 2,  'storage': 5,  'proc_time': 0.08},
+    'IDPS': {'cpu': 11, 'ram': 15, 'storage': 2,  'proc_time': 0.02},
 }
 VNF_TYPES = list(VNF_SPECS.keys())  
 NUM_VNF_TYPES = len(VNF_TYPES)
 
 SFC_SPECS = {
-    'CloudGaming': {'chain': ['NAT', 'FW', 'VOC', 'WO', 'IDPS'], 'bw': 4,   'delay': 80,  'bundle': (20, 22)},
+    'CloudGaming': {'chain': ['NAT', 'FW', 'VOC', 'WO', 'IDPS'], 'bw': 4,   'delay': 80,  'bundle': (40, 50)},
     'AR':          {'chain': ['NAT', 'FW', 'TM', 'VOC', 'IDPS'], 'bw': 100, 'delay': 10,  'bundle': (1, 4)},
-    'VoIP':        {'chain': ['NAT', 'FW', 'TM', 'FW', 'NAT'],   'bw': 0.064,'delay': 100, 'bundle': (50, 100)},
-    'VideoStream': {'chain': ['NAT', 'FW', 'TM', 'VOC', 'IDPS'], 'bw': 4,   'delay': 100, 'bundle': (25, 50)},
+    'VoIP':        {'chain': ['NAT', 'FW', 'TM', 'FW', 'NAT'],   'bw': 0.064,'delay': 100, 'bundle': (100, 200)},
+    'VideoStream': {'chain': ['NAT', 'FW', 'TM', 'VOC', 'IDPS'], 'bw': 4,   'delay': 100, 'bundle': (50, 100)},
     'MIoT':        {'chain': ['NAT', 'FW', 'IDPS'],               'bw': 1,   'delay': 5,   'bundle': (10, 15)},
     'Ind4.0':      {'chain': ['NAT', 'FW'],                       'bw': 70,  'delay': 8,   'bundle': (1, 4)},
 }
