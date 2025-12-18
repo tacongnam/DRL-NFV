@@ -6,7 +6,7 @@ SPEED_OF_LIGHT = 300000.0  # km/s
 
 # --- TRAINING HYPERPARAMETERS ---
 TRAIN_UPDATES = 40             # U: Total updates
-EPISODES_PER_UPDATE = 10       # E: Episodes per update
+EPISODES_PER_UPDATE = 15       # E: Episodes per update
 ACTIONS_PER_TIME_STEP = 100    # A: Actions per time step
 TIME_STEP = 1                  # T: 1ms per step
 TRAFFIC_GEN_INTERVAL = 5       # N: Generate every 5ms

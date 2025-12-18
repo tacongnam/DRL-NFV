@@ -19,7 +19,11 @@ def collect_data():
     
     # Load DRL
     agent = Agent()
-    weights_path = f'models/{config.WEIGHTS_FILE}'     
+
+    weights_path = f'models/best_{config.WEIGHTS_FILE}'
+    if not os.path.exists(weights_path):
+         weights_path = f'models/{config.WEIGHTS_FILE}'
+
     if not os.path.exists(weights_path):
         print(f"\n✗ No DRL weights found!\nRun: python scripts.py train")
         return

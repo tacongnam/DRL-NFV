@@ -79,9 +79,6 @@ def train_agent_common(env, agent, title, save_prefix=""):
             agent.global_replay_memory.extend(memory_trace)
             current_update_rewards.append(reward)
             current_update_ars.append(ar)
-            
-            if epsilon > config.EPSILON_MIN:
-                epsilon *= config.EPSILON_DECAY
                 
             print(f"  Ep {ep_idx+1:3d}: R={reward:6.1f} | AR={ar:5.1f}% | ε={epsilon:.4f}", end="\r", flush=True)
         
@@ -100,10 +97,12 @@ def train_agent_common(env, agent, title, save_prefix=""):
         
         if avg_ar > best_ar:
             best_ar = avg_ar
-            print(f"  ★ Best Model (AR={best_ar:.2f}%)")
+            agent.model.save_weights(f'models/best_{save_prefix}{update_idx}_{config.WEIGHTS_FILE}')
+            print(f"  ★ Best Model Saved: models/best_{save_prefix}{update_idx}_{config.WEIGHTS_FILE} (AR={best_ar:.2f}%)")
             
         if update_idx % 50 == 0:
             agent.model.save_weights(f'models/checkpoint_{save_prefix}{update_idx}_{config.WEIGHTS_FILE}')
+            print(f"  💾 Checkpoint saved at update {update_idx}")
 
     final_path = f'models/{save_prefix}{config.WEIGHTS_FILE}'
     agent.model.save_weights(final_path)
