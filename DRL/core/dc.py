@@ -1,15 +1,20 @@
 # spaces/dc.py
-import config
-from core.vnf import VNFInstance
+from DRL import config
+
+from DRL.core.vnf import VNFInstance
 
 class DataCenter:
     """Đại diện cho một Data Center"""
     
-    def __init__(self, dc_id):
+    def __init__(self, dc_id, cpu=None, ram=None, storage=None, delay=None, cost_c=None, cost_h=None, cost_r=None):
         self.id = dc_id
-        self.cpu = config.DC_CPU_CYCLES
-        self.ram = config.DC_RAM
-        self.storage = config.DC_STORAGE
+        self.cpu = cpu if cpu is not None else config.DC_CPU_CYCLES
+        self.ram = ram if ram is not None else config.DC_RAM
+        self.storage = storage if storage is not None else config.DC_STORAGE
+        self.delay = delay
+        self.cost_c = cost_c
+        self.cost_h = cost_h
+        self.cost_r = cost_r
         self.installed_vnfs = []  # List of VNFInstance
         
     def has_resources(self, vnf_type):

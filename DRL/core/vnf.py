@@ -1,5 +1,5 @@
 # spaces/vnf.py
-import config
+from DRL import config
 
 class VNFInstance:
     """Đại diện cho một VNF instance đã được cài đặt tại DC"""
