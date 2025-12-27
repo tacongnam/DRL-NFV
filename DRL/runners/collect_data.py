@@ -6,10 +6,10 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
-import config
-from envs.vae_env import VAEEnv
-from agents.dqn_agent import Agent
-from envs.vae_trainer import VAETrainer
+from DRL import config
+from DRL.envs.vae_env import VAEEnv
+from DRL.agents.dqn_agent import Agent
+from DRL.envs.vae_trainer import VAETrainer
 
 def collect_data():
     """Optimized data collection"""    

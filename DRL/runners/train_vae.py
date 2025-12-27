@@ -7,12 +7,12 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
 
-import config
-from envs.vae_env import VAEEnv
-from agents.dqn_agent import Agent
-from agents.vae_agent import VAEModel
-from envs.observer import Observer
-from runners.core import train_model_common
+from DRL import config
+from DRL.envs.vae_env import VAEEnv
+from DRL.agents.dqn_agent import Agent
+from DRL.agents.vae_agent import VAEModel
+from DRL.envs.observer import Observer
+from DRL.runners.core import train_model_common
 
 def main():
     # 1. Load Pre-trained GenAI Model

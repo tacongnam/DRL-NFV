@@ -1,6 +1,6 @@
 # environment/utils.py
 import numpy as np
-import config
+from DRL import config
 
 def get_valid_actions_mask(curr_dc, active_requests):
     """

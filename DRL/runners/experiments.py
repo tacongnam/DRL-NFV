@@ -1,8 +1,8 @@
 # runners/experiments.py
 import numpy as np
-import config
-from runners.core import run_single_episode
-from runners.visualization import plot_exp1_results, plot_exp2_results
+from DRL import config
+from DRL.runners.core import run_single_episode
+from DRL.runners.visualization import plot_exp1_results, plot_exp2_results
 
 def run_experiment_performance(env, agent, episodes=10, file_prefix=""):
     """

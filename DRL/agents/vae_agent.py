@@ -3,7 +3,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 import tensorflow as tf
 from keras import layers, models, optimizers
-from agents.vae_model import VAEEncoder, VAEDecoder, ValueNetwork
+from DRL.agents.vae_model import VAEEncoder, VAEDecoder, ValueNetwork
 
 class VAEModel:
     """Complete GenAI module with denormalization support"""

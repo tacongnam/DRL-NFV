@@ -28,17 +28,41 @@ DC_RAM = 256           # GB
 DC_STORAGE = 2048      # GB
 
 # --- VNF & SFC SPECS ---
+# Default VNF specs (will be overridden by data from JSON via get_F)
+# Structure: key = VNF type index (int), value = dict with cpu, ram, storage, startup_time
+# startup_time: dict mapping DC node id -> startup time on that DC
+# Processing time = startup_time + DC delay
 VNF_SPECS = {
-    'NAT':  {'cpu': 1,  'ram': 4,  'storage': 7,  'proc_time': 0.06},
-    'FW':   {'cpu': 9,  'ram': 5,  'storage': 1,  'proc_time': 0.03},
-    'VOC':  {'cpu': 5,  'ram': 11, 'storage': 13, 'proc_time': 0.11},
-    'TM':   {'cpu': 13, 'ram': 7,  'storage': 7,  'proc_time': 0.07},
-    'WO':   {'cpu': 5,  'ram': 2,  'storage': 5,  'proc_time': 0.08},
-    'IDPS': {'cpu': 11, 'ram': 15, 'storage': 2,  'proc_time': 0.02},
+    0: {'cpu': 1,  'ram': 4,  'storage': 7,  'startup_time': {}},  # NAT
+    1: {'cpu': 9,  'ram': 5,  'storage': 1,  'startup_time': {}},  # FW
+    2: {'cpu': 5,  'ram': 11, 'storage': 13, 'startup_time': {}},  # VOC
+    3: {'cpu': 13, 'ram': 7,  'storage': 7,  'startup_time': {}},  # TM
+    4: {'cpu': 5,  'ram': 2,  'storage': 5,  'startup_time': {}},  # WO
+    5: {'cpu': 11, 'ram': 15, 'storage': 2,  'startup_time': {}},  # IDPS
 }
+
+# Mapping from index to VNF type name (for backward compatibility)
+VNF_TYPE_NAMES = {0: 'NAT', 1: 'FW', 2: 'VOC', 3: 'TM', 4: 'WO', 5: 'IDPS'}
 VNF_TYPES = list(VNF_SPECS.keys())  
 NUM_VNF_TYPES = len(VNF_TYPES)
 
+def update_vnf_specs(vnf_specs_from_data):
+    """
+    Update VNF_SPECS with data parsed from JSON file.
+    
+    Args:
+        vnf_specs_from_data: dict from Read_data.get_F() containing:
+            - key: VNF type index (int)
+            - value: dict with 'cpu', 'ram', 'storage', 'startup_time'
+    """
+    global VNF_SPECS, VNF_TYPES, NUM_VNF_TYPES
+    VNF_SPECS = vnf_specs_from_data
+    VNF_TYPES = list(VNF_SPECS.keys())
+    NUM_VNF_TYPES = len(VNF_TYPES)
+
+# DEPRECATED: SFC_SPECS is no longer used. SFC requests are loaded from data via get_R().
+# Each request contains its own vnf_chain, bandwidth, and max_delay.
+# Kept here for backward compatibility with old code that may reference it.
 SFC_SPECS = {
     'CloudGaming': {'chain': ['NAT', 'FW', 'VOC', 'WO', 'IDPS'], 'bw': 4,   'delay': 80,  'bundle': (40, 50)},
     'AR':          {'chain': ['NAT', 'FW', 'TM', 'VOC', 'IDPS'], 'bw': 100, 'delay': 10,  'bundle': (1, 4)},

@@ -3,7 +3,7 @@ import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 from keras import layers, models, optimizers
-import config
+from DRL import config
 
 def build_q_network():
     """

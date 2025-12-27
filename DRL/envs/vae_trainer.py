@@ -1,8 +1,8 @@
 import numpy as np
 import tensorflow as tf
-import config
-from agents.vae_agent import VAEModel
-from envs.observer import Observer
+from DRL import config
+from DRL.agents.vae_agent import VAEModel
+from DRL.envs.observer import Observer
 
 class VAETrainer:
     """Optimized training pipeline"""

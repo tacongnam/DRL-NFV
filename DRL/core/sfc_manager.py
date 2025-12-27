@@ -1,61 +1,78 @@
 # core/sfc_manager.py
 import numpy as np
-import config
-from core.request import SFCRequest
+from DRL import config
+from DRL.core.request import SFCRequest
 
 class SFC_Manager:
-    """Quản lý tất cả SFC requests"""
+    """Manages all SFC requests loaded from data"""
     
     def __init__(self):
+        self.all_requests = []  # All requests loaded from data
         self.active_requests = []
         self.completed_history = []
         self.dropped_history = []
-        self.req_counter = 0
+        self.current_time = 0  # Current simulation time (ms)
 
-    def reset_history(self):
-        """Reset về trạng thái ban đầu cho episode mới"""
-        self.active_requests = []
-        self.completed_history = []
-        self.dropped_history = []
-        self.req_counter = 0
-
-    def generate_requests(self, time_step, num_dcs):
+    def load_requests(self, request_data_list):
         """
-        Sinh request bundles theo specification
+        Load requests from parsed data (from get_R).
         
         Args:
-            time_step: Thời điểm hiện tại (ms)
-            num_dcs: Số lượng DC trong mạng
+            request_data_list: List of dicts from Read_data.get_R(), each containing:
+                - 'id': Request ID
+                - 'arrival_time': Arrival time (ms)
+                - 'source': Source node ID
+                - 'destination': Destination node ID
+                - 'vnf_chain': List of VNF type indices
+                - 'bandwidth': Bandwidth required
+                - 'max_delay': Maximum delay allowed (ms)
+        """
+        self.all_requests = []
+        
+        # Sort by arrival time
+        sorted_data = sorted(request_data_list, key=lambda x: x['arrival_time'])
+        
+        for req_data in sorted_data:
+            req = SFCRequest(
+                req_id=req_data['id'],
+                vnf_chain=req_data['vnf_chain'],
+                source=req_data['source'],
+                destination=req_data['destination'],
+                arrival_time=req_data['arrival_time'],
+                bandwidth=req_data['bandwidth'],
+                max_delay=req_data['max_delay']
+            )
+            self.all_requests.append(req)
+
+    def reset_history(self):
+        """Reset to initial state for new episode"""
+        self.active_requests = []
+        self.completed_history = []
+        self.dropped_history = []
+        self.current_time = 0
+
+    def activate_requests_at_time(self, time_step):
+        """
+        Activate requests that arrive at current time step.
+        
+        Args:
+            time_step: Current simulation time (ms)
             
         Returns:
-            Số lượng request được sinh ra
+            Number of newly activated requests
         """
-        generated_count = 0
+        self.current_time = time_step
+        activated_count = 0
         
-        for sfc_type in config.SFC_TYPES:
-            # Random để quyết định có sinh request bundle này không
-            if np.random.rand() < 0.3:  # 30% probability
-                bundle_min, bundle_max = config.SFC_SPECS[sfc_type]['bundle']
-                count = np.random.randint(bundle_min, bundle_max + 1)
-                
-                for _ in range(count):
-                    # Chọn source và destination ngẫu nhiên (khác nhau)
-                    src = np.random.randint(0, num_dcs)
-                    dst = np.random.randint(0, num_dcs)
-                    
-                    # Đảm bảo src != dst
-                    while dst == src:
-                        dst = np.random.randint(0, num_dcs)
-                    
-                    req = SFCRequest(self.req_counter, sfc_type, src, dst, time_step)
-                    self.active_requests.append(req)
-                    self.req_counter += 1
-                    generated_count += 1
+        for req in self.all_requests:
+            if req.arrival_time == time_step:
+                self.active_requests.append(req)
+                activated_count += 1
         
-        return generated_count
+        return activated_count
 
     def clean_requests(self):
-        """Di chuyển các request completed/dropped vào history"""
+        """Move completed/dropped requests to history"""
         still_active = []
         
         for req in self.active_requests:
@@ -68,37 +85,19 @@ class SFC_Manager:
         
         self.active_requests = still_active
 
-    def get_drop_rate(self, sfc_type):
-        """
-        [NEW] Tính tỷ lệ rớt gói cho một loại SFC cụ thể.
-        Được gọi bởi DRL Observer để làm input state.
-        
-        Returns:
-            float: Tỷ lệ rớt (0.0 -> 1.0)
-        """
-        # Đếm số lượng request thuộc loại sfc_type trong lịch sử
-        dropped_count = sum(1 for r in self.dropped_history if r.type == sfc_type)
-        completed_count = sum(1 for r in self.completed_history if r.type == sfc_type)
-        
-        total_finished = dropped_count + completed_count
-        
-        if total_finished > 0:
-            return dropped_count / total_finished
-        return 0.0
-
     def get_statistics(self):
         """
-        Tính toán statistics tổng quan
+        Calculate overall statistics.
         """
-        total = self.req_counter
+        total = len(self.all_requests)
         accepted = len(self.completed_history)
         dropped = len(self.dropped_history)
         
-        # Acc Ratio tính trên tổng request đã sinh ra
+        # Acceptance ratio based on total requests
         acc_ratio = (accepted / total * 100) if total > 0 else 0.0
         drop_ratio = (dropped / total * 100) if total > 0 else 0.0
         
-        # Tính avg E2E delay cho các request đã hoàn thành
+        # Calculate avg E2E delay for completed requests
         avg_e2e = 0.0
         if self.completed_history:
             avg_e2e = np.mean([r.get_total_e2e_delay() for r in self.completed_history])

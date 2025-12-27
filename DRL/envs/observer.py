@@ -1,5 +1,5 @@
 import numpy as np
-import config
+from DRL import config
 
 class Observer:
     """
@@ -202,32 +202,46 @@ class Observer:
         
         s1 = np.concatenate([res_state, installed_counts, idle_counts], dtype=np.float32)
 
-        # --- S2: DC-SFC State ---
+        # --- S2: DC-Request State (Simplified without SFC types) ---
+        # For each VNF type, count how many requests need it at this DC
         s2_list = []
-        for sfc_type in config.SFC_TYPES:
-            # 1. Source count
-            type_count = sum(1 for r in active_reqs if r.type == sfc_type and r.source == dc.id)
-            s2_list.append(min(type_count, 1.0))
-            
-            # 2. VNF Availability (Dummy/Placeholder)
-            # Cần logic check xem DC có VNF cho loại SFC này không
-            avail_vector = np.zeros(2 * config.NUM_VNF_TYPES, dtype=np.float32)
-            s2_list.extend(avail_vector)
-        s2 = np.array(s2_list, dtype=np.float32)
+        for vnf_type in config.VNF_TYPES:
+            # Count requests that need this VNF type and originate from this DC
+            type_count = sum(1 for r in active_reqs 
+                           if r.source == dc.id and vnf_type in r.chain)
+            s2_list.append(min(type_count / 10.0, 1.0))
+        
+        # Pad to match expected size (originally NUM_SFC_TYPES * (1 + 2*NUM_VNF_TYPES))
+        # Simplify to just NUM_VNF_TYPES features
+        while len(s2_list) < config.NUM_SFC_TYPES * (1 + 2 * config.NUM_VNF_TYPES):
+            s2_list.append(0.0)
+        
+        s2 = np.array(s2_list[:config.NUM_SFC_TYPES * (1 + 2 * config.NUM_VNF_TYPES)], dtype=np.float32)
 
-        # --- S3: Global SFC State ---
+        # --- S3: Global Request State (Simplified) ---
         s3_list = []
-        for sfc_type in config.SFC_TYPES:
-            reqs = [r for r in active_reqs if r.type == sfc_type]
-            count = len(reqs) / 50.0
-            avg_rem = np.mean([r.get_remaining_time() for r in reqs]) / 100.0 if reqs else 0
-            avg_bw = np.mean([r.specs['bw'] for r in reqs]) / 1000.0 if reqs else 0
-            dropped = sfc_manager.get_drop_rate(sfc_type)
+        
+        # Overall statistics
+        total_count = len(active_reqs) / 50.0
+        avg_rem = np.mean([r.get_remaining_time() for r in active_reqs]) / 100.0 if active_reqs else 0
+        avg_bw = np.mean([r.bandwidth for r in active_reqs]) / 1000.0 if active_reqs else 0
+        
+        # Calculate drop rate (overall, not per type)
+        total_finished = len(sfc_manager.completed_history) + len(sfc_manager.dropped_history)
+        dropped_rate = len(sfc_manager.dropped_history) / total_finished if total_finished > 0 else 0.0
+        
+        # Per VNF type demand
+        vnf_demand = np.zeros(config.NUM_VNF_TYPES, dtype=np.float32)
+        for req in active_reqs:
+            for vnf_type in req.chain:
+                vnf_demand[vnf_type] += 1
+        vnf_demand /= max(1, len(active_reqs))
+        
+        # Repeat pattern to match expected size
+        for _ in range(config.NUM_SFC_TYPES):
+            s3_list.extend([total_count, avg_rem, avg_bw, dropped_rate])
+            s3_list.extend(vnf_demand)
             
-            s3_list.extend([count, avg_rem, avg_bw, dropped])
-            # Demand placeholder
-            s3_list.extend(np.zeros(config.NUM_VNF_TYPES, dtype=np.float32))
-            
-        s3 = np.array(s3_list, dtype=np.float32)
+        s3 = np.array(s3_list[:config.NUM_SFC_TYPES * (4 + config.NUM_VNF_TYPES)], dtype=np.float32)
 
         return (s1, s2, s3)

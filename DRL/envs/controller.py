@@ -1,9 +1,9 @@
 # environment/controller.py
-import config
-from core.vnf import VNFInstance
+from DRL import config
+from DRL.core.vnf import VNFInstance
 
 class ActionController:
-    """Controller xử lý các action từ DRL model"""
+    """Controller to handle actions from DRL model"""
     
     def __init__(self, sfc_manager, topology_manager):
         self.manager = sfc_manager
@@ -13,11 +13,11 @@ class ActionController:
 
     def execute_action(self, action, curr_dc):
         """
-        Thực thi action
+        Execute action.
         
         Args:
             action: Action ID (0: Wait, 1-N: Uninstall, N+1-2N: Alloc)
-            curr_dc: DataCenter hiện tại
+            curr_dc: Current DataCenter
             
         Returns:
             (reward, is_sfc_completed)
@@ -26,104 +26,105 @@ class ActionController:
         if action == 0:
             return config.REWARD_WAIT, False
         
-        vnf_idx = (action - 1) % config.NUM_VNF_TYPES
-        vnf_name = config.VNF_TYPES[vnf_idx]
+        vnf_type_idx = (action - 1) % config.NUM_VNF_TYPES
         is_alloc = action > config.NUM_VNF_TYPES
         
         if is_alloc:
-            return self._handle_allocation(curr_dc, vnf_name)
+            return self._handle_allocation(curr_dc, vnf_type_idx)
         else:
-            return self._handle_uninstall(curr_dc, vnf_name)
+            return self._handle_uninstall(curr_dc, vnf_type_idx)
 
-    def _handle_allocation(self, dc, vnf_name):
-        """Xử lý action Allocation"""
-        # 1. Tìm request có priority cao nhất cần VNF này
+    def _handle_allocation(self, dc, vnf_type):
+        """Handle Allocation action"""
+        # 1. Find highest priority request that needs this VNF
         candidates = []
         for req in self.manager.active_requests:
-            if not req.is_completed and not req.is_dropped and req.get_next_vnf() == vnf_name:
+            if not req.is_completed and not req.is_dropped and req.get_next_vnf() == vnf_type:
                 priority = self._calculate_vnf_priority(req, dc.id)
                 candidates.append((priority, req))
         
         if not candidates:
-            # Không có request nào cần VNF này
+            # No request needs this VNF
             return config.REWARD_INVALID, False
         
-        # Sort theo priority giảm dần
+        # Sort by priority descending
         candidates.sort(key=lambda x: x[0], reverse=True)
         best_req = candidates[0][1]
         
-        # 2. Tìm hoặc tạo VNF instance
-        vnf_instance = dc.get_idle_vnf(vnf_name)
+        # 2. Find or create VNF instance
+        vnf_instance = dc.get_idle_vnf(vnf_type)
         
         if vnf_instance is None:
-            # Cần cài đặt VNF mới
-            if not dc.has_resources(vnf_name):
+            # Need to install new VNF
+            if not dc.has_resources(vnf_type):
                 return config.REWARD_INVALID, False
             
-            # Tiêu thụ tài nguyên và tạo VNF mới
-            dc.consume_resources(vnf_name)
-            vnf_instance = VNFInstance(vnf_name, dc.id)
+            # Consume resources and create new VNF
+            dc.consume_resources(vnf_type)
+            vnf_instance = VNFInstance(vnf_type, dc.id)
             dc.installed_vnfs.append(vnf_instance)
         
-        # 3. Tính delay
+        # 3. Calculate delays
         prop_delay = 0.0
         last_dc = best_req.get_last_placed_dc()
         if last_dc is not None and last_dc != dc.id:
             prop_delay = self.topology.get_propagation_delay(last_dc, dc.id)
         
-        # Processing time từ spec (đơn vị: ms)
-        proc_time = config.VNF_SPECS[vnf_name]['proc_time']
+        # Processing time = startup_time + dc.delay (calculated in VNF.assign)
+        # DC delay
+        dc_delay = dc.delay if dc.delay is not None else 0.0
         waiting_time = 0.0
         
-        # 4. Assign VNF với processing time
-        vnf_instance.assign(best_req.id, proc_time, waiting_time)
+        # 4. Assign VNF with dc_delay (VNF will calculate startup_time + dc_delay)
+        vnf_instance.assign(best_req.id, dc_delay, waiting_time)
         
-        # 5. Advance chain (lưu lại delay info và VNF instance)
-        total_proc_delay = proc_time + waiting_time
+        # 5. Advance chain (save delay info and VNF instance)
+        # Get actual processing time from VNF instance
+        total_proc_delay = vnf_instance.get_processing_time(dc_delay)
         best_req.advance_chain(dc.id, prop_delay, total_proc_delay, vnf_instance)
         
-        # 6. Kiểm tra hoàn thành (check sau khi advance)
+        # 6. Check completion (check after advance)
         best_req.check_completion()
         
         if best_req.is_completed:
             self.accepted_count += 1
             return config.REWARD_SATISFIED, True
         
-        # Partial reward cho việc tiến bộ trong chain
+        # Partial reward for progressing in chain
         return config.REWARD_SATISFIED / 2.0, False
 
-    def _handle_uninstall(self, dc, vnf_name):
-        """Xử lý action Uninstall"""
-        # Kiểm tra xem VNF này có được cần bởi request nào không
-        is_needed = any(r.get_next_vnf() == vnf_name for r in self.manager.active_requests)
+    def _handle_uninstall(self, dc, vnf_type):
+        """Handle Uninstall action"""
+        # Check if this VNF is needed by any request
+        is_needed = any(r.get_next_vnf() == vnf_type for r in self.manager.active_requests)
         
         if is_needed:
-            # VNF đang cần cho request trong tương lai
+            # VNF is needed for future requests
             return config.REWARD_UNINSTALL_NEEDED, False
         
-        # Kiểm tra xem có VNF idle để uninstall không
+        # Check if there's an idle VNF to uninstall
         vnf_to_remove = None
         for vnf in dc.installed_vnfs:
-            if vnf.vnf_type == vnf_name and vnf.is_idle():
+            if vnf.vnf_type == vnf_type and vnf.is_idle():
                 vnf_to_remove = vnf
                 break
         
         if vnf_to_remove:
             dc.installed_vnfs.remove(vnf_to_remove)
-            dc.release_resources(vnf_name)
+            dc.release_resources(vnf_type)
             return 0.0, False  # Neutral reward
         
-        # Không thể uninstall (VNF đang busy hoặc không tồn tại)
+        # Cannot uninstall (VNF busy or doesn't exist)
         return config.REWARD_INVALID, False
 
     def _calculate_vnf_priority(self, req, dc_id):
         """
-        Tính priority của VNF để chọn request phù hợp nhất
+        Calculate VNF priority to select most suitable request.
         
         P = P1 + P2 + P3
-        - P1: elapsed_time - max_delay (càng gần deadline càng cao)
-        - P2: Affinity (VNF trước đó có ở cùng DC không)
-        - P3: Urgency (nếu remaining time < threshold)
+        - P1: elapsed_time - max_delay (closer to deadline = higher priority)
+        - P2: Affinity (is previous VNF in same DC?)
+        - P3: Urgency (if remaining time < threshold)
         """
         # P1: Time priority
         p1 = req.elapsed_time - req.max_delay

@@ -1,5 +1,5 @@
 import numpy as np
-import config
+from DRL import config
 from envs.base_env import SFCBaseEnv
 from envs.vae_selector import VAEDCSelector
 from envs.observer import Observer

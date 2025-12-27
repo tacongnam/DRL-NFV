@@ -4,8 +4,8 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 import tensorflow as tf
 import numpy as np
-import config
-from agents.dqn_model import build_q_network
+from DRL import config
+from DRL.agents.dqn_model import build_q_network
 from collections import deque
 
 class Agent:

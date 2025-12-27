@@ -1,9 +1,9 @@
 import os
 import time
 import numpy as np
-import config
-# Import hàm plot từ file visualization vừa tạo
-from runners.visualization import plot_training_results
+from DRL import config
+# Import plot function from visualization file
+from DRL.runners.visualization import plot_training_results
 
 def run_single_episode(env, agent, epsilon, training_mode=True):
     """
