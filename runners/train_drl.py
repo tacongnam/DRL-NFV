@@ -1,4 +1,3 @@
-# DRL/runners/train_drl.py
 import sys
 import os
 
@@ -10,50 +9,41 @@ import config
 from envs.drl_env import DRLEnv
 from agents.dqn_agent import Agent
 from runners.core import train_model_common
+from read_data import Read_data
 
 def main():
-    """Train DRL agent with loaded data"""
-    
     # Load data from file
-    data_file = 'data_1_9/cogent_centers_easy_s1.json'
+    data_file = 'data/test.json'
     
-    if os.path.exists(data_file):
-        print(f"Loading data from: {data_file}")
-        
-        from data_info.read_data import Read_data
-        reader = Read_data(data_file)
-        
-        # Get components
-        graph = reader.get_G()
-        dc_list = reader.get_V()
-        vnf_specs = reader.get_F()
-        requests_data = reader.get_R()
-        
-        # Update global VNF specs
-        config.update_vnf_specs(vnf_specs)
-        
-        print(f"  Servers: {reader.get_num_servers()}")
-        print(f"  Total nodes: {graph.number_of_nodes()}")
-        print(f"  Links: {graph.number_of_edges()}")
-        print(f"  VNF types: {len(vnf_specs)}")
-        print(f"  Requests: {len(requests_data)}")
-        
-        # Create environment with loaded data
-        env = DRLEnv(graph=graph, dcs=dc_list, requests_data=requests_data)
-    else:
-        print(f"Warning: Data file not found: {data_file}")
-        print("Using fallback random topology")
-        env = DRLEnv()
+    if not os.path.exists(data_file):
+        print(f"Error: Data file not found: {data_file}")
+        return
     
-    # Setup agent
+    reader = Read_data(data_file)
+    
+    graph = reader.get_G()
+    dc_list = reader.get_V()
+    vnf_specs = reader.get_F()
+    requests_data = reader.get_R()
+    
+    config.update_vnf_specs(vnf_specs)
+    config.ACTION_SPACE_SIZE = config.get_action_space_size()
+    
+    print(f"  Servers: {reader.get_num_servers()}")
+    print(f"  Total nodes: {graph.number_of_nodes()}")
+    print(f"  Links: {graph.number_of_edges()}")
+    print(f"  VNF types: {config.NUM_VNF_TYPES}")
+    print(f"  Requests: {len(requests_data)}")
+    print(f"  Action space: {config.ACTION_SPACE_SIZE}")
+    
+    env = DRLEnv(graph=graph, dcs=dc_list, requests_data=requests_data)
     agent = Agent()
     
-    # Train
     train_model_common(
         env=env,
         agent=agent,
         title="Standard DRL (Priority-based)",
-        save_prefix="" 
+        save_prefix=""
     )
 
 if __name__ == "__main__":

@@ -5,7 +5,6 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 def plot_training_results(all_rewards, all_ars, save_path='fig/training_progress.png'):
-    """Vẽ biểu đồ quá trình training"""
     try:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         
@@ -44,64 +43,83 @@ def plot_training_results(all_rewards, all_ars, save_path='fig/training_progress
     except Exception as e:
         print(f"\n[Error] Could not create training plot: {e}")
 
-def plot_exp1_results(sfc_types, acc_ratios, e2e_delays, save_path='fig/result_exp1_fig2.png'):
-    """Vẽ biểu đồ Experiment 1"""
-    if not sfc_types: return
+def plot_overall_results(acceptance_ratios, avg_delays, throughputs, save_path='fig/result_overall.png'):
     try:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        fig, ax1 = plt.subplots(figsize=(10, 6))
-        x = np.arange(len(sfc_types))
-        width = 0.35
         
-        ax1.bar(x, acc_ratios, width, label='Acceptance Ratio (%)', color='b', alpha=0.6)
-        ax1.set_xlabel('SFC Types')
-        ax1.set_ylabel('Acceptance Ratio (%)', color='b')
-        ax1.set_ylim(0, 110)
-        ax1.tick_params(axis='y', labelcolor='b')
-        ax1.set_xticks(x)
-        ax1.set_xticklabels(sfc_types, rotation=15)
-        ax1.grid(True, axis='y', linestyle='--', alpha=0.5)
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
         
-        ax2 = ax1.twinx()
-        ax2.plot(x, e2e_delays, color='r', marker='o', linewidth=2, label='E2E Delay (ms)')
-        ax2.set_ylabel('Avg E2E Delay (ms)', color='r')
-        ax2.tick_params(axis='y', labelcolor='r')
-        max_delay = max(e2e_delays) if e2e_delays else 100
-        ax2.set_ylim(0, max_delay * 1.2)
+        # Plot 1: Acceptance Ratio Distribution
+        axes[0].hist(acceptance_ratios, bins=20, color='blue', alpha=0.7, edgecolor='black')
+        axes[0].axvline(np.mean(acceptance_ratios), color='red', linestyle='--', 
+                       label=f'Mean: {np.mean(acceptance_ratios):.2f}%')
+        axes[0].set_xlabel('Acceptance Ratio (%)')
+        axes[0].set_ylabel('Frequency')
+        axes[0].set_title('Acceptance Ratio Distribution')
+        axes[0].legend()
+        axes[0].grid(True, alpha=0.3)
         
-        plt.title('Experiment 1: Performance per SFC Type')
-        fig.tight_layout()
-        plt.savefig(save_path, dpi=150)
-        print(f"\n[Graph] Saved {save_path}")
-        plt.close(fig)
-    except Exception as e:
-        print(f"\n[Error] Could not plot Exp1: {e}")
-
-def plot_exp2_results(dc_counts, delays, resources, save_path='fig/result_exp2_fig3.png'):
-    """Vẽ biểu đồ Experiment 2"""
-    if not dc_counts: return
-    try:
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        # Plot 2: E2E Delay Distribution
+        axes[1].hist(avg_delays, bins=20, color='green', alpha=0.7, edgecolor='black')
+        axes[1].axvline(np.mean(avg_delays), color='red', linestyle='--',
+                       label=f'Mean: {np.mean(avg_delays):.2f} ms')
+        axes[1].set_xlabel('Avg E2E Delay (ms)')
+        axes[1].set_ylabel('Frequency')
+        axes[1].set_title('E2E Delay Distribution')
+        axes[1].legend()
+        axes[1].grid(True, alpha=0.3)
         
-        ax1.plot(dc_counts, delays, 'g-o', linewidth=2)
-        ax1.set_title('E2E Delay vs Number of DCs')
-        ax1.set_xlabel('Number of DCs')
-        ax1.set_ylabel('Avg E2E Delay (ms)')
-        ax1.set_xticks(dc_counts)
-        ax1.grid(True)
+        # Plot 3: Throughput Distribution
+        axes[2].hist(throughputs, bins=20, color='orange', alpha=0.7, edgecolor='black')
+        axes[2].axvline(np.mean(throughputs), color='red', linestyle='--',
+                       label=f'Mean: {np.mean(throughputs):.2f} Mbps')
+        axes[2].set_xlabel('Throughput (Mbps)')
+        axes[2].set_ylabel('Frequency')
+        axes[2].set_title('Throughput Distribution')
+        axes[2].legend()
+        axes[2].grid(True, alpha=0.3)
         
-        ax2.bar(dc_counts, resources, color='orange', alpha=0.7, width=0.8)
-        ax2.set_title('Avg Resource Consumption')
-        ax2.set_xlabel('Number of DCs')
-        ax2.set_ylabel('Avg CPU Usage (%)')
-        ax2.set_xticks(dc_counts)
-        ax2.grid(True, axis='y')
-        
-        plt.suptitle('Experiment 2: Reconfigurability & Robustness')
         plt.tight_layout()
         plt.savefig(save_path, dpi=150)
         print(f"\n[Graph] Saved {save_path}")
         plt.close(fig)
     except Exception as e:
-        print(f"\n[Error] Could not plot Exp2: {e}")
+        print(f"\n[Error] Could not plot overall results: {e}")
+
+def plot_scalability_results(results, save_path='fig/result_scalability.png'):
+    try:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+        dc_counts = results['dc_counts']
+        
+        # Plot 1: Acceptance Ratio vs DC Count
+        axes[0].plot(dc_counts, results['acceptance_ratios'], 'b-o', linewidth=2)
+        axes[0].set_xlabel('Number of DCs')
+        axes[0].set_ylabel('Acceptance Ratio (%)')
+        axes[0].set_title('Acceptance Ratio vs DC Count')
+        axes[0].set_xticks(dc_counts)
+        axes[0].grid(True, alpha=0.3)
+        
+        # Plot 2: E2E Delay vs DC Count
+        axes[1].plot(dc_counts, results['avg_delays'], 'g-o', linewidth=2)
+        axes[1].set_xlabel('Number of DCs')
+        axes[1].set_ylabel('Avg E2E Delay (ms)')
+        axes[1].set_title('E2E Delay vs DC Count')
+        axes[1].set_xticks(dc_counts)
+        axes[1].grid(True, alpha=0.3)
+        
+        # Plot 3: CPU Usage vs DC Count
+        axes[2].bar(dc_counts, results['cpu_usages'], color='orange', alpha=0.7, width=0.6)
+        axes[2].set_xlabel('Number of DCs')
+        axes[2].set_ylabel('Avg CPU Usage (%)')
+        axes[2].set_title('Resource Utilization vs DC Count')
+        axes[2].set_xticks(dc_counts)
+        axes[2].grid(True, axis='y', alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=150)
+        print(f"\n[Graph] Saved {save_path}")
+        plt.close(fig)
+    except Exception as e:
+        print(f"\n[Error] Could not plot scalability: {e}")

@@ -1,4 +1,3 @@
-# DRL/runners/eval_drl.py
 import sys
 import os
 
@@ -9,7 +8,8 @@ sys.path.append(parent_dir)
 import config
 from envs.drl_env import DRLEnv
 from agents.dqn_agent import Agent
-from runners.experiments import run_experiment_performance, run_experiment_scalability
+from runners.experiments import run_experiment_overall, run_experiment_scalability
+from read_data import Read_data
 
 def main():
     print("\n" + "="*80)
@@ -17,26 +17,28 @@ def main():
     print("="*80)
     
     # Load data
-    data_file = 'data_1_9/cogent_centers_easy_s1.json'
+    data_file = 'data/test.json'
     
-    if os.path.exists(data_file):
-        print(f"Loading data from: {data_file}")
-        
-        from data_info.read_data import Read_data
-        reader = Read_data(data_file)
-        
-        graph = reader.get_G()
-        dc_list = reader.get_V()
-        vnf_specs = reader.get_F()
-        requests_data = reader.get_R()
-        
-        config.update_vnf_specs(vnf_specs)
-        
-        env = DRLEnv(graph=graph, dcs=dc_list, requests_data=requests_data)
-    else:
-        print(f"Warning: Data file not found: {data_file}")
-        env = DRLEnv()
+    if not os.path.exists(data_file):
+        print(f"Error: Data file not found: {data_file}")
+        return
+
+    reader = Read_data(data_file)
     
+    graph = reader.get_G()
+    dc_list = reader.get_V()
+    vnf_specs = reader.get_F()
+    requests_data = reader.get_R()
+    
+    config.update_vnf_specs(vnf_specs)
+    config.ACTION_SPACE_SIZE = config.get_action_space_size()
+    
+    print(f"  Servers: {reader.get_num_servers()}")
+    print(f"  VNF types: {config.NUM_VNF_TYPES}")
+    print(f"  Requests: {len(requests_data)}")
+    print(f"  Action space: {config.ACTION_SPACE_SIZE}")
+    
+    env = DRLEnv(graph=graph, dcs=dc_list, requests_data=requests_data)
     agent = Agent()
     
     # Load DRL weights
@@ -54,17 +56,11 @@ def main():
         return
     
     # Run experiments
-    run_experiment_performance(
-        env, agent, 
-        episodes=config.TEST_EPISODES, 
-        file_prefix="" 
-    )
+    run_experiment_overall(env, agent, episodes=config.TEST_EPISODES, file_prefix="")
     
-    run_experiment_scalability(
-        env, agent, 
-        episodes=config.TEST_EPISODES, 
-        file_prefix=""
-    )
+    # Scalability (if multiple DC configs supported)
+    # run_experiment_scalability(env, agent, dc_configs=config.TEST_NUM_DCS_RANGE, 
+    #                            episodes=config.TEST_EPISODES, file_prefix="")
 
     print("\nCheck 'fig/result_*.png'")
 

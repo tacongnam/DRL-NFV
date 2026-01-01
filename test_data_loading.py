@@ -2,7 +2,7 @@
 Simple test script to verify data loading without dependencies on gymnasium.
 """
 import numpy as np
-from data_info.read_data import Read_data
+from runners.read_data import Read_data
 
 def test_data_loading():
     """Test loading data from JSON file"""

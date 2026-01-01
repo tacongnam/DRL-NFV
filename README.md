@@ -1,251 +1,177 @@
-# DRL-Based SFC Provisioning
+# GenAI-DRL SFC Provisioning
 
-Deep Reinforcement Learning approach for Service Function Chaining (SFC) provisioning in NFV networks, based on the paper "Unlocking Reconfigurability for Deep Reinforcement Learning in SFC Provisioning" (IEEE Networking Letters, 2024).
+## Algorithm Flow
 
-## 📋 Key Features
+### Input Format
+- **V**: Nodes (DataCenter + SwitchNode) with resources (cpu, ram, storage, delay)
+- **E**: Links (u, v, bandwidth, delay)
+- **F**: VNF types (cpu, ram, storage, startup_time per DC)
+- **R**: SFC requests (arrival_time, source, destination, vnf_chain, bandwidth, max_delay)
 
-- **Reconfigurable Architecture**: DRL model works across different network configurations without retraining
-- **Multi-Input DQN**: 3-layer input architecture capturing DC, DC-SFC, and global state
-- **Attention Mechanism**: Enhanced neural network with attention layer for better feature learning
-- **Priority-Based Scheduling**: Smart DC iteration and VNF allocation based on priority points
-- **Resource Reuse**: Efficient VNF instance reuse mechanism
-- **Comprehensive Evaluation**: Performance analysis and scalability testing
-
-## 🏗️ Architecture
-
-### State Representation (3 Inputs)
-1. **Input 1 - DC State** `[2|V|+2]`: CPU, Storage, Installed VNFs, Idle VNFs
-2. **Input 2 - DC-SFC State** `[|S|(1+2|V|)]`: DC-relevant requests, allocated/remaining VNFs
-3. **Input 3 - Global State** `[|S|(4+|V|)]`: Request counts, delays, bandwidth, pending VNFs
-
-### Action Space
-- **Action 0**: WAIT (do nothing)
-- **Actions 1-6**: UNINSTALL VNF types (NAT, FW, VOC, TM, WO, IDPS)
-- **Actions 7-12**: ALLOCATE VNF types
-
-### Reward System
-- `+2.0`: SFC successfully completed
-- `-1.5`: SFC dropped (timeout)
-- `-1.0`: Invalid action
-- `-0.5`: Uninstall needed VNF
-- `0.0`: WAIT action
-
-## 📁 Project Structure
-
-```
-├── config.py                  # Configuration parameters
-├── scripts.py                 # Main entry point
-├── agent/
-│   ├── agent.py              # DQN Agent implementation
-│   └── model.py              # Neural network architecture
-├── environment/
-│   ├── gym_env.py            # Gymnasium environment
-│   ├── controller.py         # Action execution logic
-│   ├── observer.py           # State representation
-│   ├── simulator.py          # Time simulation
-│   ├── priority.py           # Priority management
-│   └── utils.py              # Helper functions
-├── spaces/
-│   ├── dc.py                 # Data Center class
-│   ├── request.py            # SFC Request class
-│   ├── vnf.py                # VNF Instance class
-│   ├── sfc_manager.py        # Request manager
-│   └── topology.py           # Network topology
-└── runners/
-    ├── train.py              # Training script
-    ├── evaluate.py           # Evaluation script
-    ├── demo.py               # Demo & validation
-    └── utils.py              # Helper functions
+**JSON Structure**:
+```json
+{
+  "V": {
+    "0": {"server": true, "c_v": 30, "r_v": 40, "h_v": 35, "d_v": 0.2},
+    "1": {"server": false}
+  },
+  "E": [
+    {"u": 0, "v": 1, "b_l": 80, "d_l": 0.05}
+  ],
+  "F": [
+    {"c_f": 1.2, "r_f": 1.0, "h_f": 0.8, "d_f": {"0": 0.3, "1": 0.4}}
+  ],
+  "R": [
+    {"T": 0, "st_r": 2, "d_r": 4, "F_r": [0, 1], "b_r": 1.5, "d_max": 2.0, "type": "Optional"}
+  ]
+}
 ```
 
-## 🚀 Quick Start
+**Notes**:
+- `F_r`: VNF chain as list of indices [0, 1, ...] (not SFC type names)
+- `type`: Optional field for post-analysis only (not used in training)
+- Typical dataset: 10 VNF types, 2500+ unique chains, mostly 1-2 VNFs per chain
 
-### Installation
+### Preprocessing
+- Build NetworkX graph G(V, E)
+- Precompute all-pairs shortest paths between DataCenters (ignoring SwitchNodes as endpoints)
+- Cache delay and min_bandwidth for each DC pair
 
+### DRL Training (Priority-based DC Selection)
+1. Load requests sorted by arrival_time
+2. For each timestep:
+   - Activate requests where arrival_time ≤ current_time
+   - Calculate DC priority: P1 (urgency) + P2 (locality) + P3 (resource)
+   - Sort DCs by priority
+   - For each DC (priority order):
+     - Observe state: (DC_info, DC_VNF_demand, Global_VNF_demand)
+     - DQN selects action: WAIT | UNINSTALL(vnf) | ALLOCATE(vnf)
+     - Execute action → reward
+   - Advance time → check timeouts
+3. Update DQN every N steps, target network every M steps
+
+### GenAI Data Collection
+1. Load pre-trained DQN weights
+2. Run simulation with **random DC selection** (not priority)
+3. For each step:
+   - Record: (DC_prev_state, DC_next_state, value)
+   - Value = f(urgency, source_count, resource_availability)
+4. Store transitions → VAE dataset
+
+### GenAI Training
+1. **VAE Training**: Learn DC_prev_state → DC_next_state mapping
+   - Encoder: state → latent z (mean, log_var)
+   - Decoder: z → reconstructed next_state
+   - Loss: MSE(reconstruction) + KL_divergence
+2. **Value Network Training**: Learn z → importance_value
+   - Input: latent z from frozen encoder
+   - Target: heuristic value from data collection
+   - Loss: MSE(predicted_value, target_value)
+3. Normalize values (mean, std) for stable inference
+
+### GenAI-DRL Inference
+1. For each timestep:
+   - Get all DC current states
+   - Encode → latent z
+   - Predict values via Value Network
+   - Sort DCs by predicted value (descending)
+   - For each DC (VAE order):
+     - DQN observes and acts
+2. Same reward/update logic as DRL
+
+## Routing
+- VNF placement on DC creates propagation delay via shortest path
+- Bandwidth allocated on path edges
+- Reward penalty: α·delay + β·hop_count
+
+## Workflow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    STEP 1: Train DRL                        │
+│  Input: JSON (V,E,F,R) → DRLEnv (Priority DC Selection)    │
+│  Output: models/best_sfc_dqn.weights.h5                    │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│              STEP 2: Collect Data for GenAI                 │
+│  Load: DRL weights → VAEEnv (Random DC Selection)          │
+│  Collect: (DC_prev, DC_next, value) × N samples            │
+│  Output: GenAI dataset in memory                            │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│           STEP 2.1: Train VAE (state prediction)            │
+│  Loss: MSE(DC_next, decoder(encoder(DC_prev))) + KL        │
+│  Output: Encoder weights (frozen for Value Net)            │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│      STEP 2.2: Train Value Network (importance score)       │
+│  Input: latent z = encoder(DC_state)                        │
+│  Loss: MSE(predicted_value, heuristic_value)               │
+│  Output: models/genai_model_{encoder,decoder,value}.h5     │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│              STEP 3: Train GenAI-DRL                        │
+│  Load: GenAI model → VAEEnv (VAE DC Selection)             │
+│  DC Selection: argmax(ValueNet(encoder(DC_states)))        │
+│  Output: models/best_genai_sfc_dqn.weights.h5              │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│                    STEP 4: Evaluate                         │
+│  Compare: DRL vs GenAI-DRL on SFC AccRatio, E2E, Throughput│
+│  Output: fig/{genai_}result_exp1.png, exp2.png             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Commands
 ```bash
-# Install dependencies
-pip install gymnasium tensorflow numpy matplotlib
-
-# Verify installation
-python scripts.py demo
-```
-
-### Training
-
-```bash
-# Start training (350 updates × 20 episodes)
+# Step 1: Train DRL with priority-based selection
 python scripts.py train
 
-# Results will be saved to:
-# - models/sfc_dqn.weights.h5         # Final model
-# - fig/training_progress.png         # Training curves
+# Step 2: Collect data for GenAI (random selection)
+python scripts.py collect
+
+# Step 3: Train GenAI-DRL
+python scripts.py train --mode genai
+
+# Step 4: Evaluate
+python scripts.py eval                # DRL
+python scripts.py eval --mode genai   # GenAI-DRL
 ```
 
-### Evaluation
+## Key Differences from Paper Implementation
 
-```bash
-# Evaluate trained model
-python scripts.py eval
+### Routing
+- Paper assumes full DC mesh with direct links
+- Implementation uses NetworkX graph with SwitchNodes
+- Shortest path computed via Dijkstra with bandwidth constraints
+- Path metrics cached at initialization (Floyd-Warshall on DCs)
 
-# Runs two experiments:
-# 1. Performance per SFC type (4 DCs)
-# 2. Scalability analysis (2, 4, 6, 8 DCs)
-```
+### DC Selection
+- **DRL (Priority)**: Selects DC based on P1(urgency) + P2(locality) + P3(resource)
+- **GenAI-DRL**: VAE predicts next_state, Value Network ranks DCs by importance
 
-### Interactive Mode
+### Request Arrival
+- Paper uses bulk generation every N ms
+- Implementation uses individual arrival_time per request (sorted queue)
 
-```bash
-# Launch interactive menu
-python scripts.py
+## Key Files (Updated for Dynamic VNF)
+- **config.py**: `update_vnf_specs()` loads from JSON, dynamic ACTION_SPACE_SIZE
+- **core/**: dc.py (Node, DataCenter, SwitchNode), vnf.py, request.py, sfc_manager.py, topology.py (cached routing), routing.py, simulator.py
+- **envs/observer.py**: `get_state_dim()` = 3 + 2×NUM_VNF_TYPES + 3, aggregated VNF demand
+- **agents/dqn_model.py**: Dynamic input/output shapes based on NUM_VNF_TYPES
+- **envs/**: base_env.py, drl_env.py (priority), vae_env.py (random/GenAI), controller.py, priority.py, vae_selector.py, vae_trainer.py, utils.py
+- **runners/experiments.py**: `run_experiment_overall()` - no per-SFC-type breakdown
+- **runners/**: train_drl.py, collect_data.py, train_vae.py, eval_drl.py, eval_vae.py, core.py, visualization.py
 
-# Select:
-# 1. Train Model
-# 2. Evaluate Model
-# 3. Run Demo Tests
-# 0. Exit
-```
-
-## 🔬 Algorithm Details
-
-### Priority System
-
-**DC Priority (for iteration order)**:
-1. **Highest**: Source DC of request with minimum E2E delay
-2. **Medium**: DCs on shortest path (closer to source = higher priority)
-3. **Lowest**: DCs not on path
-
-**VNF Priority (for allocation)**:
-```
-P = P1 + P2 + P3
-
-P1 = elapsed_time - max_delay          # Time urgency
-P2 = +10 if same DC, -10 if different  # Affinity
-P3 = C / (remaining_time + ε)          # Critical urgency
-```
-
-### Episode Flow
-
-1. **Start**: Generate initial SFC requests
-2. **Loop** (until done):
-   - Update DC priority order
-   - For each DC (in priority order):
-     - Get state representation
-     - Select action (ε-greedy)
-     - Execute action
-     - Collect reward
-   - After A actions: advance time (1ms)
-   - Generate new requests every N ms
-3. **End**: No active requests OR max time reached
-
-### Delay Calculation
-
-**Propagation Delay**:
-```
-t_prop = distance_ij / speed_of_light
-```
-
-**Processing Delay**:
-```
-t_proc = waiting_time + processing_time
-```
-
-**Total E2E Delay**:
-```
-E2E = Σ(t_prop) + Σ(t_proc)
-```
-
-## 📊 SFC Types
-
-| Type | Chain | BW (Mbps) | Delay (ms) | Bundle Size |
-|------|-------|-----------|------------|-------------|
-| CloudGaming | NAT→FW→VOC→WO→IDPS | 4 | 80 | 40-55 |
-| AR | NAT→FW→TM→VOC→IDPS | 100 | 10 | 1-4 |
-| VoIP | NAT→FW→TM→FW→NAT | 0.064 | 100 | 100-200 |
-| VideoStream | NAT→FW→TM→VOC→IDPS | 4 | 100 | 50-100 |
-| MIoT | NAT→FW→IDPS | 1 | 5 | 10-15 |
-| Ind4.0 | NAT→FW | 70 | 8 | 1-4 |
-
-## 🎯 Performance Metrics
-
-- **Acceptance Ratio**: % of successfully completed SFCs
-- **Drop Ratio**: % of SFCs dropped due to timeout
-- **E2E Delay**: Average end-to-end delay for completed SFCs
-- **Resource Usage**: CPU/Storage consumption across DCs
-
-## 🔧 Configuration
-
-Edit `config.py` to customize:
-
-```python
-# Training parameters
-TRAIN_UPDATES = 350              # Total updates
-EPISODES_PER_UPDATE = 20         # Episodes per update
-ACTIONS_PER_TIME_STEP = 100      # Actions per time step
-
-# DRL parameters
-LEARNING_RATE = 0.001
-GAMMA = 0.95
-EPSILON_START = 1.0
-EPSILON_DECAY = 0.995
-EPSILON_MIN = 0.01
-BATCH_SIZE = 64
-MEMORY_SIZE = 50000
-
-# Network parameters
-MAX_NUM_DCS = 6
-DC_CPU_CYCLES = 12000
-DC_RAM = 256
-DC_STORAGE = 2048
-```
-
-## 📈 Expected Results
-
-Based on the paper:
-- **Acceptance Ratio**: ~90% (vs 76% baseline)
-- **E2E Delay Reduction**: ~42.65%
-- **Resource Reduction**: ~50% storage, ~10% CPU
-- **Reconfigurability**: Works across 2-8 DCs without retraining
-
-## 🐛 Troubleshooting
-
-**Issue**: Import errors
-```bash
-# Solution: Make sure you're in project root
-cd /path/to/project
-python scripts.py
-```
-
-**Issue**: TensorFlow warnings
-```bash
-# Solution: Already suppressed in code via TF_CPP_MIN_LOG_LEVEL
-# If still seeing warnings, they're harmless
-```
-
-**Issue**: Out of memory during training
-```bash
-# Solution: Reduce batch size or memory size in config.py
-BATCH_SIZE = 32
-MEMORY_SIZE = 25000
-```
-
-## 📚 References
-
-Paper: "Unlocking Reconfigurability for Deep Reinforcement Learning in SFC Provisioning"  
-Authors: M. A. Onsu, P. Lohan, B. Kantarci, E. Janulewicz, S. Slobodrian  
-Published: IEEE Networking Letters, Vol. 6, No. 3, September 2024
-
-## 📝 License
-
-This implementation is for research and educational purposes.
-
-## 🤝 Contributing
-
-Contributions welcome! Areas for improvement:
-- Advanced priority scheduling algorithms
-- Multi-objective optimization (cost, energy)
-- Online learning capabilities
-- Distributed training support
-
----
-
-**Note**: First run `demo` to validate setup, then `train` for ~2-4 hours (depends on hardware), finally `eval` to see results.
+## Optimizations Applied
+- Precompute global stats O(N_req) instead of per-DC O(N_dc × N_req)
+- Vectorized VAE inference (all DCs in one call)
+- Circular buffer for VAE dataset (no list append)
+- @tf.function for training loops
+- Cached shortest paths (precomputed at reset)
+- Direct NumPy slicing instead of list comprehensions

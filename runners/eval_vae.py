@@ -1,4 +1,3 @@
-# DRL/runners/eval_vae.py
 import sys
 import os
 import time
@@ -13,7 +12,8 @@ from envs.vae_env import VAEEnv
 from agents.dqn_agent import Agent
 from agents.vae_agent import VAEModel
 from envs.observer import Observer
-from runners.experiments import run_experiment_performance, run_experiment_scalability
+from runners.experiments import run_experiment_overall, run_experiment_scalability
+from read_data import Read_data
 
 def main():
     print("\n" + "="*80)
@@ -21,6 +21,28 @@ def main():
     print("="*80)
     
     start_time = time.time()
+    
+    # Load data
+    data_file = 'data/test.json'
+    
+    if not os.path.exists(data_file):
+        print(f"Error: Data file not found: {data_file}")
+        return
+
+    reader = Read_data(data_file)
+    
+    graph = reader.get_G()
+    dc_list = reader.get_V()
+    vnf_specs = reader.get_F()
+    requests_data = reader.get_R()
+    
+    config.update_vnf_specs(vnf_specs)
+    config.ACTION_SPACE_SIZE = config.get_action_space_size()
+    
+    print(f"  Servers: {reader.get_num_servers()}")
+    print(f"  VNF types: {config.NUM_VNF_TYPES}")
+    print(f"  Requests: {len(requests_data)}")
+    print(f"  Action space: {config.ACTION_SPACE_SIZE}")
     
     # Load GenAI Model
     state_dim = Observer.get_state_dim()
@@ -42,27 +64,8 @@ def main():
         print(f"\n✗ GenAI not found at {genai_path}!")
         return
     
-    # Load data
-    data_file = 'data_1_9/cogent_centers_easy_s1.json'
-    
-    if os.path.exists(data_file):
-        print(f"Loading data from: {data_file}")
-        
-        from data_info.read_data import Read_data
-        reader = Read_data(data_file)
-        
-        graph = reader.get_G()
-        dc_list = reader.get_V()
-        vnf_specs = reader.get_F()
-        requests_data = reader.get_R()
-        
-        config.update_vnf_specs(vnf_specs)
-        
-        env = VAEEnv(vae_model=vae_model, data_collection_mode=False,
-                     graph=graph, dcs=dc_list, requests_data=requests_data)
-    else:
-        print(f"Warning: Data file not found: {data_file}")
-        env = VAEEnv(vae_model=vae_model, data_collection_mode=False)
+    env = VAEEnv(vae_model=vae_model, data_collection_mode=False,
+                 graph=graph, dcs=dc_list, requests_data=requests_data)
     
     agent = Agent()
     
@@ -82,19 +85,7 @@ def main():
         return
     
     # Run Experiments
-    run_experiment_performance(
-        env=env, 
-        agent=agent, 
-        episodes=config.TEST_EPISODES, 
-        file_prefix="genai_"
-    )
-    
-    run_experiment_scalability(
-        env=env, 
-        agent=agent, 
-        episodes=config.TEST_EPISODES, 
-        file_prefix="genai_"
-    )
+    run_experiment_overall(env, agent, episodes=config.TEST_EPISODES, file_prefix="genai_")
     
     total_time = time.time() - start_time
     print("\n" + "="*80)

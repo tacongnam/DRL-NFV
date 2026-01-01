@@ -3,7 +3,7 @@ Test script to verify DRL-NFV environment with loaded data.
 """
 import sys
 import numpy as np
-from data_info.read_data import Read_data
+from runners.read_data import Read_data
 from envs.drl_env import DRLEnv
 import config
 

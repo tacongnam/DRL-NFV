@@ -1,67 +1,45 @@
-# config.py
-# --- NETWORK CONFIGURATION ---
-MAX_NUM_DCS = 6       
+# Network Configuration
+MAX_NUM_DCS = 10
 LINK_BW_CAPACITY = 1000  # Mbps
-SPEED_OF_LIGHT = 300000.0  # km/s
 
-# --- TRAINING HYPERPARAMETERS ---
-TRAIN_UPDATES = 40             # U: Total updates
-EPISODES_PER_UPDATE = 15       # E: Episodes per update
-ACTIONS_PER_TIME_STEP = 100    # A: Actions per time step
-TIME_STEP = 1                  # T: 1ms per step
-TRAFFIC_GEN_INTERVAL = 5       # N: Generate every 5ms
-TRAFFIC_STOP_TIME = 50         # Generate traffic until 50ms
-MAX_SIM_TIME_PER_EPISODE = 150 # Maximum simulation time
+# Training Hyperparameters
+TRAIN_UPDATES = 40
+EPISODES_PER_UPDATE = 15
+ACTIONS_PER_TIME_STEP = 100
+TIME_STEP = 1  # ms
+MAX_SIM_TIME_PER_EPISODE = 150
 
-# --- GENAI SPECIFIC PARAMS ---
-GENAI_DATA_EPISODES = 100      # Reduced from 100
-GENAI_VAE_EPOCHS = 50          # Reduced from 50
-GENAI_VALUE_EPOCHS = 100       # Reduced from 30
-GENAI_BATCH_SIZE = 64          # Increased for efficiency
-GENAI_LATENT_DIM = 32          # Reduced from 32
-GENAI_MEMORY_SIZE = 50000      # Reduced from 50000
-GENAI_SAMPLE_INTERVAL = 100    # Collect every 200 steps instead of 100
+# GenAI Parameters
+GENAI_DATA_EPISODES = 100
+GENAI_VAE_EPOCHS = 50
+GENAI_VALUE_EPOCHS = 100
+GENAI_BATCH_SIZE = 64
+GENAI_LATENT_DIM = 32
+GENAI_MEMORY_SIZE = 50000
+GENAI_SAMPLE_INTERVAL = 100
 
-# --- RESOURCES ---
-DC_CPU_CYCLES = 12000  # cycles/sec
-DC_RAM = 256           # GB
-DC_STORAGE = 2048      # GB
+# Resources (Default values, overridden by JSON)
+DC_CPU_CYCLES = 12000
+DC_RAM = 256
+DC_STORAGE = 2048
 
-# --- VNF & SFC SPECS ---
-VNF_SPECS = {
-    0: {'cpu': 1,  'ram': 4,  'storage': 7,  'startup_time': {}},  # NAT
-    1: {'cpu': 9,  'ram': 5,  'storage': 1,  'startup_time': {}},  # FW
-    2: {'cpu': 5,  'ram': 11, 'storage': 13, 'startup_time': {}},  # VOC
-    3: {'cpu': 13, 'ram': 7,  'storage': 7,  'startup_time': {}},  # TM
-    4: {'cpu': 5,  'ram': 2,  'storage': 5,  'startup_time': {}},  # WO
-    5: {'cpu': 11, 'ram': 15, 'storage': 2,  'startup_time': {}},  # IDPS
-}
-
-VNF_TYPE_NAMES = {0: 'NAT', 1: 'FW', 2: 'VOC', 3: 'TM', 4: 'WO', 5: 'IDPS'}
-VNF_TYPES = list(VNF_SPECS.keys())  
-NUM_VNF_TYPES = len(VNF_TYPES)
+# VNF Specifications (Loaded from JSON)
+VNF_SPECS = {}
+VNF_TYPES = []
+NUM_VNF_TYPES = 0
 
 def update_vnf_specs(vnf_specs_from_data):
-    """Update VNF_SPECS with data from JSON"""
     global VNF_SPECS, VNF_TYPES, NUM_VNF_TYPES
     VNF_SPECS = vnf_specs_from_data
     VNF_TYPES = list(VNF_SPECS.keys())
     NUM_VNF_TYPES = len(VNF_TYPES)
 
-# DEPRECATED: Kept for backward compatibility
-SFC_SPECS = {
-    'CloudGaming': {'chain': ['NAT', 'FW', 'VOC', 'WO', 'IDPS'], 'bw': 4,   'delay': 80,  'bundle': (40, 50)},
-    'AR':          {'chain': ['NAT', 'FW', 'TM', 'VOC', 'IDPS'], 'bw': 100, 'delay': 10,  'bundle': (1, 4)},
-    'VoIP':        {'chain': ['NAT', 'FW', 'TM', 'FW', 'NAT'],   'bw': 0.064,'delay': 100, 'bundle': (100, 200)},
-    'VideoStream': {'chain': ['NAT', 'FW', 'TM', 'VOC', 'IDPS'], 'bw': 4,   'delay': 100, 'bundle': (50, 100)},
-    'MIoT':        {'chain': ['NAT', 'FW', 'IDPS'],               'bw': 1,   'delay': 5,   'bundle': (10, 15)},
-    'Ind4.0':      {'chain': ['NAT', 'FW'],                       'bw': 70,  'delay': 8,   'bundle': (1, 4)},
-}
-SFC_TYPES = list(SFC_SPECS.keys())
-NUM_SFC_TYPES = len(SFC_TYPES)
+# DRL Settings
+def get_action_space_size():
+    return 2 * NUM_VNF_TYPES + 1
 
-# --- DRL SETTINGS ---
-ACTION_SPACE_SIZE = 2 * NUM_VNF_TYPES + 1
+ACTION_SPACE_SIZE = 1  # Will be updated after loading VNF specs
+
 LEARNING_RATE = 0.001
 GAMMA = 0.95
 EPSILON_START = 1.0
@@ -73,18 +51,18 @@ MEMORY_SIZE = 50000
 TARGET_NETWORK_UPDATE = 50000
 TRAIN_INTERVAL = 100
 
-# --- REWARDS ---
+# Rewards
 REWARD_SATISFIED = 2.0
 REWARD_DROPPED = -1.5
 REWARD_INVALID = -1.0
 REWARD_UNINSTALL_NEEDED = -0.5
 REWARD_WAIT = 0.0
 
-# --- ROUTING PENALTY WEIGHTS ---
-ALPHA_DELAY_PENALTY = 0.01    # Penalty per ms of path delay
-BETA_HOP_PENALTY = 0.05       # Penalty per hop in path
+# Routing Penalty
+ALPHA_DELAY_PENALTY = 0.01
+BETA_HOP_PENALTY = 0.05
 
-# --- PRIORITY CONSTANTS ---
+# Priority Constants
 PRIORITY_P2_SAME_DC = 10.0
 PRIORITY_P2_DIFF_DC = -10.0
 URGENCY_THRESHOLD = 5.0
@@ -93,7 +71,7 @@ EPSILON_SMALL = 1e-5
 
 WEIGHTS_FILE = 'sfc_dqn.weights.h5'
 
-# Test parameters
+# Test Parameters
 TEST_EPSILON = 0.0
 TEST_EPISODES = 5
-TEST_FIG3_DCS = [2, 4, 6, 8]
+TEST_NUM_DCS_RANGE = [2, 4, 6, 8]
