@@ -1,7 +1,6 @@
 """
 Simple test script to verify data loading without dependencies on gymnasium.
 """
-import sys
 import numpy as np
 from data_info.read_data import Read_data
 

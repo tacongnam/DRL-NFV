@@ -4,8 +4,8 @@ Test script to verify DRL-NFV environment with loaded data.
 import sys
 import numpy as np
 from data_info.read_data import Read_data
-from DRL.envs.drl_env import DRLEnv
-from DRL import config
+from envs.drl_env import DRLEnv
+import config
 
 def test_data_loading():
     """Test loading data from JSON file"""
@@ -171,7 +171,7 @@ def test_dc_capabilities():
     print("=" * 60)
     
     try:
-        from DRL.core.dc import DataCenter
+        from core.dc import DataCenter
         
         # Create server DC
         server_dc = DataCenter(0, cpu=100, ram=256, storage=1024, delay=5.0, is_server=True)
