@@ -1,16 +1,23 @@
-# agent/agent.py
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
+<<<<<<< Updated upstream:DRL/agent/agent.py
 import tensorflow as tf
 import numpy as np
 import config
 from agent.model import build_q_network
+=======
+import numpy as np
+import tensorflow as tf
+from keras import models, layers, optimizers
+>>>>>>> Stashed changes:agents/dqn_agent.py
 from collections import deque
+import config
 
-class Agent:
-    """DQN Agent cho SFC Provisioning"""
+class DQNAgent:
+    """DQN Agent for SFC Placement"""
     
+<<<<<<< Updated upstream:DRL/agent/agent.py
     def __init__(self):
         self.model = build_q_network()
         self.target_model = build_q_network()
@@ -27,45 +34,86 @@ class Agent:
 
     def reset_global_replay_memory(self):
         self.global_replay_memory = deque(maxlen=config.MEMORY_SIZE)
+=======
+    def __init__(self, state_shapes, action_size):
+        self.action_size = action_size
+        self.memory = deque(maxlen=config.MEMORY_SIZE)
+        
+        # Build networks
+        self.q_network = self._build_network(state_shapes, action_size)
+        self.target_network = self._build_network(state_shapes, action_size)
+        self.update_target_network()
+        
+        self.optimizer = optimizers.AdamW(
+            learning_rate=config.LEARNING_RATE, 
+            weight_decay=1e-4
+        )
+>>>>>>> Stashed changes:agents/dqn_agent.py
     
-    def update_target_model(self):
-        """Copy weights từ model sang target_model"""
-        self.target_model.set_weights(self.model.get_weights())
+    def _build_network(self, state_shapes, action_size):
+        """Build Q-Network with 3 inputs (DC, Demand, Global)"""        
+        # Inputs
+        input_dc = layers.Input(shape=state_shapes[0], name="dc_state")
+        input_dc_demand = layers.Input(shape=state_shapes[1], name="dc_demand")
+        input_global = layers.Input(shape=state_shapes[2], name="global_state")
+        
+        # Feature extraction
+        x1 = layers.Dense(32, activation='relu')(input_dc)
+        x2 = layers.Dense(64, activation='relu')(input_dc_demand)
+        x3 = layers.Dense(64, activation='relu')(input_global)
+        
+        # Fusion & Attention
+        concat = layers.Concatenate()([x1, x2, x3])
+        attn = layers.Dense(concat.shape[-1], activation='sigmoid')(concat)
+        x = layers.Multiply()([concat, attn])
+        
+        # Decision layers
+        x = layers.Dense(96, activation='relu')(x)
+        x = layers.LayerNormalization()(x)
+        x = layers.Dense(64, activation='relu')(x)
+        
+        # Q-values
+        q_values = layers.Dense(action_size, activation='linear')(x)
+        
+        return models.Model(
+            inputs=[input_dc, input_dc_demand, input_global],
+            outputs=q_values
+        )
     
-    def get_action(self, state, epsilon, valid_actions_mask=None):
+    def update_target_network(self):
+        """Copy weights to target network"""
+        self.target_network.set_weights(self.q_network.get_weights())
+    
+    def select_action(self, state, epsilon, valid_mask=None):
         """
-        Chọn action theo epsilon-greedy policy
+        Epsilon-greedy action selection
         
         Args:
-            state: Tuple (s1, s2, s3)
+            state: Tuple (s1, s2, s3) - each is 1D numpy array
             epsilon: Exploration rate
-            valid_actions_mask: Boolean array indicating valid actions
-            
+            valid_mask: Boolean array of valid actions
+        
         Returns:
-            int: Action ID
+            int: Selected action
         """
         # Exploration
-        if np.random.rand() <= epsilon:
-            if valid_actions_mask is not None:
-                valid_indices = np.where(valid_actions_mask)[0]
-                return np.random.choice(valid_indices) if len(valid_indices) > 0 else 0
-            return np.random.randint(config.ACTION_SPACE_SIZE)
+        if np.random.rand() < epsilon:
+            if valid_mask is not None:
+                valid_actions = np.where(valid_mask)[0]
+                return np.random.choice(valid_actions) if len(valid_actions) > 0 else 0
+            return np.random.randint(self.action_size)
         
         # Exploitation
-        # Prepare inputs
-        s1 = state[0].reshape(1, -1)
-        s2 = state[1].reshape(1, -1)
-        s3 = state[2].reshape(1, -1)
+        inputs = [np.expand_dims(s, 0) for s in state]
         
-        # Predict Q-values
-        q_values = self.model([s1, s2, s3], training=False)[0].numpy()
+        q_values = self.q_network(inputs, training=False)[0].numpy()
         
-        # Apply mask
-        if valid_actions_mask is not None:
-            q_values = np.where(valid_actions_mask, q_values, -np.inf)
+        if valid_mask is not None:
+            q_values = np.where(valid_mask, q_values, -np.inf)
         
         return np.argmax(q_values)
     
+<<<<<<< Updated upstream:DRL/agent/agent.py
     @tf.function
     def train_step(self, state_batch, action_batch, reward_batch,
                    next_state_batch, done_batch):
@@ -108,56 +156,71 @@ class Agent:
     # -------------------------------------------------
     def train(self):
         if len(self.global_replay_memory) < self.batch_size:
+=======
+    def store_transition(self, state, action, reward, next_state, done):
+        self.memory.append((state, action, reward, next_state, done))
+    
+    def train(self, batch_size=None):
+        """Train on batch from replay buffer"""
+        if batch_size is None:
+            batch_size = config.BATCH_SIZE
+        
+        if len(self.memory) < batch_size:
+>>>>>>> Stashed changes:agents/dqn_agent.py
             return 0.0
-
-        idx = np.random.choice(len(self.global_replay_memory), self.batch_size, replace=False)
-
-        # Prebuild numpy arrays
-        state1 = []
-        state2 = []
-        state3 = []
-
-        next1 = []
-        next2 = []
-        next3 = []
-
-        actions = []
-        rewards = []
-        dones = []
-
-        for i in idx:
-            s, a, r, ns, d = self.global_replay_memory[i]
-            state1.append(s[0])
-            state2.append(s[1])
-            state3.append(s[2])
-
-            next1.append(ns[0])
-            next2.append(ns[1])
-            next3.append(ns[2])
-
+        
+        indices = np.random.choice(len(self.memory), batch_size, replace=False)
+        batch = [self.memory[i] for i in indices]
+        
+        states = [[], [], []]
+        next_states = [[], [], []]
+        actions, rewards, dones = [], [], []
+        
+        for s, a, r, ns, d in batch:
+            for i in range(3):
+                states[i].append(s[i])
+                next_states[i].append(ns[i])
             actions.append(a)
             rewards.append(r)
             dones.append(d)
-
-        # Convert to TensorFlow
-        state_batch = [
-            tf.convert_to_tensor(np.array(state1), dtype=tf.float32),
-            tf.convert_to_tensor(np.array(state2), dtype=tf.float32),
-            tf.convert_to_tensor(np.array(state3), dtype=tf.float32),
-        ]
-
-        next_state_batch = [
-            tf.convert_to_tensor(np.array(next1), dtype=tf.float32),
-            tf.convert_to_tensor(np.array(next2), dtype=tf.float32),
-            tf.convert_to_tensor(np.array(next3), dtype=tf.float32),
-        ]
-
-        loss = self.train_step(
-            state_batch=state_batch,
-            action_batch=tf.convert_to_tensor(actions, dtype=tf.int32),
-            reward_batch=tf.convert_to_tensor(rewards, dtype=tf.float32),
-            next_state_batch=next_state_batch,
-            done_batch=tf.convert_to_tensor(dones, dtype=tf.bool),
-        )
-
+        
+        # Convert to tensors
+        states_t = [tf.convert_to_tensor(np.array(x), dtype=tf.float32) for x in states]
+        next_states_t = [tf.convert_to_tensor(np.array(x), dtype=tf.float32) for x in next_states]
+        actions_t = tf.convert_to_tensor(actions, dtype=tf.int32)
+        rewards_t = tf.convert_to_tensor(rewards, dtype=tf.float32)
+        dones_t = tf.convert_to_tensor(dones, dtype=tf.float32)
+        
+        # Train step
+        loss = self._train_step(states_t, actions_t, rewards_t, next_states_t, dones_t)
         return float(loss.numpy())
+    
+    @tf.function
+    def _train_step(self, states, actions, rewards, next_states, dones):
+        """Single training step (graph mode)"""
+        # Compute target Q-values
+        next_q = self.target_network(next_states, training=False)
+        max_next_q = tf.reduce_max(next_q, axis=1)
+        targets = rewards + (1.0 - dones) * config.GAMMA * max_next_q
+        
+        with tf.GradientTape() as tape:
+            q_values = self.q_network(states, training=True)
+            
+            batch_indices = tf.range(tf.shape(actions)[0])
+            action_indices = tf.stack([batch_indices, actions], axis=1)
+            predicted_q = tf.gather_nd(q_values, action_indices)
+            
+            loss = tf.reduce_mean(tf.square(targets - predicted_q))
+        
+        gradients = tape.gradient(loss, self.q_network.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.q_network.trainable_variables))
+        
+        return loss
+    
+    def save(self, path):
+        self.q_network.save_weights(f"{path}_q.weights.h5")
+        self.target_network.save_weights(f"{path}_target.weights.h5")
+    
+    def load(self, path):
+        self.q_network.load_weights(f"{path}_q.weights.h5")
+        self.target_network.load_weights(f"{path}_target.weights.h5")

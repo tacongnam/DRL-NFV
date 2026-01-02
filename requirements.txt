@@ -1,5 +1,12 @@
+<<<<<<< Updated upstream
 numpy>=1.21.0
 tensorflow>=2.10.0
 gymnasium
 tqdm
+=======
+gymnasium
+tensorflow
+numpy
+networkx
+>>>>>>> Stashed changes
 matplotlib

@@ -1,8 +1,9 @@
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
 import tensorflow as tf
 from keras import layers, models, optimizers
+<<<<<<< Updated upstream:DRL/genai/model.py
 import config
 
 class VAEEncoder(models.Model):
@@ -57,20 +58,93 @@ class ValueNetwork(models.Model):
 
 class GenAIModel:
     """Complete GenAI module (Optimized)"""
+=======
+import numpy
+
+# ==========================================
+# 1. Sub-Models (Architecture)
+# ==========================================
+
+class VAEEncoder(models.Model):
+    """Encoder: DC_State -> Latent z"""
+    def __init__(self, latent_dim=16):
+        super().__init__()
+        self.dense1 = layers.Dense(48, activation='relu', name='enc_fc1')
+        self.dense2 = layers.Dense(32, activation='relu', name='enc_fc2')
+        self.z_mean = layers.Dense(latent_dim, name='z_mean')
+        self.z_log_var = layers.Dense(latent_dim, name='z_log_var')
+>>>>>>> Stashed changes:agents/vae_agent.py
     
-    def __init__(self, state_dim, latent_dim=16):
+    def call(self, inputs, training=False):
+        x = self.dense1(inputs)
+        x = self.dense2(x)
+        z_mean = self.z_mean(x)
+        z_log_var = self.z_log_var(x)
+        return z_mean, z_log_var
+    
+    def encode(self, inputs):
+        z_mean, _ = self(inputs, training=False)
+        return z_mean
+
+class VAEDecoder(models.Model):
+    """Decoder: Latent z -> Next_DC_State"""
+    def __init__(self, output_dim):
+        super().__init__()
+        self.dense1 = layers.Dense(32, activation='relu', name='dec_fc1')
+        self.dense2 = layers.Dense(48, activation='relu', name='dec_fc2')
+        self.output_layer = layers.Dense(output_dim, activation='linear', name='dec_output')
+    
+    def call(self, z, training=False):
+        x = self.dense1(z)
+        x = self.dense2(x)
+        return self.output_layer(x)
+
+class ValueNetwork(models.Model):
+    """Value Network: Latent z -> Scalar value"""
+    def __init__(self):
+        super().__init__()
+        self.dense1 = layers.Dense(24, activation='relu', name='val_fc1')
+        self.dense2 = layers.Dense(12, activation='relu', name='val_fc2')
+        self.output_layer = layers.Dense(1, activation='linear', name='val_output')
+    
+    def call(self, z, training=False):
+        x = self.dense1(z)
+        x = self.dense2(x)
+        return tf.squeeze(self.output_layer(x), axis=-1)
+
+# ==========================================
+# 2. VAE Agent (Computation Logic)
+# ==========================================
+
+class VAEAgent:
+    """Chịu trách nhiệm về Model, Optimizer và TF Steps."""
+    
+    def __init__(self, state_dim, latent_dim=16, lr_vae=0.001, lr_val=0.0005):
         self.state_dim = state_dim
         self.latent_dim = latent_dim
         
+        # Models
         self.encoder = VAEEncoder(latent_dim)
         self.decoder = VAEDecoder(state_dim)
         self.value_net = ValueNetwork()
         
+<<<<<<< Updated upstream:DRL/genai/model.py
         # Higher LR for faster training
         self.vae_optimizer = optimizers.Adam(learning_rate=0.001)
         self.value_optimizer = optimizers.Adam(learning_rate=0.0005)
         
         # Build
+=======
+        # Optimizers
+        self.vae_optimizer = optimizers.Adam(learning_rate=lr_vae)
+        self.value_optimizer = optimizers.Adam(learning_rate=lr_val)
+        
+        # Normalization params (cho Inference)
+        self.value_mean = 0.0
+        self.value_std = 1.0
+        
+        # Build models (Dummy pass)
+>>>>>>> Stashed changes:agents/vae_agent.py
         dummy = tf.zeros((1, state_dim))
         self._build_models(dummy)
     
@@ -79,6 +153,13 @@ class GenAIModel:
         _ = self.decoder(z_mean)
         _ = self.value_net(z_mean)
     
+<<<<<<< Updated upstream:DRL/genai/model.py
+=======
+    def set_normalization_params(self, mean, std):
+        self.value_mean = float(mean)
+        self.value_std = float(std)
+    
+>>>>>>> Stashed changes:agents/vae_agent.py
     def sampling(self, z_mean, z_log_var):
         batch = tf.shape(z_mean)[0]
         dim = tf.shape(z_mean)[1]
@@ -87,30 +168,41 @@ class GenAIModel:
     
     @tf.function
     def train_vae_step(self, current_states, next_states):
+<<<<<<< Updated upstream:DRL/genai/model.py
+=======
+        """Tính toán Loss và Gradient cho VAE."""
+>>>>>>> Stashed changes:agents/vae_agent.py
         with tf.GradientTape() as tape:
             z_mean, z_log_var = self.encoder(current_states, training=True)
             z = self.sampling(z_mean, z_log_var)
             reconstructed = self.decoder(z, training=True)
             
+            # Reconstruction Loss (MSE)
             recon_loss = tf.reduce_mean(
                 tf.reduce_sum(tf.square(next_states - reconstructed), axis=1)
             )
             
+            # KL Divergence
             kl_loss = -0.5 * tf.reduce_mean(
                 tf.reduce_sum(1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var), axis=1)
             )
             
             total_loss = recon_loss + 0.05 * kl_loss  # Lower beta
         
-        trainable_vars = self.encoder.trainable_variables + self.decoder.trainable_variables
-        grads = tape.gradient(total_loss, trainable_vars)
-        self.vae_optimizer.apply_gradients(zip(grads, trainable_vars))
+        vars_list = self.encoder.trainable_variables + self.decoder.trainable_variables
+        grads = tape.gradient(total_loss, vars_list)
+        self.vae_optimizer.apply_gradients(zip(grads, vars_list))
         
-        return total_loss, recon_loss, kl_loss
+        return total_loss
     
     @tf.function
     def train_value_step(self, current_states, target_values):
+<<<<<<< Updated upstream:DRL/genai/model.py
         z_mean, _ = self.encoder(current_states, training=False)
+=======
+        """Tính toán Loss và Gradient cho Value Network."""
+        z_mean, _ = self.encoder(current_states, training=False) # Encoder đóng băng
+>>>>>>> Stashed changes:agents/vae_agent.py
         
         with tf.GradientTape() as tape:
             predicted_values = self.value_net(z_mean, training=True)
@@ -122,12 +214,22 @@ class GenAIModel:
         return loss
     
     def predict_dc_values(self, dc_states):
+<<<<<<< Updated upstream:DRL/genai/model.py
         """Vectorized inference"""
         dc_states_tf = tf.convert_to_tensor(dc_states, dtype=tf.float32)
         z_mean = self.encoder.encode(dc_states_tf)
         values = self.value_net(z_mean, training=False)
         return values.numpy()
     
+=======
+        """Inference: Trả về giá trị thực (denormalized) cho các DC."""
+        dc_states_tf = tf.convert_to_tensor(dc_states, dtype=tf.float32)
+        z_mean = self.encoder.encode(dc_states_tf)
+        normalized_values = self.value_net(z_mean, training=False)
+        
+        return (normalized_values.numpy() * self.value_std + self.value_mean)
+
+>>>>>>> Stashed changes:agents/vae_agent.py
     def save_weights(self, path_prefix):
         self.encoder.save_weights(f'{path_prefix}_encoder.weights.h5')
         self.decoder.save_weights(f'{path_prefix}_decoder.weights.h5')

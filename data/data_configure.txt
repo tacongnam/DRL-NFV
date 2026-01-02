@@ -1,0 +1,61 @@
+* Scripts:
+    - 3 topologies: NSF, CONUS, COGENT
+    - server node distribution:
+        + uniform: random 30% nodes
+        + urban: 30% highest degree nodes
+        + rural: 70% lowest degree nodes
+        + centers: 10% highest degree nodes
+    - difficulty scheme:
+        + easy: guaranteed acceptance of all requests
+        + hard: only guaranteed acceptance of each request on an empty network
+
+* Structure of a JSON data file:
+
+    "V": dict of network nodes {
+        key: node name
+        value: dict {
+            "server": whether the node is a server or a switch
+            (a switch node won't have the below attributes),
+            "c_v": CPU resource,
+            "r_v": RAM resource,
+            "h_v": storage resource,
+            "d_v": server delay time,
+            "cost_c": 1 CPU unit cost,
+            "cost_r": 1GB RAM cost,
+            "cost_h": 1GB storage cost,
+        }
+    }
+
+    "E": list of network links [
+        value: dict {
+            "u": first node,
+            "v": second node,
+            "b_l": bandwidth,
+            "d_l": link delay time
+        }
+    ]
+
+    "F": list of VNF types [
+        value: dict {
+            "c_f": CPU used,
+            "r_f": RAM used,
+            "h_f": storage used,
+            "d_f": dict of start time on server nodes {
+                key: node name
+                value: start time
+            }
+        }
+    ]
+
+    "R": list of requests in order of arrival time [
+        value: dict {
+            "T": arrival time,
+            "st_r": start node,
+            "d_r": destination node,
+            "F_r": ordered list of demanded VNF types [
+                value: index of VNF type in F
+            ]
+            "b_r": bandwidth used,
+            "d_max": maximum delay time allowed
+        }
+    ]

@@ -1,0 +1,77 @@
+# Network Configuration
+MAX_NUM_DCS = 10
+LINK_BW_CAPACITY = 1000  # Mbps
+
+# Training Hyperparameters
+TRAIN_UPDATES = 40
+EPISODES_PER_UPDATE = 15
+ACTIONS_PER_TIME_STEP = 100
+TIME_STEP = 1  # ms
+MAX_SIM_TIME_PER_EPISODE = 1000
+
+# GenAI Parameters
+GENAI_DATA_EPISODES = 100
+GENAI_VAE_EPOCHS = 50
+GENAI_VALUE_EPOCHS = 100
+GENAI_BATCH_SIZE = 64
+GENAI_LATENT_DIM = 32
+GENAI_MEMORY_SIZE = 50000
+GENAI_SAMPLE_INTERVAL = 100
+
+# Resources (Default values, overridden by JSON)
+DC_CPU_CYCLES = 12000
+DC_RAM = 256
+DC_STORAGE = 2048
+
+# VNF Specifications (Loaded from JSON)
+VNF_SPECS = {}
+VNF_TYPES = []
+NUM_VNF_TYPES = 0
+
+def update_vnf_specs(vnf_specs_from_data):
+    global VNF_SPECS, VNF_TYPES, NUM_VNF_TYPES
+    VNF_SPECS = vnf_specs_from_data
+    VNF_TYPES = list(VNF_SPECS.keys())
+    NUM_VNF_TYPES = len(VNF_TYPES)
+
+# DRL Settings
+def get_action_space_size():
+    return 2 * NUM_VNF_TYPES + 1
+
+ACTION_SPACE_SIZE = 1  # Will be updated after loading VNF specs
+
+LEARNING_RATE = 0.001
+GAMMA = 0.95
+EPSILON_START = 1.0
+EPSILON_DECAY = 0.99
+EPSILON_MIN = 0.01
+BATCH_SIZE = 64
+MEMORY_SIZE = 50000
+
+TARGET_NETWORK_UPDATE = 50000
+TRAIN_INTERVAL = 100
+
+# Rewards
+REWARD_SATISFIED = 2.0
+REWARD_DROPPED = -1.5
+REWARD_INVALID = -1.0
+REWARD_UNINSTALL_NEEDED = -0.5
+REWARD_WAIT = 0.0
+
+# Routing Penalty
+ALPHA_DELAY_PENALTY = 0.01
+BETA_HOP_PENALTY = 0.05
+
+# Priority Constants
+PRIORITY_P2_SAME_DC = 10.0
+PRIORITY_P2_DIFF_DC = -10.0
+URGENCY_THRESHOLD = 5.0
+URGENCY_CONSTANT_C = 100.0
+EPSILON_SMALL = 1e-5
+
+WEIGHTS_FILE = 'sfc_dqn.weights.h5'
+
+# Test Parameters
+TEST_EPSILON = 0.0
+TEST_EPISODES = 5
+TEST_NUM_DCS_RANGE = [2, 4, 6, 8]
