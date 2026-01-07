@@ -8,23 +8,18 @@ class SFCEnvironment(gym.Env):
     Unified RL Environment for SFC Placement
     """
     def __init__(self, physical_graph, dcs_data, requests_data, dc_selector=None):
-        # Infrastructure
-        # graph is physical graph (including switches)
         self.topology = TopologyManager(physical_graph.copy(), k_paths=3)
         self.initial_dcs = dcs_data
         self.requests_data = requests_data
         
-        # Components
         self.sfc_manager = None
         self.simulator = None
         self.dcs = []
         self.dc_selector = dc_selector
         
-        # Action space
         V = config.NUM_VNF_TYPES
         self.action_space = gym.spaces.Discrete(2 * V + 1)
         
-        # Observation space (defined by Observer)
         chain_feat = 4 + V + 3
         self.observation_space = gym.spaces.Tuple((
             gym.spaces.Box(low=-1, high=np.inf, shape=(2 + 2*V,), dtype=np.float32),
@@ -32,7 +27,6 @@ class SFCEnvironment(gym.Env):
             gym.spaces.Box(low=-1, high=np.inf, shape=(4 + V + 5*chain_feat,), dtype=np.float32)
         ))
         
-        # Episode state
         self.dc_order = []
         self.current_dc_idx = 0
         self.actions_this_step = 0

@@ -50,6 +50,8 @@ class Runner:
         if num_updates is None:
             num_updates = config.TRAIN_UPDATES
 
+        print(f"Create environment...")
+        
         env = self.create_env(dc_selector)
         
         # Xử lý shape cho DQN đa đầu vào
