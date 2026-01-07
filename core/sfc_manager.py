@@ -1,4 +1,4 @@
-from core.request import Request
+from core import Request
 
 class SFCManager:
     '''

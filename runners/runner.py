@@ -1,16 +1,27 @@
 import os
 import numpy as np
 import config
-from envs.env import SFCEnvironment
-from agents.dqn_agent import DQNAgent
-from envs.selectors import RandomSelector
-from envs.observer import Observer
-from agents.vae_trainer import VAETrainer
+from envs import SFCEnvironment, RandomSelector, Observer
+from agents import DQNAgent, VAETrainer
+from runners import load_data
 
 class Runner:
     """Unified training and evaluation pipeline"""
     
-    def __init__(self, graph, dcs, requests, vnf_specs):
+    def __init__(self):
+        self.graph = None
+        self.dc = None
+        self.requests = None
+        
+    @classmethod
+    def load_from(self, file_path="test.json"):
+        """
+        Auto reset before new load!
+        """
+        Runner.reset()
+
+        graph, dcs, requests, vnf_specs = load_data(file_path=file_path)
+        
         config.update_vnf_specs(vnf_specs)
         self.graph = graph
         self.dcs = dcs
@@ -18,13 +29,28 @@ class Runner:
         
         print(f"Data loaded: {len([d for d in dcs if d.is_server])} servers, "
               f"{config.NUM_VNF_TYPES} VNFs, {len(requests)} requests")
+        return
+
+    @classmethod
+    def reset(self):
+        self.graph = None
+        self.dcs = None
+        self.requests = None
+
+    @classmethod
+    def create_env(self, dc_selector = None):
+        try:
+            return SFCEnvironment(self.graph, self.dcs, self.requests, dc_selector=dc_selector)
+        except:
+            return -1
     
+    @classmethod
     def train_dqn(self, dc_selector, save_prefix="", num_updates=None):
         """Train DQN with Exponential Epsilon Decay"""
         if num_updates is None:
             num_updates = config.TRAIN_UPDATES
-        
-        env = SFCEnvironment(self.graph, self.dcs, self.requests, dc_selector)
+
+        env = self.create_env(dc_selector)
         
         # Xử lý shape cho DQN đa đầu vào
         if hasattr(env.observation_space, 'spaces'):
@@ -37,11 +63,8 @@ class Runner:
         print(f"\n{'='*80}\nTraining DQN ({save_prefix or 'standard'})\n{'='*80}")
         
         # --- TÍNH TOÁN DECAY STEP ---
-        # 1. Số lần lặp mô phỏng trong 1 episode
         sim_loops_per_ep = config.MAX_SIM_TIME_PER_EPISODE / config.TIME_STEP
-        # 2. Tổng số action (step) trong 1 episode
         steps_per_episode = sim_loops_per_ep * config.ACTIONS_PER_TIME_STEP
-        # 3. Tổng số step trong toàn bộ quá trình train (decay_step)
         total_training_steps = num_updates * config.EPISODES_PER_UPDATE * steps_per_episode
         
         print(f"Total Training Steps: {int(total_training_steps)}")
@@ -112,13 +135,14 @@ class Runner:
         print(f"\n{'='*80}\nTraining complete: Best AR={best_ar:.2f}%\n{'='*80}")
         return agent
 
+    @classmethod
     # ... (Giữ nguyên các hàm collect_vae_data, evaluate, _plot_training, _plot_eval)
     def collect_vae_data(self, num_episodes=None):
         """Collect transitions for VAE training"""
         if num_episodes is None:
             num_episodes = config.GENAI_DATA_EPISODES
         
-        env = SFCEnvironment(self.graph, self.dcs, self.requests, RandomSelector())
+        env = self.create_env(dc_selector=RandomSelector())
         
         first_server_dc = next((d for d in self.dcs if d.is_server), None)
         if first_server_dc is None:
@@ -173,12 +197,13 @@ class Runner:
         print("✓ VAE model saved")
         return trainer.agent
 
+    @classmethod
     def evaluate(self, agent, dc_selector, num_episodes=None, prefix=""):
         """Evaluate agent performance"""
         if num_episodes is None:
             num_episodes = config.TEST_EPISODES
         
-        env = SFCEnvironment(self.graph, self.dcs, self.requests, dc_selector)
+        env = self.create_env(dc_selector=dc_selector)
         
         print(f"\n{'='*80}\nEvaluating {prefix or 'model'}: {num_episodes} episodes\n{'='*80}")
         

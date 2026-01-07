@@ -5,14 +5,17 @@ def get_valid_actions_mask(curr_dc, active_requests):
     """
     Create action mask to block invalid actions
     """
-    mask = np.zeros(config.ACTION_SPACE_SIZE, dtype=bool)
+    # --- FIX START: Tính toán kích thước động ---
+    # Action space = [WAIT] + [UNINSTALL * V] + [ALLOCATE * V]
+    action_space_size = 1 + 2 * config.NUM_VNF_TYPES
+    mask = np.zeros(action_space_size, dtype=bool)
+    # --- FIX END ---
     
     # Action 0: WAIT - always valid
     mask[0] = True
     
     # Actions 1 -> NUM_VNF_TYPES: UNINSTALL
     # Valid if there's an idle VNF of this type
-    # Count idle VNFs directly from installed_vnfs
     idle_counts = {}
     for vnf in curr_dc.installed_vnfs:
         if vnf.is_idle():
@@ -33,6 +36,7 @@ def get_valid_actions_mask(curr_dc, active_requests):
                 needed_vnfs.add(next_vnf)
     
     for i, vnf_type in enumerate(config.VNF_TYPES):
+        # Action index bắt đầu từ sau nhóm Uninstall
         action_idx = config.NUM_VNF_TYPES + 1 + i
         
         if vnf_type in needed_vnfs:

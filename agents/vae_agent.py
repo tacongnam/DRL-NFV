@@ -1,29 +1,17 @@
-"""
-Balanced VAE Architecture - Middle ground option
-
-Use this if:
-- You have 5-6 hours available (instead of 4)
-- Want ~98% performance instead of 95%
-- Have concerns about representation capacity
-
-To use: In config.py, set USE_BALANCED_VAE = True
-"""
-
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_ENABLE_ONEDNN_OPTS']='0'
 
 import tensorflow as tf
 from keras import layers, models, optimizers
-import config
 
-class VAEEncoderBalanced(models.Model):
-    """Balanced Encoder: 2.5 layers, latent 24"""
-    
-    def __init__(self, latent_dim=24):
+# ==========================================
+# 1. Sub-Models (Architecture)
+# ==========================================
+
+class VAEEncoder(models.Model):
+    """Encoder: DC_State -> Latent z"""
+    def __init__(self, latent_dim=16):
         super().__init__()
-        self.latent_dim = latent_dim
-        
-        # More capacity than optimized, less than full
         self.dense1 = layers.Dense(48, activation='relu', name='enc_fc1')
         self.dense2 = layers.Dense(32, activation='relu', name='enc_fc2')
         self.z_mean = layers.Dense(latent_dim, name='z_mean')
@@ -40,10 +28,8 @@ class VAEEncoderBalanced(models.Model):
         z_mean, _ = self(inputs, training=False)
         return z_mean
 
-
-class VAEDecoderBalanced(models.Model):
-    """Balanced Decoder"""
-    
+class VAEDecoder(models.Model):
+    """Decoder: Latent z -> Next_DC_State"""
     def __init__(self, output_dim):
         super().__init__()
         self.dense1 = layers.Dense(32, activation='relu', name='dec_fc1')
@@ -55,37 +41,44 @@ class VAEDecoderBalanced(models.Model):
         x = self.dense2(x)
         return self.output_layer(x)
 
-
-class ValueNetworkBalanced(models.Model):
-    """Balanced Value Network"""
-    
+class ValueNetwork(models.Model):
+    """Value Network: Latent z -> Scalar value"""
     def __init__(self):
         super().__init__()
         self.dense1 = layers.Dense(24, activation='relu', name='val_fc1')
         self.dense2 = layers.Dense(12, activation='relu', name='val_fc2')
-        self.output = layers.Dense(1, activation='linear', name='val_output')
+        self.output_layer = layers.Dense(1, activation='linear', name='val_output')
     
     def call(self, z, training=False):
         x = self.dense1(z)
         x = self.dense2(x)
-        return tf.squeeze(self.output(x), axis=-1)
+        return tf.squeeze(self.output_layer(x), axis=-1)
 
+# ==========================================
+# 2. VAE Agent (Computation Logic)
+# ==========================================
 
-class GenAIModelBalanced:
-    """Balanced GenAI Model"""
+class VAEAgent:
+    """Chịu trách nhiệm về Model, Optimizer và TF Steps."""
     
-    def __init__(self, state_dim, latent_dim=24):
+    def __init__(self, state_dim, latent_dim=16, lr_vae=0.001, lr_val=0.0005):
         self.state_dim = state_dim
         self.latent_dim = latent_dim
         
-        self.encoder = VAEEncoderBalanced(latent_dim)
-        self.decoder = VAEDecoderBalanced(state_dim)
-        self.value_net = ValueNetworkBalanced()
+        # Models
+        self.encoder = VAEEncoder(latent_dim)
+        self.decoder = VAEDecoder(state_dim)
+        self.value_net = ValueNetwork()
         
-        # Slightly lower LR for stability
-        self.vae_optimizer = optimizers.Adam(learning_rate=0.0015)
-        self.value_optimizer = optimizers.Adam(learning_rate=0.0008)
+        # Optimizers
+        self.vae_optimizer = optimizers.Adam(learning_rate=lr_vae)
+        self.value_optimizer = optimizers.Adam(learning_rate=lr_val)
         
+        # Normalization params (cho Inference)
+        self.value_mean = 0.0
+        self.value_std = 1.0
+        
+        # Build models (Dummy pass)
         dummy = tf.zeros((1, state_dim))
         self._build_models(dummy)
     
@@ -93,6 +86,10 @@ class GenAIModelBalanced:
         z_mean, z_log_var = self.encoder(dummy_input)
         _ = self.decoder(z_mean)
         _ = self.value_net(z_mean)
+    
+    def set_normalization_params(self, mean, std):
+        self.value_mean = float(mean)
+        self.value_std = float(std)
     
     def sampling(self, z_mean, z_log_var):
         batch = tf.shape(z_mean)[0]
@@ -102,30 +99,34 @@ class GenAIModelBalanced:
     
     @tf.function
     def train_vae_step(self, current_states, next_states):
+        """Tính toán Loss và Gradient cho VAE."""
         with tf.GradientTape() as tape:
             z_mean, z_log_var = self.encoder(current_states, training=True)
             z = self.sampling(z_mean, z_log_var)
             reconstructed = self.decoder(z, training=True)
             
+            # Reconstruction Loss (MSE)
             recon_loss = tf.reduce_mean(
                 tf.reduce_sum(tf.square(next_states - reconstructed), axis=1)
             )
             
+            # KL Divergence
             kl_loss = -0.5 * tf.reduce_mean(
                 tf.reduce_sum(1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var), axis=1)
             )
             
-            total_loss = recon_loss + 0.08 * kl_loss  # Medium beta
+            total_loss = recon_loss + 0.1 * kl_loss
         
-        trainable_vars = self.encoder.trainable_variables + self.decoder.trainable_variables
-        grads = tape.gradient(total_loss, trainable_vars)
-        self.vae_optimizer.apply_gradients(zip(grads, trainable_vars))
+        vars_list = self.encoder.trainable_variables + self.decoder.trainable_variables
+        grads = tape.gradient(total_loss, vars_list)
+        self.vae_optimizer.apply_gradients(zip(grads, vars_list))
         
-        return total_loss, recon_loss, kl_loss
+        return total_loss
     
     @tf.function
     def train_value_step(self, current_states, target_values):
-        z_mean, _ = self.encoder(current_states, training=False)
+        """Tính toán Loss và Gradient cho Value Network."""
+        z_mean, _ = self.encoder(current_states, training=False) # Encoder đóng băng
         
         with tf.GradientTape() as tape:
             predicted_values = self.value_net(z_mean, training=True)
@@ -137,11 +138,13 @@ class GenAIModelBalanced:
         return loss
     
     def predict_dc_values(self, dc_states):
+        """Inference: Trả về giá trị thực (denormalized) cho các DC."""
         dc_states_tf = tf.convert_to_tensor(dc_states, dtype=tf.float32)
         z_mean = self.encoder.encode(dc_states_tf)
-        values = self.value_net(z_mean, training=False)
-        return values.numpy()
-    
+        normalized_values = self.value_net(z_mean, training=False)
+        
+        return (normalized_values.numpy() * self.value_std + self.value_mean)
+
     def save_weights(self, path_prefix):
         self.encoder.save_weights(f'{path_prefix}_encoder.weights.h5')
         self.decoder.save_weights(f'{path_prefix}_decoder.weights.h5')
@@ -151,37 +154,3 @@ class GenAIModelBalanced:
         self.encoder.load_weights(f'{path_prefix}_encoder.weights.h5')
         self.decoder.load_weights(f'{path_prefix}_decoder.weights.h5')
         self.value_net.load_weights(f'{path_prefix}_value.weights.h5')
-
-
-# Performance comparison metrics
-def get_architecture_stats():
-    """Get stats for architecture comparison"""
-    return {
-        'optimized': {
-            'latent_dim': 16,
-            'encoder_params': ~1800,
-            'decoder_params': ~1800,
-            'value_params': ~400,
-            'total_params': ~4000,
-            'expected_time': '~1 hour',
-            'expected_performance': '95%'
-        },
-        'balanced': {
-            'latent_dim': 24,
-            'encoder_params': ~3200,
-            'decoder_params': ~3200,
-            'value_params': ~700,
-            'total_params': ~7100,
-            'expected_time': '~1.5 hours',
-            'expected_performance': '98%'
-        },
-        'full': {
-            'latent_dim': 32,
-            'encoder_params': ~5000,
-            'decoder_params': ~5000,
-            'value_params': ~1000,
-            'total_params': ~11000,
-            'expected_time': '~2.5 hours',
-            'expected_performance': '100%'
-        }
-    }

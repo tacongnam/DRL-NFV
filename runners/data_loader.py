@@ -1,7 +1,7 @@
 import json
 import networkx as nx
 import config
-from core import DataCenter, SwitchNode
+from core import DataCenter
 
 def load_data(file_path):
     """
@@ -12,7 +12,6 @@ def load_data(file_path):
     
     graph = nx.Graph()
     dcs = [] # List chứa các object DataCenter
-    non_dcs = []
     
     # 1. Parse Nodes
     for node_id_str, node_data in data["V"].items():
@@ -43,11 +42,9 @@ def load_data(file_path):
             )
             dcs.append(dc)
         else:
-            non_dc = SwitchNode(
-                node_id=node_id
-            )
-            non_dcs.append(non_dc)
-
+            # SwitchNode không cần lưu vào list dcs vì Agent không tác động trực tiếp
+            pass 
+    
     # 2. Parse Edges (Physical Links)
     for link in data["E"]:
         u, v = int(link["u"]), int(link["v"])
@@ -86,7 +83,5 @@ def load_data(file_path):
     
     # Sắp xếp dcs theo ID để dễ indexing trong Agent
     dcs.sort(key=lambda x: x.id)
-    config.update_vnf_specs(vnf_specs)
-    config.ACTION_SPACE_SIZE = config.get_action_space_size()
     
     return graph, dcs, requests, vnf_specs

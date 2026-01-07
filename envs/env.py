@@ -1,23 +1,16 @@
 import gymnasium as gym
 import numpy as np
 import config
-from core.dc import DataCenter, SwitchNode
-from core.topology import TopologyManager
-from core.sfc_manager import SFCManager
-from core.simulator import Simulator
-from core.vnf import VNFInstance
+from core import DataCenter, SwitchNode, TopologyManager, SFCManager, Simulator
 
 class SFCEnvironment(gym.Env):
     """
     Unified RL Environment for SFC Placement
     """
-    
-    def __init__(self, graph, dcs_data, requests_data, dc_selector=None):
-        super().__init__()
-        
+    def __init__(self, physical_graph, dcs_data, requests_data, dc_selector=None):
         # Infrastructure
         # graph is physical graph (including switches)
-        self.topology = TopologyManager(graph.copy(), k_paths=3)
+        self.topology = TopologyManager(physical_graph.copy(), k_paths=3)
         self.initial_dcs = dcs_data
         self.requests_data = requests_data
         
@@ -44,7 +37,7 @@ class SFCEnvironment(gym.Env):
         self.current_dc_idx = 0
         self.actions_this_step = 0
         self.step_count = 0
-    
+
     def reset(self, seed=None):
         super().reset(seed=seed)
         
@@ -120,62 +113,80 @@ class SFCEnvironment(gym.Env):
             return self._handle_uninstall(dc, vnf_type)
     
     def _handle_allocation(self, dc, vnf_type):
-        # Find best request
+        """Allocate VNF to request (Debug Version)"""
+        from core.vnf import VNFInstance
+        
+        # 1. Tìm Request cần VNF này
         req = self._select_best_request(vnf_type, dc.id)
         if req is None:
+            # Mask bảo có, nhưng tìm không thấy -> Lỗi logic chọn request
+            # print(f"DEBUG: [Fail] No request needs VNF {vnf_type} at DC {dc.id}")
             return config.REWARD_INVALID, False
         
-        # 1. Get or Install VNF
-        # Check for idle VNF first
+        # 2. Kiểm tra tài nguyên DC (CPU/RAM)
         vnf = dc._get_idle_vnf(vnf_type)
         installed_new = False
         
         if vnf is None:
-            # Try to install new VNF
-            vnf = dc.install_vnf(vnf_type) # This handles resource check and consumption
+            vnf = dc.install_vnf(vnf_type)
             if vnf is None:
+                print(f"DEBUG: [Fail] DC {dc.id} Full Resources (CPU/RAM). Cannot install {vnf_type}")
                 return config.REWARD_INVALID, False
             installed_new = True
         
-        # 2. Route Bandwidth (if needed)
+        # 3. Kiểm tra Băng thông & Đường đi
         last_dc = req.get_last_placed_dc()
         prop_delay = 0.0
         hop_count = 0
+        path = []
         
         if last_dc != dc.id:
-            # Use TopologyManager to allocate BW on physical links
             success, path, delay = self.topology.allocate_bandwidth(
                 last_dc, dc.id, req.bandwidth
             )
             
             if not success:
-                # Rollback if VNF was just installed
-                if installed_new:
-                    dc.uninstall_vnf(vnf_type)
+                if installed_new: dc.uninstall_vnf(vnf_type)
+                print(f"DEBUG: [Fail] Bandwidth/Path fail. {last_dc}->{dc.id}. Req BW: {req.bandwidth}")
                 return config.REWARD_INVALID, False
             
             prop_delay = delay
             hop_count = len(path) - 1
             req.allocated_paths.append((last_dc, dc.id, req.bandwidth, path))
         
-        # 3. Assign VNF to request
+        # 4. Kiểm tra Latency (Quan trọng)
+        # Tính tổng thời gian dự kiến nếu đặt ở đây
+        proc_time = vnf.get_processing_time(dc.delay if dc.delay else 0)
+        estimated_total_time = req.elapsed_time + prop_delay + proc_time
+        
+        if estimated_total_time > req.max_delay:
+            # Hoàn trả tài nguyên ngay lập tức
+            if installed_new: dc.uninstall_vnf(vnf_type)
+            if last_dc != dc.id:
+                self.topology.release_bandwidth_on_path(path, req.bandwidth)
+                req.allocated_paths.pop()
+            
+            print(f"DEBUG: [Fail] Latency Violation! Est: {estimated_total_time:.2f} > Max: {req.max_delay:.2f}")
+            return config.REWARD_INVALID, False
+        
+        # === THÀNH CÔNG ===
+        # Assign VNF to request
         dc_delay = dc.delay if dc.delay else 0.0
         vnf.assign(req.id, dc_delay, waiting_time=0.0)
         
-        proc_delay = vnf.get_processing_time(dc_delay)
-        req.advance_chain(dc.id, prop_delay, proc_delay, vnf)
+        req.advance_chain(dc.id, prop_delay, proc_time, vnf)
         req.check_completion()
         
-        # 4. Calculate Reward
+        # Calculate reward
         base_reward = config.REWARD_SATISFIED if req.is_completed else config.REWARD_SATISFIED / 2
         delay_penalty = config.ALPHA_DELAY_PENALTY * prop_delay
         hop_penalty = config.BETA_HOP_PENALTY * hop_count
         reward = base_reward - delay_penalty - hop_penalty
         
-        # 5. Cleanup if completed
+        # Release bandwidth if completed
         if req.is_completed:
-            for _, _, bw, path in req.allocated_paths:
-                self.topology.release_bandwidth_on_path(path, bw)
+            for _, _, bw, p in req.allocated_paths:
+                self.topology.release_bandwidth_on_path(p, bw)
             req.allocated_paths.clear()
         
         return reward, req.is_completed
@@ -269,3 +280,10 @@ class SFCEnvironment(gym.Env):
             if dc.id == dc_id:
                 return dc
         return self.dcs[0]
+    
+    def get_first_dc(self):
+        server_dc = next((d for d in self.dcs if d.is_server), None)
+        if server_dc is None:
+            raise ValueError("No server DCs found to determine VAE state dimension.")
+        else:
+            return server_dc
