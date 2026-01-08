@@ -36,10 +36,11 @@ DRL-NFV/
 │   ├── train_dqn.py                # Training DQN
 │   └── train_vae.py                # Collect & train VAE
 │
-├── data/                            # Test datasets (30 files)
-│   ├── scenario_001.json
-│   ├── scenario_002.json
-│   └── ...
+├── data/                            # Test datasets (30+ files)
+│   ├── cogent_centers_atlanta_easy_s1.json
+│   ├── cogent_centers_atlanta_medium_s1.json
+│   ├── cogent_centers_atlanta_hard_s1.json
+│   └── ...                         # More locations & difficulties
 │
 ├── models/                          # Saved models
 │   ├── best_model_q.weights.h5    # DQN model
@@ -47,7 +48,9 @@ DRL-NFV/
 │   └── checkpoint_*.weights.h5     # Checkpoints
 │
 ├── fig/                             # Output figures
-│   └── comparison.png              # DQN vs VAE-DQN comparison
+│   ├── comparison_grouped.png      # Grouped by location & difficulty
+│   ├── comparison_by_difficulty.png # By difficulty level
+│   └── comparison_by_location.png  # By location
 │
 ├── config.py                        # Global configuration
 ├── main.py                          # CLI entry point
@@ -102,87 +105,81 @@ DRL-NFV/
 
 ## 🚀 Pipeline đầy đủ
 
-### Step 1: Train DQN (Random Data)
+### Pipeline tự động (Khuyến nghị)
 ```bash
-python main.py train random --episodes 500
+python main.py train pipeline --episodes 500 --vae-episodes 200
 ```
 
 **Chức năng:**
-- Generate random scenarios mỗi episode với progressive difficulty:
-  - Episode 0-30%: DC=4-6, Nodes=10-16, Requests=15-30 (Easy)
-  - Episode 30-60%: DC=5-8, Nodes=15-23, Requests=30-50 (Medium)
-  - Episode 60-100%: DC=6-10, Nodes=16-30, Requests=40-80 (Hard)
-- Epsilon decay: 1.0 → 0.01
-- Checkpoint every 50 episodes
-- Save best model to `models/best_model`
+1. **Train DQN** với random scenarios (500 episodes)
+2. **Collect VAE data** từ DQN đã train (200 episodes)
+3. **Train VAE models** (Encoder, Decoder, Value Network)
 
-**Output mẫu:**
+**Output:**
 ```
-Episode 1/500 [DC:4 N:14 VNF:6 Req:25]: R=450 AR=76.0% C:19 D:6 S:3245
-Episode 2/500 [DC:6 N:18 VNF:8 Req:35]: R=623 AR=82.9% C:29 D:6 S:4521
+================================================================================
+FULL TRAINING PIPELINE
+================================================================================
+Step 1: Train DQN (500 episodes)
+Step 2: Collect VAE data (200 episodes)
+Step 3: Train VAE models
+================================================================================
+
+>>> STEP 1: Training DQN with random scenarios...
+Episode 1/500 [DC:4 SW:14 VNF:6 Req:25]: R=450 AR=76.0%
 ...
-Checkpoint 50: AR=85.34% R=712.3 Memory=45230
+Checkpoint 50: AR=85.34%
 ...
-TRAINING COMPLETE: AR=94.28% R=1523.5
-```
 
-**Train với file cụ thể (optional):**
-```bash
-python main.py train dqn --data data/scenario_001.json --updates 40
-```
-
----
-
-### Step 2: Train VAE (Random Data)
-```bash
-python main.py train vae --episodes 200
-```
-
-**Chức năng:**
-- Collect DC state transitions từ random scenarios
-- Train VAE Encoder + Decoder để predict next DC state
-- Train Value Network để score DC priority
-- Save to `models/vae_model`
-
-**Output mẫu:**
-```
-Collecting VAE data: 200 episodes
-
+>>> STEP 2: Collecting VAE data using trained DQN...
 Episode 10/200: 45230 samples
-Episode 20/200: 89450 samples
 ...
-Collected 234567 transitions
 
 >>> Training VAE (234567 samples)...
     Epoch 5/50 - Loss: 0.4523
-    Epoch 10/50 - Loss: 0.3241
     ...
 
 >>> Training Value Network (234567 samples)...
     Epoch 5/100 - Loss: 0.2134
-    Epoch 10/100 - Loss: 0.1567
     ...
 
-✓ VAE model saved to models/vae_model
-```
-
-**Train với file cụ thể (optional):**
-```bash
-python main.py train vae --data data/scenario_001.json --vae-episodes 100
+================================================================================
+PIPELINE COMPLETE!
+  DQN model: models/best_model
+  VAE model: models/vae_model
+================================================================================
 ```
 
 ---
 
-### Step 3: Compare DQN vs VAE-DQN
+### Pipeline thủ công (Optional)
+
+#### Step 1: Train DQN
+```bash
+python main.py train random --episodes 500
+```
+
+#### Step 2: Train VAE
+```bash
+python main.py train vae --vae-episodes 200
+```
+
+---
+
+### So sánh DQN vs VAE-DQN
+
+#### Trên tất cả files (Mặc định)
 ```bash
 python main.py compare
 ```
 
 **Chức năng:**
-- Load cả 2 models (DQN và VAE-DQN)
-- Test trên **TẤT CẢ** files trong `data/` (30 files)
-- So sánh performance: Acceptance Ratio, E2E Delay
-- Vẽ biểu đồ comparison
+- Test trên **TẤT CẢ** files trong `data/` (30+ files)
+- Tính toán: Acceptance Ratio, E2E Delay, Throughput
+- Phân tích theo:
+  - **Location** (Atlanta, Chicago, Dallas, etc.)
+  - **Difficulty** (Easy, Medium, Hard)
+  - **Combined** (Location + Difficulty)
 
 **Output:**
 ```
@@ -192,38 +189,61 @@ Comparing DQN vs VAE-DQN on all files in data/
 
 Testing 30 files...
 
-File 1/30: scenario_001.json
-  DQN:     AR=92.3% Delay=47.5ms
-  VAE-DQN: AR=95.1% Delay=43.2ms
+File 1/30: cogent_centers_atlanta_easy_s1.json
+  DQN:     AR=92.3% Delay=47.5ms TP=245.6
+  VAE-DQN: AR=95.1% Delay=43.2ms TP=267.3
 
-File 2/30: scenario_002.json
-  DQN:     AR=89.7% Delay=51.3ms
-  VAE-DQN: AR=93.4% Delay=46.8ms
+File 2/30: cogent_centers_atlanta_medium_s1.json
+  DQN:     AR=89.7% Delay=51.3ms TP=223.4
+  VAE-DQN: AR=93.4% Delay=46.8ms TP=251.2
 ...
 
 ================================================================================
 OVERALL RESULTS (30 files)
 ================================================================================
-DQN:
-  Avg Acceptance Ratio: 90.45% ± 3.21%
-  Avg E2E Delay: 48.32ms ± 5.67ms
+DQN Average:
+  Acceptance Ratio: 90.45%
+  E2E Delay: 48.32ms
+  Throughput: 234.56
 
-VAE-DQN:
-  Avg Acceptance Ratio: 93.78% ± 2.89%
-  Avg E2E Delay: 44.15ms ± 4.23ms
+VAE-DQN Average:
+  Acceptance Ratio: 93.78%
+  E2E Delay: 44.15ms
+  Throughput: 256.78
 
 Improvement:
-  Acceptance Ratio: +3.33%
-  E2E Delay: -8.63%
+  AR: +3.33%
+  Delay: -8.63%
+  Throughput: +9.48%
 
-Plot saved: fig/comparison.png
-Results saved: test_results.json
+Plots saved:
+  - fig/comparison_grouped.png
+  - fig/comparison_by_difficulty.png
+  - fig/comparison_by_location.png
+Results saved: comparison_results.json
 ================================================================================
 ```
 
-**Compare với file cụ thể (optional):**
+**Biểu đồ được tạo:**
+
+1. **comparison_grouped.png**
+   - Hiển thị 3 metrics (AR, Delay, Throughput)
+   - Nhóm theo `location_difficulty` (VD: atlanta_easy, chicago_medium)
+   - So sánh DQN vs VAE-DQN cho từng nhóm
+
+2. **comparison_by_difficulty.png**
+   - Hiển thị 3 metrics
+   - Nhóm theo mức độ: Easy, Medium, Hard
+   - Trung bình tất cả locations cho mỗi mức độ
+
+3. **comparison_by_location.png**
+   - Hiển thị 3 metrics
+   - Nhóm theo địa danh (Atlanta, Chicago, Dallas, etc.)
+   - Trung bình tất cả difficulties cho mỗi location
+
+#### Trên file cụ thể (Optional)
 ```bash
-python main.py compare --data data/scenario_001.json --episodes 20
+python main.py compare --data data/cogent_centers_atlanta_easy_s1.json --episodes 20
 ```
 
 ---
@@ -292,14 +312,14 @@ python main.py compare --data data/scenario_001.json --episodes 20
 - **`data_loader.py`**: Load from JSON
 - **`train_dqn.py`**: DQN training loop
 - **`train_vae.py`**: VAE data collection + training
-- **`compare.py`**: DQN vs VAE-DQN comparison
+- **`compare.py`**: DQN vs VAE-DQN comparison với grouped analysis
 
 ### `config.py`
 **Global configuration**
 ```python
 MAX_VNF_TYPES = 10              # Padding size
 ACTION_SPACE_SIZE = 21          # 2*10 + 1
-MAX_SIM_TIME_PER_EPISODE = 5000 # Max simulation time (ms)
+MAX_SIM_TIME_PER_EPISODE = 1000 # Max simulation time (ms)
 LEARNING_RATE = 0.001
 GAMMA = 0.95
 EPSILON_START = 1.0
@@ -309,6 +329,18 @@ MEMORY_SIZE = 50000
 ```
 
 ## 📝 Input Data Format
+
+### Naming Convention
+```
+<location>_<difficulty>_s<scenario>.json
+```
+
+**Examples:**
+- `cogent_centers_atlanta_easy_s1.json`
+- `cogent_centers_chicago_medium_s2.json`
+- `cogent_centers_dallas_hard_s3.json`
+
+### File Structure
 ```json
 {
   "V": {
@@ -344,10 +376,10 @@ MEMORY_SIZE = 50000
 ### Training quá chậm
 ```bash
 # Giảm số episodes
-python main.py train random --episodes 200
+python main.py train pipeline --episodes 200 --vae-episodes 100
 
 # Hoặc giảm MAX_SIM_TIME_PER_EPISODE trong config.py
-MAX_SIM_TIME_PER_EPISODE = 3000
+MAX_SIM_TIME_PER_EPISODE = 500
 ```
 
 ### Out of memory
@@ -359,10 +391,16 @@ MEMORY_SIZE = 20000
 ### Model không converge
 ```bash
 # Tăng số episodes
-python main.py train random --episodes 1000
+python main.py train pipeline --episodes 1000 --vae-episodes 300
 
 # Hoặc điều chỉnh learning rate trong config.py
 LEARNING_RATE = 0.0005
+```
+
+### Missing plots
+```bash
+# Cài đặt matplotlib nếu chưa có
+pip install matplotlib
 ```
 
 ## 🎓 References

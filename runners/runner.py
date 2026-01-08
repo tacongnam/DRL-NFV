@@ -98,8 +98,8 @@ class Runner:
     
     @classmethod
     def train_vae_random(cls, num_episodes, dc_selector):
-        from runners.train_vae import train_vae_random
-        return train_vae_random(cls, num_episodes, dc_selector)
+        from runners.train_vae import collect_and_train_vae_random
+        return collect_and_train_vae_random(cls, num_episodes, dc_selector)
 
     @classmethod
     def compare_single_file(cls, data_file, dqn_model_path, vae_dqn_model_path, vae_model_path, num_episodes):
