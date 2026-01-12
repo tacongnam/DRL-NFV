@@ -28,6 +28,12 @@ class ActionHandler:
                 ActionHandler.tracker.track_action('ALLOCATE', config.REWARD_WAIT, 'no_request_needs_vnf')
             return config.REWARD_WAIT, False
         
+        # Check if request is about to expire
+        if req.get_remaining_time() < 1.0:
+            if ActionHandler.tracker:
+                ActionHandler.tracker.track_action('ALLOCATE', config.REWARD_WAIT, 'request_expiring')
+            return config.REWARD_WAIT, False
+        
         vnf = dc._get_idle_vnf(vnf_type)
         installed_new = False
         
@@ -63,6 +69,19 @@ class ActionHandler:
             req.allocated_paths.append((last_dc, dc.id, req.bandwidth, path))
         
         proc_time = vnf.get_processing_time(dc.delay if dc.delay else 0)
+        
+        # Check if allocation will exceed deadline
+        potential_elapsed = req.elapsed_time + prop_delay + proc_time
+        if potential_elapsed > req.max_delay:
+            # Rollback
+            if last_dc != dc.id and path:
+                env.topology.release_bandwidth_on_path(path, req.bandwidth)
+                req.allocated_paths.pop()
+            if installed_new:
+                dc.uninstall_vnf(vnf_type)
+            if ActionHandler.tracker:
+                ActionHandler.tracker.track_action('ALLOCATE', config.REWARD_WAIT, 'would_exceed_deadline')
+            return config.REWARD_WAIT, False
         
         dc_delay = dc.delay if dc.delay else 0.0
         vnf.assign(req.id, dc_delay, waiting_time=0.0)

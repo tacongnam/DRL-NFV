@@ -56,11 +56,12 @@ REWARD_WAIT = 0.0
 ALPHA_DELAY_PENALTY = 0.0
 BETA_HOP_PENALTY = 0.0
 
-PRIORITY_P2_SAME_DC = 10.0
-PRIORITY_P2_DIFF_DC = -10.0
-URGENCY_THRESHOLD = 5.0
-URGENCY_CONSTANT_C = 100.0
-EPSILON_SMALL = 1e-5
+# Paper values (from Algorithm 1)
+PRIORITY_P2_SAME_DC = 10.0       # High priority for same DC (locality)
+PRIORITY_P2_DIFF_DC = -10.0      # Penalty for cross-DC placement
+URGENCY_THRESHOLD = 5.0          # Threshold for urgent requests (Thr in paper)
+URGENCY_CONSTANT_C = 100.0       # Constant C for P3 calculation
+EPSILON_SMALL = 1e-5             # Small epsilon to avoid division by zero
 
 WEIGHTS_FILE = 'sfc_dqn.weights.h5'
 

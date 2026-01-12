@@ -90,18 +90,30 @@ class Observer:
 
     @staticmethod
     def calculate_dc_value(dc, sfc_manager, prev_state, global_stats=None):
+        """Paper-inspired value: prioritize urgent requests + available resources"""
         value = 0.0
         
+        # Factor 1: Request urgency (paper emphasizes E2E delay)
         if global_stats is not None and dc.id in global_stats:
             st = global_stats[dc.id]
-            value += st['urgency_sum'] * 10.0
+            # Urgency sum is key metric in paper
+            value += st['urgency_sum'] * 20.0
+            # Request count at this source
             value += st['source_count'] * 15.0
         
+        # Factor 2: Resource availability (paper considers this)
         if dc.is_server:
             cpu_avail = dc.cpu / config.DC_CPU_CYCLES
-            value += cpu_avail * 5.0
+            ram_avail = dc.ram / config.DC_RAM
+            storage_avail = dc.storage / config.DC_STORAGE
+            
+            # Paper prioritizes DCs with more available resources
+            avg_resource = (cpu_avail + ram_avail + storage_avail) / 3.0
+            value += avg_resource * 30.0
+            
+            # Bonus for having idle VNFs (reduces installation overhead)
             idle_count = sum(1 for v in dc.installed_vnfs if v.is_idle())
-            value += idle_count * 2.0
+            value += idle_count * 10.0
         
         return value
 

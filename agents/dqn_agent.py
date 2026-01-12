@@ -23,22 +23,36 @@ class DQNAgent:
         )
     
     def _build_network(self, state_shapes, action_size):
+        """Enhanced network with attention layer (paper approach)"""
         input_dc = layers.Input(shape=state_shapes[0], name="dc_state")
         input_dc_demand = layers.Input(shape=state_shapes[1], name="dc_demand")
         input_global = layers.Input(shape=state_shapes[2], name="global_state")
         
-        x1 = layers.Dense(32, activation='relu')(input_dc)
-        x2 = layers.Dense(64, activation='relu')(input_dc_demand)
-        x3 = layers.Dense(64, activation='relu')(input_global)
+        # Paper uses fully connected layers for each input
+        x1 = layers.Dense(64, activation='relu')(input_dc)
+        x1 = layers.Dense(32, activation='relu')(x1)
         
+        x2 = layers.Dense(96, activation='relu')(input_dc_demand)
+        x2 = layers.Dense(64, activation='relu')(x2)
+        
+        x3 = layers.Dense(96, activation='relu')(input_global)
+        x3 = layers.Dense(64, activation='relu')(x3)
+        
+        # Concatenate all inputs (paper approach)
         concat = layers.Concatenate()([x1, x2, x3])
+        
+        # Attention mechanism (paper highlights this)
         attn = layers.Dense(concat.shape[-1], activation='sigmoid')(concat)
         x = layers.Multiply()([concat, attn])
         
-        x = layers.Dense(96, activation='relu')(x)
+        # Additional processing layers
+        x = layers.Dense(128, activation='relu')(x)
         x = layers.LayerNormalization()(x)
+        x = layers.Dropout(0.2)(x)
+        x = layers.Dense(96, activation='relu')(x)
         x = layers.Dense(64, activation='relu')(x)
         
+        # Output layer
         q_values = layers.Dense(action_size, activation='linear')(x)
         
         return models.Model(

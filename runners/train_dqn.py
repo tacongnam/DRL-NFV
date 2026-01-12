@@ -26,8 +26,14 @@ def train_dqn_on_env(runner, env, agent, num_updates, dc_selector):
             step_count = 0
             
             while not done:
-                epsilon = config.EPSILON_MIN + (config.EPSILON_START - config.EPSILON_MIN) * \
-                          np.exp(-1.0 * global_step * 3 / total_training_steps)
+                progress = global_step / total_training_steps
+                if progress < 0.3:
+                    epsilon = 0.9 - 0.3 * progress / 0.3
+                elif progress < 0.7:
+                    epsilon = 0.6 - 0.4 * (progress - 0.3) / 0.4
+                else:
+                    epsilon = 0.2 - 0.15 * (progress - 0.7) / 0.3
+                epsilon = max(epsilon, config.EPSILON_MIN)
                 
                 mask = env._get_valid_actions_mask()
                 action = agent.select_action(state, epsilon, mask)
@@ -69,7 +75,7 @@ def train_dqn_random(runner, num_episodes, dc_selector):
     from runners.data_generator import DataGenerator
     
     print(f"\n{'='*80}", flush=True)
-    print(f"Training DQN with Random Data Generation", flush=True)
+    print(f"Training DQN with Enhanced Data Generation", flush=True)
     print(f"{'='*80}", flush=True)
     print(f"Total Episodes: {num_episodes}", flush=True)
     print(f"MAX_VNF_TYPES: {config.MAX_VNF_TYPES}", flush=True)
@@ -84,13 +90,41 @@ def train_dqn_random(runner, num_episodes, dc_selector):
     
     for ep_idx in range(num_episodes):
         try:
-            num_vnf_types = np.random.randint(4, config.MAX_VNF_TYPES + 1)
+            # Progressive difficulty with better resource allocation
+            progress = ep_idx / num_episodes
+            
+            if progress < 0.2:
+                # Easy: few DCs, moderate requests
+                dc_range = (5, 7)
+                sw_range = (8, 15)
+                req_range = (30, 50)
+                vnf_range = (4, 6)
+            elif progress < 0.5:
+                # Medium: more DCs, more requests
+                dc_range = (6, 8)
+                sw_range = (15, 25)
+                req_range = (50, 80)
+                vnf_range = (5, 8)
+            elif progress < 0.8:
+                # Hard: many DCs, many requests
+                dc_range = (7, 10)
+                sw_range = (20, 35)
+                req_range = (80, 120)
+                vnf_range = (6, config.MAX_VNF_TYPES)
+            else:
+                # Very Hard: max complexity
+                dc_range = (8, 10)
+                sw_range = (30, 50)
+                req_range = (100, 150)
+                vnf_range = (7, config.MAX_VNF_TYPES)
+            
+            num_vnf_types = np.random.randint(*vnf_range)
             
             scenario_data = DataGenerator.generate_scenario(
-                num_dcs_range=(5, 10),
-                num_switches_range=(30, 70),
+                num_dcs_range=dc_range,
+                num_switches_range=sw_range,
                 num_vnf_types=num_vnf_types,
-                num_requests_range=(50, 80)
+                num_requests_range=req_range
             )
             
             num_dcs = len([v for v in scenario_data['V'].values() if v.get('server', False)])
@@ -134,8 +168,14 @@ def train_dqn_random(runner, num_episodes, dc_selector):
             step_count = 0
             
             while not done:
-                epsilon = config.EPSILON_MIN + (config.EPSILON_START - config.EPSILON_MIN) * \
-                          np.exp(-1.0 * global_step * 3 / total_training_steps)
+                progress = global_step / total_training_steps
+                if progress < 0.3:
+                    epsilon = 0.9 - 0.3 * progress / 0.3
+                elif progress < 0.7:
+                    epsilon = 0.6 - 0.4 * (progress - 0.3) / 0.4
+                else:
+                    epsilon = 0.2 - 0.15 * (progress - 0.7) / 0.3
+                epsilon = max(epsilon, config.EPSILON_MIN)
                 
                 mask = env._get_valid_actions_mask()
                 action = agent.select_action(state, epsilon, mask)
@@ -161,7 +201,7 @@ def train_dqn_random(runner, num_episodes, dc_selector):
             dropped = stats['dropped_count']
             
             if (ep_idx + 1) % 10 != 0:
-                print(f"R={ep_reward:.0f} AR={info['acceptance_ratio']:.1f}% (C:{completed} D:{dropped} S:{step_count})", flush=True)
+                print(f"R={ep_reward:.0f} AR={info['acceptance_ratio']:.1f}% (C:{completed} D:{dropped} ε={epsilon:.3f})", flush=True)
             else:
                 print(f"Results:", flush=True)
                 print(f"  Reward: {ep_reward:.0f}", flush=True)
@@ -177,7 +217,6 @@ def train_dqn_random(runner, num_episodes, dc_selector):
         if (ep_idx + 1) % 50 == 0:
             recent_ar = np.mean(all_acceptances[-50:])
             recent_r = np.mean(all_rewards[-50:])
-            recent_completed = np.mean([env.sfc_manager.get_statistics()['completed_count'] for _ in range(min(50, len(all_acceptances)))])
             
             print(f"\n{'*'*60}", flush=True)
             print(f"Checkpoint {ep_idx+1}/{num_episodes}", flush=True)
