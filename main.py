@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import sys
 import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1' 
 import argparse
 import gc
 import tensorflow as tf

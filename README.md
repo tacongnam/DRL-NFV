@@ -120,8 +120,8 @@ python main.py train pipeline --episodes 500 --vae-episodes 200
 ================================================================================
 FULL TRAINING PIPELINE
 ================================================================================
-Step 1: Train DQN (500 episodes)
-Step 2: Collect VAE data (200 episodes)
+Step 1: Train DQN
+Step 2: Collect VAE data
 Step 3: Train VAE models
 ================================================================================
 
@@ -156,12 +156,12 @@ PIPELINE COMPLETE!
 
 #### Step 1: Train DQN
 ```bash
-python main.py train random --episodes 500
+python main.py train dqn --episodes 400
 ```
 
 #### Step 2: Train VAE
 ```bash
-python main.py train vae --vae-episodes 200
+python main.py train vae --vae-episodes 150
 ```
 
 ---
@@ -177,7 +177,7 @@ python main.py compare
 - Test trên **TẤT CẢ** files trong `data/` (30+ files)
 - Tính toán: Acceptance Ratio, E2E Delay, Throughput
 - Phân tích theo:
-  - **Location** (Atlanta, Chicago, Dallas, etc.)
+  - **Location**
   - **Difficulty** (Easy, Medium, Hard)
   - **Combined** (Location + Difficulty)
 
