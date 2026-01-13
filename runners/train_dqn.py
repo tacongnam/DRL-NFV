@@ -123,8 +123,7 @@ def train_dqn_random(runner, num_episodes, dc_selector):
             step_count = 0
             
             while not done:
-                progress_step = global_step / total_training_steps
-                epsilon = max(0.9 - 0.8 * progress_step, config.EPSILON_MIN)
+                epsilon = config.EPSILON_MIN + (config.EPSILON_START - config.EPSILON_MIN) * np.exp(- global_step * 3 / total_training_steps)
                 
                 mask = env._get_valid_actions_mask()
                 action = agent.select_action(state, epsilon, mask)

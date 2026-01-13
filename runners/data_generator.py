@@ -6,7 +6,7 @@ import config
 class DataGenerator:
     @staticmethod
     def generate_scenario(num_nodes_range=(30, 50),  # Mạng trung bình-lớn để train nhanh hơn 100 node
-                          server_ratio=0.2,           # 20% server
+                          server_ratio=0.15,           # 20% server
                           num_vnf_types=config.MAX_VNF_TYPES,
                           num_requests_range=(80, 150)): # Request dày đặc
         
