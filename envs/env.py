@@ -111,7 +111,7 @@ class SFCEnvironment(gym.Env):
         if not self.dc_order:
             self._update_dc_order()
         curr_dc = self._get_dc_by_id(self.dc_order[self.current_dc_idx])
-        return get_valid_actions_mask(curr_dc, self.sfc_manager.active_requests)
+        return get_valid_actions_mask(curr_dc, self.sfc_manager.active_requests, self.topology)
     
     def _create_dc(self, dc_config):
         if dc_config.is_server:

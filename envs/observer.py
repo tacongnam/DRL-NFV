@@ -48,11 +48,13 @@ class Observer:
             idle_counts = np.zeros(config.MAX_VNF_TYPES, dtype=np.float32)
         else:
             res_state = np.array([
-                (dc.cpu / config.DC_CPU_CYCLES) if dc.cpu else 0.0,
-                (dc.ram / config.DC_RAM) if dc.ram else 0.0,
-                (dc.storage / config.DC_STORAGE) if dc.storage else 0.0
+                (dc.cpu / config.MAX_CPU) if dc.cpu else 0.0,
+                (dc.ram / config.MAX_RAM) if dc.ram else 0.0,
+                (dc.storage / config.MAX_STORAGE) if dc.storage else 0.0
             ], dtype=np.float32)
             
+            res_state = np.clip(res_state, 0.0, 1.0)
+
             installed_counts = np.zeros(config.MAX_VNF_TYPES, dtype=np.float32)
             idle_counts = np.zeros(config.MAX_VNF_TYPES, dtype=np.float32)
             
@@ -77,7 +79,7 @@ class Observer:
             raw_min_time = st.get('min_time', 100.0)
             min_remaining_time = min(raw_min_time / 100.0, 1.0)
             
-            total_bw_need = st.get('bw_sum', 0) / 1000.0
+            total_bw_need = min(st.get('bw_sum', 0) / (config.MAX_BW * 2), 1.0)
 
         state = np.concatenate([
             res_state,
@@ -103,9 +105,9 @@ class Observer:
         
         # Factor 2: Resource availability (paper considers this)
         if dc.is_server:
-            cpu_avail = dc.cpu / config.DC_CPU_CYCLES
-            ram_avail = dc.ram / config.DC_RAM
-            storage_avail = dc.storage / config.DC_STORAGE
+            cpu_avail = dc.cpu / config.MAX_CPU
+            ram_avail = dc.ram / config.MAX_RAM
+            storage_avail = dc.storage / config.MAX_STORAGE
             
             # Paper prioritizes DCs with more available resources
             avg_resource = (cpu_avail + ram_avail + storage_avail) / 3.0
@@ -181,8 +183,8 @@ class Observer:
             active_reqs = Observer.get_active_requests(sfc_manager)
 
         res_state = np.array([
-            (dc.cpu / config.DC_CPU_CYCLES) if dc.cpu else 0.0,
-            (dc.ram / config.DC_RAM) if dc.ram else 0.0
+            (dc.cpu / config.MAX_CPU) if dc.cpu else 0.0,
+            (dc.ram / config.MAX_RAM) if dc.ram else 0.0
         ], dtype=np.float32)
         
         installed_counts = np.zeros(config.MAX_VNF_TYPES, dtype=np.float32)

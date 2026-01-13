@@ -21,7 +21,6 @@ class ActionHandler:
     @staticmethod
     def _handle_allocation(env, dc, vnf_type):
         from envs.request_selector import RequestSelector
-        
         req = RequestSelector.select_best(vnf_type, dc.id, env.sfc_manager.active_requests)
         if req is None:
             if ActionHandler.tracker:

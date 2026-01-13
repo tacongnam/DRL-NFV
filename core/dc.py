@@ -19,9 +19,9 @@ class DataCenter(Node):
                  cost_c=None, cost_h=None, cost_r=None):
         super().__init__(dc_id, is_server=True)
         
-        self.cpu = cpu if cpu is not None else config.DC_CPU_CYCLES
-        self.ram = ram if ram is not None else config.DC_RAM
-        self.storage = storage if storage is not None else config.DC_STORAGE
+        self.cpu = cpu if cpu is not None else config.MAX_CPU
+        self.ram = ram if ram is not None else config.MAX_RAM
+        self.storage = storage if storage is not None else config.MAX_STORAGE
         
         # Tổng tài nguyên ban đầu (để tính toán % sử dụng nếu cần)
         self.initial_resources = {'cpu': self.cpu, 'ram': self.ram, 'storage': self.storage}

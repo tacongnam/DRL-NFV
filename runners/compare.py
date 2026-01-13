@@ -9,10 +9,6 @@ from agents import DQNAgent, VAEAgent
 import config
 
 def compare_single_file(runner, data_file, dqn_model_path, vae_dqn_model_path, vae_model_path, num_episodes):
-    print(f"\n{'='*80}")
-    print(f"Comparing DQN vs VAE-DQN on: {os.path.basename(data_file)}")
-    print(f"{'='*80}\n")
-    
     runner.load_from(data_file)
     env = runner.create_env(PrioritySelector())
     
@@ -43,9 +39,13 @@ def compare_single_file(runner, data_file, dqn_model_path, vae_dqn_model_path, v
     dqn_ars, dqn_delays, dqn_throughputs = [], [], []
     vae_ars, vae_delays, vae_throughputs = [], [], []
     
+    print(f"Testing {num_episodes} episodes on {os.path.basename(data_file)}...")
+    
     for ep in range(num_episodes):
-        print(f"Episode {ep+1}/{num_episodes}: ", end='', flush=True)
+        # In tiến trình trên cùng 1 dòng (overwrite)
+        print(f"\r  Running Episode {ep+1}/{num_episodes}...", end='', flush=True)
         
+        # Test DQN
         env_dqn = runner.create_env(PrioritySelector())
         state, _ = env_dqn.reset()
         done = False
@@ -58,6 +58,7 @@ def compare_single_file(runner, data_file, dqn_model_path, vae_dqn_model_path, v
         dqn_delays.append(stats['avg_e2e_delay'])
         dqn_throughputs.append(sum(r.bandwidth for r in env_dqn.sfc_manager.completed_history))
         
+        # Test VAE-DQN
         env_vae = runner.create_env(VAESelector(vae_model))
         state, _ = env_vae.reset()
         done = False
@@ -69,14 +70,15 @@ def compare_single_file(runner, data_file, dqn_model_path, vae_dqn_model_path, v
         vae_ars.append(stats['acceptance_ratio'])
         vae_delays.append(stats['avg_e2e_delay'])
         vae_throughputs.append(sum(r.bandwidth for r in env_vae.sfc_manager.completed_history))
-        
-        print(f"DQN AR={dqn_ars[-1]:.1f}% VAE-DQN AR={vae_ars[-1]:.1f}%", flush=True)
     
-    print(f"\n{'-'*80}")
+    # Xóa dòng tiến trình
+    print("\r" + " " * 40 + "\r", end='')
+    
+    # In kết quả tổng hợp của file
     print(f"Results for {os.path.basename(data_file)}:")
-    print(f"  DQN     - AR: {np.mean(dqn_ars):.2f}%, Delay: {np.mean(dqn_delays):.2f}ms, TP: {np.mean(dqn_throughputs):.2f}")
-    print(f"  VAE-DQN - AR: {np.mean(vae_ars):.2f}%, Delay: {np.mean(vae_delays):.2f}ms, TP: {np.mean(vae_throughputs):.2f}")
-    print(f"{'-'*80}\n")
+    print(f"  DQN     - AR: {np.mean(dqn_ars):.2f}% | Delay: {np.mean(dqn_delays):.2f}ms | TP: {np.mean(dqn_throughputs):.2f}")
+    print(f"  VAE-DQN - AR: {np.mean(vae_ars):.2f}% | Delay: {np.mean(vae_delays):.2f}ms | TP: {np.mean(vae_throughputs):.2f}")
+    print(f"{'-'*60}")
     
     return {
         'file': os.path.basename(data_file),

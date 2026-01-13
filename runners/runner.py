@@ -1,8 +1,8 @@
-import os
 import networkx as nx
 import config
 from core import DataCenter
 from envs import SFCEnvironment
+from agents import DQNAgent
 
 class Runner:
     graph = None
@@ -12,9 +12,13 @@ class Runner:
     @classmethod
     def load_from(cls, file_path):
         from runners.data_loader import load_data
+
         cls.reset()
         graph, dcs, requests, vnf_specs = load_data(file_path)
+        
         config.update_vnf_specs(vnf_specs)
+        config.update_resource_constraints(dcs, graph)
+
         cls.graph = graph
         cls.dcs = dcs
         cls.requests = requests
@@ -54,7 +58,10 @@ class Runner:
                    for idx, req in enumerate(data_dict["R"])]
         
         dcs.sort(key=lambda x: x.id)
+        
         config.update_vnf_specs(vnf_specs)
+        config.update_resource_constraints(dcs, graph)
+
         cls.graph = graph
         cls.dcs = dcs
         cls.requests = requests
@@ -72,7 +79,6 @@ class Runner:
     @classmethod
     def train_dqn_file(cls, file_path, num_updates, dc_selector):
         from runners.train_dqn import train_dqn_on_env
-        from agents import DQNAgent
         
         cls.load_from(file_path)
         env = cls.create_env(dc_selector)

@@ -1,103 +1,88 @@
 import numpy as np
 import config
 
-def get_valid_actions_mask(curr_dc, active_requests):
-    """Enhanced masking with deadline-aware constraints"""
+def get_valid_actions_mask(curr_dc, active_requests, topology):
+    """
+    Mask optimized: 
+    1. Kiểm tra tài nguyên Node (CPU/RAM).
+    2. Chỉ kiểm tra kết nối mạng (Topology) CHO REQUEST ƯU TIÊN NHẤT.
+    """
     action_space_size = 1 + 2 * config.MAX_VNF_TYPES
     mask = np.zeros(action_space_size, dtype=bool)
+    mask[0] = True # Always allow WAIT
     
-    mask[0] = True
-    
-    # Count idle and installed VNFs
+    # --- 1. Thống kê VNF tại DC hiện tại ---
     idle_counts = {}
-    installed_counts = {}
+    installed_counts = {} # 0: không có, 1: có
+    
     for vnf in curr_dc.installed_vnfs:
         vnf_type = vnf.vnf_type
-        installed_counts[vnf_type] = installed_counts.get(vnf_type, 0) + 1
+        installed_counts[vnf_type] = 1 
         if vnf.is_idle():
             idle_counts[vnf_type] = idle_counts.get(vnf_type, 0) + 1
 
-    # Analyze needed VNFs with urgency
+    # --- 2. Thống kê nhu cầu (Demand) ---
     needed_vnfs = {}
-    urgent_vnfs = set()
-    near_expiry_vnfs = set()
-    
+    target_req = None
+    min_deadline = float('inf')
+
+    # Lọc request và tìm request gấp nhất để check mạng
     for req in active_requests:
         if not req.is_completed and not req.is_dropped:
-            remaining = req.get_remaining_time()
-            
-            # Skip requests that are about to expire anyway
-            if remaining < 1.0:
-                continue
-            
-            next_vnf = req.get_next_vnf()
-            if next_vnf is not None and next_vnf < config.MAX_VNF_TYPES:
-                needed_vnfs[next_vnf] = needed_vnfs.get(next_vnf, 0) + 1
-                
-                if remaining < config.URGENCY_THRESHOLD:
-                    urgent_vnfs.add(next_vnf)
-                if remaining < 10.0:
-                    near_expiry_vnfs.add(next_vnf)
-    
-    # UNINSTALL actions: conservative approach
+            # Logic tìm request ưu tiên (deadline gần nhất)
+            rem_time = req.get_remaining_time()
+            if rem_time < min_deadline and rem_time > 0.5: # 0.5 là ngưỡng an toàn
+                min_deadline = rem_time
+                target_req = req
+
+            nxt = req.get_next_vnf()
+            if nxt is not None and nxt < config.MAX_VNF_TYPES:
+                needed_vnfs[nxt] = needed_vnfs.get(nxt, 0) + 1
+
+    # --- 3. Mở Action UNINSTALL ---
     for vnf_type in range(config.NUM_VNF_TYPES):
-        if vnf_type >= config.MAX_VNF_TYPES:
-            continue
-            
         action_idx = vnf_type + 1
-        idle_count = idle_counts.get(vnf_type, 0)
-        needed_count = needed_vnfs.get(vnf_type, 0)
-        
-        # Only allow uninstall if:
-        # 1. Have idle VNFs
-        # 2. Idle count significantly exceeds need
-        # 3. Not urgent or near expiry
-        if idle_count > 0:
-            if vnf_type in urgent_vnfs:
-                # Never uninstall urgent VNFs unless we have many extras
-                if idle_count > needed_count + 2:
-                    mask[action_idx] = True
-            elif vnf_type in near_expiry_vnfs:
-                # Be cautious with near-expiry VNFs
-                if idle_count > needed_count + 1:
-                    mask[action_idx] = True
-            else:
-                # Normal case: allow if idle > needed
-                if idle_count > needed_count:
-                    mask[action_idx] = True
-    
-    # ALLOCATE actions: prioritize urgent and feasible
-    for vnf_type in range(config.NUM_VNF_TYPES):
-        if vnf_type >= config.MAX_VNF_TYPES:
-            continue
+        # Chỉ uninstall nếu số lượng rảnh > số lượng cần
+        if idle_counts.get(vnf_type, 0) > needed_vnfs.get(vnf_type, 0):
+             mask[action_idx] = True
+
+    # --- 4. Logic mạng (Connectivity) ---
+    network_ok = True
+    if target_req:
+        last_node = target_req.get_last_placed_dc()
+        if last_node != curr_dc.id:
+            # Gọi hàm check nhanh (BFS)
+            network_ok = topology.check_connectivity(last_node, curr_dc.id, target_req.bandwidth)
+
+    # --- 5. Mở Action ALLOCATE ---
+    if network_ok:
+        for vnf_type in range(config.NUM_VNF_TYPES):
+            action_idx = config.MAX_VNF_TYPES + 1 + vnf_type
             
-        action_idx = config.MAX_VNF_TYPES + 1 + vnf_type
-        
-        if vnf_type in needed_vnfs:
+            # Điều kiện Allocate:
+            # 1. Có sẵn VNF đang rảnh (Idle) -> Ưu tiên dùng lại
+            # 2. Chưa có VNF nhưng Server đủ tài nguyên -> Cài mới
+            
             has_idle = idle_counts.get(vnf_type, 0) > 0
-            has_resources = curr_dc.has_resources(vnf_type)
             
-            # Always allow if idle VNF exists
+            # Nếu có idle, luôn cho phép (không tốn tài nguyên cài đặt)
             if has_idle:
-                mask[action_idx] = True
-            # Allow install if:
-            # 1. Resources available
-            # 2. VNF is needed (urgent priority)
-            elif has_resources:
-                # Prioritize urgent and near-expiry
-                if vnf_type in urgent_vnfs or vnf_type in near_expiry_vnfs:
+                 if needed_vnfs.get(vnf_type, 0) > 0:
+                     mask[action_idx] = True
+            
+            # Nếu không có idle, kiểm tra tài nguyên server để cài mới
+            elif curr_dc.has_resources(vnf_type):
+                # Chỉ cài mới nếu thực sự cần VNF này
+                if needed_vnfs.get(vnf_type, 0) > 0:
                     mask[action_idx] = True
-                # Allow installation if we don't have this VNF at all
+                
+                # (Optional) Exploration: Cho phép cài VNF chưa từng có tại DC này
+                # Giúp Agent học cách chuẩn bị trước VNF
                 elif installed_counts.get(vnf_type, 0) == 0:
-                    mask[action_idx] = True
-                # Allow if demand is high
-                elif needed_vnfs[vnf_type] >= 2:
-                    mask[action_idx] = True
-    
-    # Ensure at least one valid action
-    if not np.any(mask[1:]):
-        mask[0] = True
-    
+                    # Chỉ mở exploration với xác suất nhỏ hoặc điều kiện lỏng hơn nếu cần
+                    # Ở đây ta giữ chặt để tránh lãng phí tài nguyên
+                    pass 
+
     return mask
 
 def get_vnf_type_from_action(action):

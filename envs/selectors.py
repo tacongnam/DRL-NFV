@@ -46,7 +46,7 @@ class PrioritySelector(DCSelector):
             
             # Small bonus for resource availability
             if dc.is_server:
-                cpu_ratio = dc.cpu / config.DC_CPU_CYCLES if dc.cpu else 0
+                cpu_ratio = dc.cpu / config.MAX_CPU if dc.cpu else 0
                 score += cpu_ratio * 10.0
             
             scores[dc.id] = score
