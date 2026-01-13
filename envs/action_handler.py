@@ -97,8 +97,8 @@ class ActionHandler:
             return config.REWARD_SATISFIED, True
         else:
             if ActionHandler.tracker:
-                ActionHandler.tracker.track_action('ALLOCATE', config.REWARD_WAIT, 'vnf_placed')
-            return config.REWARD_WAIT, False
+                ActionHandler.tracker.track_action('ALLOCATE', config.REWARD_STEP_COMPLETED, 'vnf_placed')
+            return config.REWARD_STEP_COMPLETED, False # Reward tiến bộ
     
     @staticmethod
     def _handle_uninstall(env, dc, vnf_type):

@@ -25,14 +25,7 @@ def train_dqn_on_env(runner, env, agent, num_episodes, dc_selector):
         step_count = 0
         
         while not done:
-            progress = global_step / total_training_steps
-            if progress < 0.3:
-                epsilon = 0.9 - 0.3 * progress / 0.3
-            elif progress < 0.7:
-                epsilon = 0.6 - 0.4 * (progress - 0.3) / 0.4
-            else:
-                epsilon = 0.2 - 0.15 * (progress - 0.7) / 0.3
-            epsilon = max(epsilon, config.EPSILON_MIN)
+            epsilon = config.EPSILON_MIN + (config.EPSILON_START - config.EPSILON_MIN) * np.exp(- global_step * 3 / total_training_steps)
             
             mask = env._get_valid_actions_mask()
             action = agent.select_action(state, epsilon, mask)

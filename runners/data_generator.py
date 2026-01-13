@@ -54,7 +54,7 @@ class DataGenerator:
             # Deadline cực gắt (Hard)
             proc_time = len(chain) * 3.0 # Giả sử xử lý 3ms/vnf
             prop_delay = 3.0             # Giả sử truyền dẫn 3ms
-            d_max = round((proc_time + prop_delay) * random.uniform(1.1, 1.4), 1)
+            d_max = round((proc_time + prop_delay) * random.uniform(1.5, 2.0), 1)
             
             requests.append({
                 "T": int(t), "st_r": src, "d_r": dst, "F_r": chain, 

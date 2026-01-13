@@ -113,6 +113,6 @@ class Runner:
         return compare_single_file(cls, data_file, dqn_model_path, vae_dqn_model_path, vae_model_path, num_episodes)
 
     @classmethod
-    def compare_all_files(cls, data_folder, dqn_model_path, vae_dqn_model_path, vae_model_path, num_episodes):
+    def compare_all_files(cls, data_folder, dqn_model_path, vae_dqn_model_path, vae_model_path, num_episodes, filter_str='', smart_sample=False):
         from runners.compare import compare_all_files
-        return compare_all_files(cls, data_folder, dqn_model_path, vae_dqn_model_path, vae_model_path, num_episodes)
+        return compare_all_files(cls, data_folder, dqn_model_path, vae_dqn_model_path, vae_model_path, num_episodes, filter_str, smart_sample)

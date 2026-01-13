@@ -5,6 +5,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
 import argparse
 import gc
 import tensorflow as tf
+tf.get_logger().setLevel('ERROR')
 import config
 from runners import Runner
 from envs import PrioritySelector, RandomSelector, VAESelector
@@ -36,6 +37,8 @@ def main():
     compare_parser = subparsers.add_parser('compare', help='Compare DQN vs VAE-DQN')
     compare_parser.add_argument('--data-folder', default='data', help='Folder with test files')
     compare_parser.add_argument('--episodes', type=int, default=10, help='Episodes per file (Test)')
+    compare_parser.add_argument('--filter', type=str, default='', help='Filter files by name (e.g., "hard", "cogent")')
+    compare_parser.add_argument('--smart-sample', action='store_true', help='Only run 1 file per Topology+Difficulty combination')
     
     args = parser.parse_args()
     
@@ -65,7 +68,7 @@ def main():
                 
                 # --- STEP 2: COLLECT DATA ---
                 print(f">>> [2/4] Collecting VAE Data ({args.vae_episodes} episodes)...")
-                Runner.train_vae_random(args.vae_episodes, RandomSelector())
+                Runner.train_vae_random(args.vae_episodes, PrioritySelector())
                 
                 # --- STEP 3: TRAIN VAE IS INCLUDED IN STEP 2 FUNCTION ---
                 # Runner.train_vae_random đã bao gồm việc train và save model
@@ -88,10 +91,19 @@ def main():
             elif args.mode == 'dqn':
                 Runner.train_dqn_random(args.episodes, PrioritySelector())
             elif args.mode == 'vae':
-                Runner.train_vae_random(args.vae_episodes, RandomSelector())
+                Runner.train_vae_random(args.vae_episodes, PrioritySelector())
         
         elif args.command == 'compare':
-            Runner.compare_all_files(args.data_folder, 'models/best_model', 'models/best_model', 'models/vae_model', args.episodes)
+            # Truyền thêm filter và smart_sample vào hàm
+            Runner.compare_all_files(
+                args.data_folder, 
+                'models/best_model', 
+                'models/best_model', 
+                'models/vae_model', 
+                args.episodes,
+                filter_str=args.filter,
+                smart_sample=args.smart_sample
+            )
             
     except Exception as e:
         print(f"\n❌ FATAL ERROR: {e}", flush=True)

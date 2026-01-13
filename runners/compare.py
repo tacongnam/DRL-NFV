@@ -94,19 +94,60 @@ def compare_single_file(runner, data_file, dqn_model_path, vae_dqn_model_path, v
         }
     }
 
-def compare_all_files(runner, data_folder, dqn_model_path, vae_dqn_model_path, vae_model_path, num_episodes):
+def compare_all_files(runner, data_folder, dqn_model_path, vae_dqn_model_path, vae_model_path, num_episodes, filter_str='', smart_sample=False):
     print(f"\n{'='*80}")
-    print(f"Comparing DQN vs VAE-DQN on all files in: {data_folder}")
+    print(f"Comparing DQN vs VAE-DQN")
+    print(f"Folder: {data_folder}")
+    if filter_str: print(f"Filter: '{filter_str}'")
+    if smart_sample: print(f"Mode: Smart Sampling (One per Topology+Difficulty)")
     print(f"{'='*80}\n")
     
-    data_files = sorted(glob.glob(os.path.join(data_folder, '*.json')))
-    print(f"Found {len(data_files)} files\n")
+    all_files = sorted(glob.glob(os.path.join(data_folder, '*.json')))
+    target_files = []
+
+    # --- LOGIC LỌC FILE ---
+    if smart_sample:
+        # Nhóm file theo (Topology, Difficulty) và chỉ lấy 1 file đầu tiên
+        seen_categories = set()
+        for f in all_files:
+            fname = os.path.basename(f)
+            
+            # Nếu có filter string, kiểm tra trước
+            if filter_str and filter_str not in fname:
+                continue
+
+            # Parse tên file: cogent_centers_atlanta_easy_s1.json
+            # Lấy Topology (cogent) và Difficulty (easy/medium/hard)
+            parts = fname.split('_')
+            topology = parts[0] # cogent, conus, nsf
+            
+            difficulty = 'unknown'
+            if 'easy' in fname: difficulty = 'easy'
+            elif 'medium' in fname: difficulty = 'medium'
+            elif 'hard' in fname: difficulty = 'hard'
+            
+            category = f"{topology}_{difficulty}"
+            
+            if category not in seen_categories:
+                target_files.append(f)
+                seen_categories.add(category)
+    else:
+        # Logic thường: Lấy tất cả hoặc theo filter
+        for f in all_files:
+            if filter_str in os.path.basename(f):
+                target_files.append(f)
+
+    print(f"Selected {len(target_files)} files out of {len(all_files)} for testing.\n")
+    
+    if len(target_files) == 0:
+        print("No files matched. Exiting.")
+        return []
     
     all_results = []
     
-    for file_idx, data_file in enumerate(data_files):
+    for file_idx, data_file in enumerate(target_files):
         print(f"\n{'='*60}")
-        print(f"File {file_idx+1}/{len(data_files)}: {os.path.basename(data_file)}")
+        print(f"File {file_idx+1}/{len(target_files)}: {os.path.basename(data_file)}")
         print(f"{'='*60}")
         
         try:
@@ -114,6 +155,8 @@ def compare_all_files(runner, data_folder, dqn_model_path, vae_dqn_model_path, v
             all_results.append(result)
         except Exception as e:
             print(f"ERROR: {e}")
+            import traceback
+            traceback.print_exc()
             continue
     
     print(f"\n{'='*80}")
@@ -142,16 +185,8 @@ def compare_all_files(runner, data_folder, dqn_model_path, vae_dqn_model_path, v
     print(f"{'='*80}\n")
     
     with open('comparison_results.json', 'w') as f:
-        json.dump({
-            'files': all_results,
-            'summary': {
-                'dqn': {'avg_ar': dqn_avg_ar, 'avg_delay': dqn_avg_delay, 'avg_throughput': dqn_avg_tp},
-                'vae_dqn': {'avg_ar': vae_avg_ar, 'avg_delay': vae_avg_delay, 'avg_throughput': vae_avg_tp}
-            }
-        }, f, indent=2)
-    
-    print("Results saved to comparison_results.json")
-    
+        json.dump({'files': all_results}, f, indent=2)
+        
     _plot_grouped_comparison(all_results)
     
     return all_results

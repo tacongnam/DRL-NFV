@@ -115,7 +115,7 @@ class VAEAgent:
                 tf.reduce_sum(1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var), axis=1)
             )
             
-            total_loss = recon_loss + 0.1 * kl_loss
+            total_loss = recon_loss + 0.01 * kl_loss
         
         vars_list = self.encoder.trainable_variables + self.decoder.trainable_variables
         grads = tape.gradient(total_loss, vars_list)

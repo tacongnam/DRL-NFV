@@ -92,32 +92,31 @@ class Observer:
 
     @staticmethod
     def calculate_dc_value(dc, sfc_manager, prev_state, global_stats=None):
-        """Paper-inspired value: prioritize urgent requests + available resources"""
-        value = 0.0
+        """
+        Simplified Value:
+        1. Tài nguyên còn lại (Quan trọng nhất để chứa thêm VNF).
+        2. Số lượng VNF đang Idle (Có sẵn để dùng ngay).
+        """
+        if not dc.is_server:
+            return -10.0 # Switch node luôn tệ
+
+        # Normalize resources (0.0 -> 1.0)
+        cpu_score = dc.cpu / config.MAX_CPU
+        ram_score = dc.ram / config.MAX_RAM
+        storage_score = dc.storage / config.MAX_STORAGE
         
-        # Factor 1: Request urgency (paper emphasizes E2E delay)
-        if global_stats is not None and dc.id in global_stats:
-            st = global_stats[dc.id]
-            # Urgency sum is key metric in paper
-            value += st['urgency_sum'] * 20.0
-            # Request count at this source
-            value += st['source_count'] * 15.0
+        # Base value: Trung bình cộng tài nguyên (trọng số 0.7)
+        resource_val = (cpu_score + ram_score + storage_score) / 3.0
         
-        # Factor 2: Resource availability (paper considers this)
-        if dc.is_server:
-            cpu_avail = dc.cpu / config.MAX_CPU
-            ram_avail = dc.ram / config.MAX_RAM
-            storage_avail = dc.storage / config.MAX_STORAGE
-            
-            # Paper prioritizes DCs with more available resources
-            avg_resource = (cpu_avail + ram_avail + storage_avail) / 3.0
-            value += avg_resource * 30.0
-            
-            # Bonus for having idle VNFs (reduces installation overhead)
-            idle_count = sum(1 for v in dc.installed_vnfs if v.is_idle())
-            value += idle_count * 10.0
+        # Idle VNF bonus: (trọng số 0.3)
+        # Nếu có nhiều VNF rảnh, khả năng phục vụ request ngay lập tức cao
+        idle_count = sum(1 for v in dc.installed_vnfs if v.is_idle())
+        idle_bonus = min(idle_count / 5.0, 1.0) # Cap tại 5 VNF
         
-        return value
+        # Tổng hợp
+        final_value = (0.7 * resource_val) + (0.3 * idle_bonus)
+        
+        return final_value * 100.0 # Scale lên để số không quá bé
 
     @staticmethod
     def get_all_dc_states(dcs, active_reqs):

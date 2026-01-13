@@ -168,13 +168,22 @@ python main.py train vae --vae-episodes 150
 
 ### So sánh DQN vs VAE-DQN
 
-#### Trên tất cả files (Mặc định)
+#### Trên 1 file mỗi nhóm
+```bash
+python main.py compare --smart-sample --episodes 10
+```
+
+#### Có filter (ví dụ "hard" hoặc "cogent")
+```bash
+python main.py compare --filter "hard" --episodes 10
+```
+
+#### Full
 ```bash
 python main.py compare
 ```
 
 **Chức năng:**
-- Test trên **TẤT CẢ** files trong `data/` (30+ files)
 - Tính toán: Acceptance Ratio, E2E Delay, Throughput
 - Phân tích theo:
   - **Location**
@@ -240,11 +249,6 @@ Results saved: comparison_results.json
    - Hiển thị 3 metrics
    - Nhóm theo địa danh (Atlanta, Chicago, Dallas, etc.)
    - Trung bình tất cả difficulties cho mỗi location
-
-#### Trên file cụ thể (Optional)
-```bash
-python main.py compare --data data/cogent_centers_atlanta_easy_s1.json --episodes 20
-```
 
 ---
 
@@ -316,17 +320,6 @@ python main.py compare --data data/cogent_centers_atlanta_easy_s1.json --episode
 
 ### `config.py`
 **Global configuration**
-```python
-MAX_VNF_TYPES = 10              # Padding size
-ACTION_SPACE_SIZE = 21          # 2*10 + 1
-MAX_SIM_TIME_PER_EPISODE = 1000 # Max simulation time (ms)
-LEARNING_RATE = 0.001
-GAMMA = 0.95
-EPSILON_START = 1.0
-EPSILON_MIN = 0.01
-BATCH_SIZE = 64
-MEMORY_SIZE = 50000
-```
 
 ## 📝 Input Data Format
 
@@ -371,42 +364,6 @@ MEMORY_SIZE = 50000
 - **Average E2E Delay**: Mean latency of completed requests
 - **Throughput**: Total bandwidth of completed requests
 
-## 🔧 Troubleshooting
-
-### Training quá chậm
-```bash
-# Giảm số episodes
-python main.py train pipeline --episodes 200 --vae-episodes 100
-
-# Hoặc giảm MAX_SIM_TIME_PER_EPISODE trong config.py
-MAX_SIM_TIME_PER_EPISODE = 500
-```
-
-### Out of memory
-```bash
-# Giảm MEMORY_SIZE trong config.py
-MEMORY_SIZE = 20000
-```
-
-### Model không converge
-```bash
-# Tăng số episodes
-python main.py train pipeline --episodes 1000 --vae-episodes 300
-
-# Hoặc điều chỉnh learning rate trong config.py
-LEARNING_RATE = 0.0005
-```
-
-### Missing plots
-```bash
-# Cài đặt matplotlib nếu chưa có
-pip install matplotlib
-```
-
 ## 🎓 References
 
 Paper: "Unlocking Reconfigurability for Deep Reinforcement Learning in SFC Provisioning" (IEEE Networking Letters, 2024)
-
-## 📧 Contact
-
-[Your contact info]
