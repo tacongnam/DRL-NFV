@@ -81,7 +81,7 @@ def train_dqn_random(runner, num_episodes, dc_selector):
             log_dropped.append(stats['dropped_count'])
             
             # Logging
-            if (ep_idx + 1) % 10 == 0:
+            if (ep_idx + 1) % 1 == 0:
                 print(f"Ep {ep_idx+1}/{num_episodes} | "
                       f"Rw: {np.mean(log_rewards):.1f} | AR: {np.mean(log_ars):.1f}% | "
                       f"Drop: {np.mean(log_dropped):.1f} | Eps: {epsilon:.3f}", flush=True)
