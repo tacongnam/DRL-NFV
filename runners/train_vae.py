@@ -82,7 +82,7 @@ def collect_and_train_vae_random(runner, num_episodes, dc_selector, dqn_model_pa
                                 value = Observer.calculate_dc_value(dc, env.sfc_manager, prev_s, global_stats_new)
                                 trainer.collect_transition(prev_s, curr_s, value)
             
-            if (ep_idx + 1) % 1 == 0:
+            if (ep_idx + 1) % 25 == 0:
                 print(f"Collected Episodes {ep_idx+1}/{num_episodes} | Total Samples: {trainer.size}", flush=True)
 
         except Exception as e:
