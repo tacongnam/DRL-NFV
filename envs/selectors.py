@@ -64,7 +64,7 @@ class VAESelector(DCSelector):
         if not active_requests:
             return [dc.id for dc in dcs]
         
-        dc_states = Observer.get_all_dc_states(dcs, active_requests)
+        dc_states = Observer.get_all_dc_states(dcs, active_requests, topology)
         values = self.agent.predict_dc_values(dc_states)
         ranked_indices = np.argsort(values.flatten())[::-1]
         

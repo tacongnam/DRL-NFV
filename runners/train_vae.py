@@ -15,7 +15,7 @@ def collect_and_train_vae_file(runner, file_path, num_episodes, dc_selector):
     env = runner.create_env(dc_selector)
     
     first_server = next((d for d in runner.dcs if d.is_server), None)
-    dummy_state = Observer.get_dc_state(first_server, env.sfc_manager, None)
+    dummy_state = Observer.get_dc_state(first_server, env.sfc_manager, None, None)
     dc_state_dim = dummy_state.shape[0]
     
     trainer = VAETrainer(dc_state_dim)
@@ -37,7 +37,7 @@ def collect_and_train_vae_file(runner, file_path, num_episodes, dc_selector):
                 
                 for dc in env.dcs:
                     if dc.is_server:
-                        prev_vae_states[dc.id] = Observer.get_dc_state(dc, env.sfc_manager, global_stats)
+                        prev_vae_states[dc.id] = Observer.get_dc_state(dc, env.sfc_manager, global_stats, env.topology)
             
             # 2. Thực hiện hành động (Dùng Random hoặc Selector có sẵn của env)
             mask = env._get_valid_actions_mask()
@@ -56,7 +56,7 @@ def collect_and_train_vae_file(runner, file_path, num_episodes, dc_selector):
                     if dc.is_server:
                         prev_s = prev_vae_states.get(dc.id)
                         if prev_s is not None:
-                            curr_s = Observer.get_dc_state(dc, env.sfc_manager, global_stats_new)
+                            curr_s = Observer.get_dc_state(dc, env.sfc_manager, global_stats_new, env.topology)
                             # Tính Value dựa trên trạng thái mới
                             value = Observer.calculate_dc_value(dc, env.sfc_manager, prev_s, global_stats_new)
                             trainer.collect_transition(prev_s, curr_s, value)
@@ -114,7 +114,7 @@ def collect_and_train_vae_random(runner, num_episodes, dc_selector, dqn_model_pa
             # Init Trainer & Agent nếu chưa có
             if trainer is None:
                 first_server = next((d for d in runner.dcs if d.is_server), None)
-                dummy_state = Observer.get_dc_state(first_server, env.sfc_manager, None)
+                dummy_state = Observer.get_dc_state(first_server, env.sfc_manager, None, None)
                 trainer = VAETrainer(dummy_state.shape[0])
             
             if dqn_agent is None and os.path.exists(f"{dqn_model_path}_q.weights.h5"):
@@ -136,7 +136,7 @@ def collect_and_train_vae_random(runner, num_episodes, dc_selector, dqn_model_pa
                     global_stats = Observer.precompute_global_stats(env.sfc_manager, active_reqs)
                     for dc in env.dcs:
                         if dc.is_server:
-                            prev_vae_states[dc.id] = Observer.get_dc_state(dc, env.sfc_manager, global_stats)
+                            prev_vae_states[dc.id] = Observer.get_dc_state(dc, env.sfc_manager, global_stats, env.topology)
                 
                 # 2. DRL Agent chọn hành động (cần chạy mỗi bước)
                 mask = env._get_valid_actions_mask()
@@ -157,7 +157,7 @@ def collect_and_train_vae_random(runner, num_episodes, dc_selector, dqn_model_pa
                         if dc.is_server:
                             prev_s = prev_vae_states.get(dc.id)
                             if prev_s is not None:
-                                curr_s = Observer.get_dc_state(dc, env.sfc_manager, global_stats_new)
+                                curr_s = Observer.get_dc_state(dc, env.sfc_manager, global_stats_new, env.topology)
                                 value = Observer.calculate_dc_value(dc, env.sfc_manager, prev_s, global_stats_new)
                                 trainer.collect_transition(prev_s, curr_s, value)
             

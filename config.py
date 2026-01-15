@@ -74,10 +74,10 @@ MEMORY_SIZE = 100000
 TARGET_NETWORK_UPDATE = 500
 TRAIN_INTERVAL = 10
 
-REWARD_SATISFIED = 5.0          # Tăng thưởng khi xong
-REWARD_STEP_COMPLETED = 0.5     # Thêm: Thưởng khi đặt thành công 1 VNF (tiến bộ)
-REWARD_DROPPED = -2.0
-REWARD_INVALID = -1.0
+REWARD_SATISFIED = 10.0          # Tăng thưởng khi xong
+REWARD_STEP_COMPLETED = 0.1     # Thêm: Thưởng khi đặt thành công 1 VNF (tiến bộ)
+REWARD_DROPPED = -5.0
+REWARD_INVALID = -2.0
 REWARD_UNINSTALL_NEEDED = -0.5
 REWARD_WAIT = 0.0
 

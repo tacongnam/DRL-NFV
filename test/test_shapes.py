@@ -9,8 +9,8 @@ sys.path.append(os.getcwd())
 
 import numpy as np
 import config
-from runners.read_data import Read_data
-from envs.drl_env import DRLEnv
+from runners.data_loader import Read_data
+from envs import SFCEnvironment
 from envs.observer import Observer
 
 def test_dimensions():
@@ -33,7 +33,7 @@ def test_dimensions():
     print(f"  Action Space: {config.ACTION_SPACE_SIZE}")
     
     # Create environment
-    env = DRLEnv(graph=graph, dcs=dc_list, requests_data=requests_data)
+    env = SFCEnvironment(graph=graph, dcs=dc_list, requests_data=requests_data)
     state, _ = env.reset()
     
     print(f"\nObservation Shapes:")
@@ -71,7 +71,7 @@ def test_dimensions():
     # Test VAE state
     server_dcs = [dc for dc in env.dcs if dc.is_server]
     if server_dcs:
-        vae_states = Observer.get_all_dc_states(server_dcs, env.sfc_manager)
+        vae_states = Observer.get_all_dc_states(server_dcs, env.sfc_manager, env.topology)
         vae_state_dim = Observer.get_state_dim()
         
         print(f"\nVAE State:")

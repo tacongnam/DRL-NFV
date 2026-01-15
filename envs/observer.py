@@ -4,7 +4,8 @@ import config
 class Observer:
     @staticmethod
     def get_state_dim():
-        return 3 + (2 * config.MAX_VNF_TYPES) + 3
+        # 3 (Res) + 10 (Install) + 10 (Idle) + 3 (Global) + 1 (Connectivity) = 27
+        return 3 + (2 * config.MAX_VNF_TYPES) + 3 + 1
 
     @staticmethod
     def get_active_requests(sfc_manager):
@@ -41,7 +42,7 @@ class Observer:
         return stats_map
 
     @staticmethod
-    def get_dc_state(dc, sfc_manager, global_stats=None):
+    def get_dc_state(dc, sfc_manager, global_stats=None, topology=None):
         if not dc.is_server:
             res_state = np.zeros(3, dtype=np.float32)
             installed_counts = np.zeros(config.MAX_VNF_TYPES, dtype=np.float32)
@@ -81,11 +82,44 @@ class Observer:
             
             total_bw_need = min(st.get('bw_sum', 0) / (config.MAX_BW * 2), 1.0)
 
+        # --- 3. Network Connectivity State (MỚI) ---
+        # Tính tỷ lệ băng thông còn dư của các cạnh nối với node này
+        # Nếu node bị cô lập (hết băng thông), giá trị này sẽ tiến về 0.
+        avg_node_connectivity = 0.0
+        
+        if topology is not None:
+            # Lấy graph từ topology manager
+            graph = topology.physical_graph
+            if dc.id in graph:
+                total_cap = 0.0
+                total_avail = 0.0
+                
+                # Duyệt qua các cạnh nối với DC này
+                for nbr, datadict in graph[dc.id].items():
+                    cap = datadict.get('capacity', config.LINK_BW_CAPACITY)
+                    avail = datadict.get('bw', 0)
+                    total_cap += cap
+                    total_avail += avail
+                
+                if total_cap > 0:
+                    avg_node_connectivity = total_avail / total_cap
+                else:
+                    avg_node_connectivity = 0.0
+        
+        # Nếu không có topology (lúc init), mặc định là 1.0 (kết nối tốt)
+        else:
+            avg_node_connectivity = 1.0
+
         state = np.concatenate([
-            res_state,
-            installed_counts,
-            idle_counts,
-            np.array([sfc_source_count, min_remaining_time, total_bw_need], dtype=np.float32)
+            res_state,          # 3
+            installed_counts,   # 10
+            idle_counts,        # 10
+            np.array([
+                sfc_source_count, 
+                min_remaining_time, 
+                total_bw_need,
+                avg_node_connectivity # <--- Thêm feature mới vào cuối
+            ], dtype=np.float32)
         ], dtype=np.float32)
         
         return state
@@ -100,31 +134,31 @@ class Observer:
         if not dc.is_server:
             return -10.0 # Switch node luôn tệ
 
-        # Normalize resources (0.0 -> 1.0)
+         # 1. Resource Score (như cũ)
         cpu_score = dc.cpu / config.MAX_CPU
         ram_score = dc.ram / config.MAX_RAM
         storage_score = dc.storage / config.MAX_STORAGE
-        
-        # Base value: Trung bình cộng tài nguyên (trọng số 0.7)
         resource_val = (cpu_score + ram_score + storage_score) / 3.0
         
-        # Idle VNF bonus: (trọng số 0.3)
-        # Nếu có nhiều VNF rảnh, khả năng phục vụ request ngay lập tức cao
         idle_count = sum(1 for v in dc.installed_vnfs if v.is_idle())
-        idle_bonus = min(idle_count / 5.0, 1.0) # Cap tại 5 VNF
+        idle_bonus = min(idle_count / 5.0, 1.0)
         
-        # Tổng hợp
-        final_value = (0.7 * resource_val) + (0.3 * idle_bonus)
+        # Lấy thông tin connectivity từ prev_state (phần tử cuối cùng)
+        # prev_state shape là (27,), connectivity là index -1
+        connectivity_val = prev_state[-1] if prev_state is not None and len(prev_state) > 0 else 0.0
         
-        return final_value * 100.0 # Scale lên để số không quá bé
+        # Tăng trọng số cho connectivity để tránh chọn node tắc nghẽn
+        final_value = (0.5 * resource_val) + (0.2 * idle_bonus) + (0.3 * connectivity_val)
+
+        return final_value * 100.0
 
     @staticmethod
-    def get_all_dc_states(dcs, active_reqs):
+    def get_all_dc_states(dcs, active_reqs, topology=None):
         global_stats = Observer.precompute_global_stats(None, active_reqs)
         states = []
         for dc in dcs:
             if dc.is_server:
-                s = Observer.get_dc_state(dc, None, global_stats)
+                s = Observer.get_dc_state(dc, None, global_stats, topology)
                 states.append(s)
         return np.array(states, dtype=np.float32)
     
@@ -177,13 +211,25 @@ class Observer:
         return np.concatenate(result)
     
     @staticmethod
-    def get_drl_observation(dc, sfc_manager, active_reqs=None):
+    def get_drl_observation(dc, sfc_manager, topology=None, active_reqs=None):
         if active_reqs is None:
             active_reqs = Observer.get_active_requests(sfc_manager)
 
+        # Tính Connectivity cho DC hiện tại
+        connectivity = 1.0
+        if topology:
+            graph = topology.physical_graph
+            if dc.id in graph:
+                total_cap = 0.0; total_avail = 0.0
+                for nbr, datadict in graph[dc.id].items():
+                    total_cap += datadict.get('capacity', 1000)
+                    total_avail += datadict.get('bw', 0)
+                connectivity = (total_avail / total_cap) if total_cap > 0 else 0.0
+
         res_state = np.array([
             (dc.cpu / config.MAX_CPU) if dc.cpu else 0.0,
-            (dc.ram / config.MAX_RAM) if dc.ram else 0.0
+            (dc.ram / config.MAX_RAM) if dc.ram else 0.0,
+            connectivity
         ], dtype=np.float32)
         
         installed_counts = np.zeros(config.MAX_VNF_TYPES, dtype=np.float32)

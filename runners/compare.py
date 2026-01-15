@@ -26,7 +26,7 @@ def compare_single_file(runner, data_file, dqn_model_path, vae_dqn_model_path, v
     print(f"VAE-DQN model loaded from {vae_dqn_model_path}")
     
     server_dc = next((d for d in runner.dcs if d.is_server), None)
-    dc_state_dim = Observer.get_dc_state(server_dc, env.sfc_manager, None).shape[0]
+    dc_state_dim = Observer.get_dc_state(server_dc, env.sfc_manager, None, env.topology).shape[0]
     vae_model = VAEAgent(state_dim=dc_state_dim, latent_dim=config.GENAI_LATENT_DIM)
     vae_model.load_weights(vae_model_path)
     
