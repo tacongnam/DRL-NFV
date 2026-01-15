@@ -16,11 +16,13 @@ class SFCEnvironment(gym.Env):
         
         self.action_space = gym.spaces.Discrete(config.ACTION_SPACE_SIZE)
         
+        # Define Observation Space
         chain_feat = 4 + config.MAX_VNF_TYPES + 3
+        # State shapes khớp với 3 nhánh input của DQN
         self.observation_space = gym.spaces.Tuple((
-            gym.spaces.Box(low=-1, high=np.inf, shape=(2 + 2*config.MAX_VNF_TYPES,), dtype=np.float32),
-            gym.spaces.Box(low=-1, high=np.inf, shape=(config.MAX_VNF_TYPES + 3*chain_feat,), dtype=np.float32),
-            gym.spaces.Box(low=-1, high=np.inf, shape=(4 + config.MAX_VNF_TYPES + 5*chain_feat,), dtype=np.float32)
+            gym.spaces.Box(low=-1, high=np.inf, shape=(3 + 2*config.MAX_VNF_TYPES,), dtype=np.float32), # DC State
+            gym.spaces.Box(low=-1, high=np.inf, shape=(config.MAX_VNF_TYPES + 3*chain_feat,), dtype=np.float32), # Demand
+            gym.spaces.Box(low=-1, high=np.inf, shape=(4 + config.MAX_VNF_TYPES + 5*chain_feat,), dtype=np.float32) # Global
         ))
         
         self.dc_order = []
@@ -28,7 +30,8 @@ class SFCEnvironment(gym.Env):
         self.actions_this_step = 0
         self.step_count = 0
 
-    def reset(self, seed=None):
+    def reset(self, seed=None, options=None):
+        # Gymnasium yêu cầu tham số seed và options
         super().reset(seed=seed)
         
         self.topology = TopologyManager(self.topology.physical_graph.copy(), k_paths=3)
@@ -69,7 +72,10 @@ class SFCEnvironment(gym.Env):
             self._update_dc_order()
             self.current_dc_idx = 0
         
+        # Check termination
         done = self.simulator.is_done()
+        truncated = False # Gymnasium yêu cầu trả về terminated, truncated
+        
         self.step_count += 1
         
         stats = self.sfc_manager.get_statistics()
@@ -81,7 +87,7 @@ class SFCEnvironment(gym.Env):
             'step': self.step_count
         }
         
-        return self._get_observation(), reward, done, False, info
+        return self._get_observation(), reward, done, truncated, info
     
     def _execute_action(self, dc, action):
         from envs.action_handler import ActionHandler
@@ -104,7 +110,8 @@ class SFCEnvironment(gym.Env):
         if not self.dc_order:
             self._update_dc_order()
         curr_dc = self._get_dc_by_id(self.dc_order[self.current_dc_idx])
-        return Observer.get_drl_observation(curr_dc, self.sfc_manager)
+        # Truyền topology để Observer tính toán trạng thái mạng (nếu đã update Observer)
+        return Observer.get_drl_observation(curr_dc, self.sfc_manager, self.topology)
     
     def _get_valid_actions_mask(self):
         from envs.utils import get_valid_actions_mask

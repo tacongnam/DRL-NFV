@@ -1,11 +1,30 @@
 #!/usr/bin/env python
-import sys
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1' 
+import sys
+import warnings
+import logging
+
+# --- 1. SUPPRESS TENSORFLOW & CUDA LOGS ---
+# Phải đặt biến môi trường TRƯỚC KHI import tensorflow
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # 3 = FATAL only (ẩn Info, Warning, Error)
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0' # Tắt OneDNN logs nếu có
+
+# --- 2. SUPPRESS GYM & DEPRECATION WARNINGS ---
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+# Lọc cụ thể thông báo về Gym unmaintained
+warnings.filterwarnings("ignore", message=".*Gym has been unmaintained.*")
+
+# --- 3. IMPORTS ---
 import argparse
 import gc
 import tensorflow as tf
-tf.get_logger().setLevel('ERROR')
+
+# Tắt logger của TF python
+tf.get_logger().setLevel(logging.ERROR)
+# Tắt absl logging (thư viện Google log mà TF dùng)
+logging.getLogger('absl').setLevel(logging.ERROR)
+
 import config
 from runners import Runner
 from envs import PrioritySelector, RandomSelector, VAESelector
@@ -15,8 +34,11 @@ try:
     gpus = tf.config.list_physical_devices('GPU')
     if gpus:
         for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-        print(f"✅ GPU Detected: {len(gpus)} device(s). Memory growth set.", flush=True)
+            try:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            except RuntimeError as e:
+                print(f"GPU memory growth error: {e}")
+        print(f"✅ GPU Detected: {len(gpus)} device(s).", flush=True)
     else:
         print("⚠️ No GPU detected. Training will be slow.", flush=True)
 except Exception as e:
@@ -26,14 +48,11 @@ def main():
     parser = argparse.ArgumentParser(description="DRL-based NFV Placement on Kaggle")
     subparsers = parser.add_subparsers(dest='command')
     
-    # Train command (Pipeline mode mặc định cho Kaggle)
     train_parser = subparsers.add_parser('train', help='Train models')
     train_parser.add_argument('mode', choices=['pipeline', 'dqn', 'vae'], default='pipeline')
-    # Default episodes phù hợp với giới hạn 12h
     train_parser.add_argument('--episodes', type=int, default=config.TRAIN_EPISODES, help='DRL Episodes')
     train_parser.add_argument('--vae-episodes', type=int, default=config.GENAI_DATA_EPISODES, help='VAE Data Episodes')
     
-    # Compare command
     compare_parser = subparsers.add_parser('compare', help='Compare DQN vs VAE-DQN')
     compare_parser.add_argument('--data-folder', default='data', help='Folder with test files')
     compare_parser.add_argument('--episodes', type=int, default=10, help='Episodes per file (Test)')
@@ -43,7 +62,6 @@ def main():
     args = parser.parse_args()
     
     if not args.command:
-        # Mặc định chạy pipeline nếu không có tham số (tiện cho Kaggle "Run All")
         args.command = 'train'
         args.mode = 'pipeline'
         args.episodes = config.TRAIN_EPISODES
@@ -54,33 +72,31 @@ def main():
             if args.mode == 'pipeline':
                 print(f"\n{'='*80}")
                 print(f"🚀 KAGGLE FULL PIPELINE START")
-                print(f"   Max Time Estimate: ~6-8 Hours")
                 print(f"{'='*80}\n", flush=True)
                 
                 # --- STEP 1: TRAIN DQN ---
                 print(f">>> [1/4] Training DQN ({args.episodes} episodes)...")
                 Runner.train_dqn_random(args.episodes, PrioritySelector())
                 
-                # Clean up memory
                 gc.collect()
                 tf.keras.backend.clear_session()
-                print("   ✔ Memory cleaned after DRL training.\n", flush=True)
+                print("   ✔ Memory cleaned.\n", flush=True)
                 
-                # --- STEP 2: COLLECT DATA ---
-                print(f">>> [2/4] Collecting VAE Data ({args.vae_episodes} episodes)...")
+                # --- STEP 2: COLLECT & TRAIN VAE ---
+                print(f">>> [2/4] Collecting & Training VAE ({args.vae_episodes} episodes)...")
                 Runner.train_vae_random(args.vae_episodes, PrioritySelector())
                 
-                # --- STEP 3: TRAIN VAE IS INCLUDED IN STEP 2 FUNCTION ---
-                # Runner.train_vae_random đã bao gồm việc train và save model
-                
                 gc.collect()
                 tf.keras.backend.clear_session()
-                print("   ✔ Memory cleaned after VAE training.\n", flush=True)
+                print("   ✔ Memory cleaned.\n", flush=True)
 
                 # --- STEP 4: AUTO COMPARE ---
-                print(f">>> [4/4] Auto-Running Benchmark on 'data/' folder...")
+                print(f">>> [4/4] Auto-Running Benchmark...")
                 if os.path.exists('data'):
-                    Runner.compare_all_files('data', 'models/best_model', 'models/best_model', 'models/vae_model', 10)
+                    Runner.compare_all_files(
+                        'data', 'models/best_model', 'models/best_model', 'models/vae_model', 
+                        10, filter_str='', smart_sample=True
+                    )
                 else:
                     print("   ⚠️ 'data' folder not found. Skipping compare.")
 
@@ -94,7 +110,6 @@ def main():
                 Runner.train_vae_random(args.vae_episodes, PrioritySelector())
         
         elif args.command == 'compare':
-            # Truyền thêm filter và smart_sample vào hàm
             Runner.compare_all_files(
                 args.data_folder, 
                 'models/best_model', 
