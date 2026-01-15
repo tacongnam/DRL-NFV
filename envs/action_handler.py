@@ -80,7 +80,7 @@ class ActionHandler:
                 dc.uninstall_vnf(vnf_type)
             if ActionHandler.tracker:
                 ActionHandler.tracker.track_action('ALLOCATE', config.REWARD_WAIT, 'would_exceed_deadline')
-            return config.REWARD_WAIT, False
+            return config.REWARD_INVALID, False
         
         dc_delay = dc.delay if dc.delay else 0.0
         vnf.assign(req.id, dc_delay, waiting_time=0.0)
