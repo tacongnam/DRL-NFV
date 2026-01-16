@@ -22,6 +22,14 @@ class Runner:
         cls.graph = graph
         cls.dcs = dcs
         cls.requests = requests
+        
+        if requests:
+            last_arrival = max(r['arrival_time'] for r in requests)
+            max_delay = max(r['max_delay'] for r in requests)
+            # Thêm buffer an toàn
+            config.MAX_SIM_TIME_PER_EPISODE = last_arrival + max_delay + 50.0
+            print(f"  >>> Auto-set Max Sim Time: {config.MAX_SIM_TIME_PER_EPISODE:.1f}")
+
         print(f"Loaded: {len([d for d in dcs if d.is_server])} servers, {config.NUM_VNF_TYPES} VNFs, {len(requests)} requests")
     
     @classmethod

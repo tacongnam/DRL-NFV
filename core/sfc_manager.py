@@ -1,5 +1,4 @@
 from core import Request
-from core.statistics import Statistics
 
 class SFCManager:
     def __init__(self):
@@ -55,10 +54,19 @@ class SFCManager:
         self.active_requests = still_active
 
     def get_statistics(self):
-        stats = Statistics.calculate(
-            self.completed_history,
-            self.dropped_history,
-            self.request_cursor
-        )
-        stats['active_count'] = len(self.active_requests)
-        return stats
+        """Tính toán thống kê trực tiếp tại đây, không cần class ngoài."""
+        total_completed = len(self.completed_history)
+        total_dropped = len(self.dropped_history)
+        total_processed = total_completed + total_dropped
+        
+        acc_ratio = (total_completed / total_processed * 100.0) if total_processed > 0 else 0.0
+        avg_delay = (sum(r.elapsed_time for r in self.completed_history) / total_completed) if total_completed > 0 else 0.0
+            
+        return {
+            'acceptance_ratio': acc_ratio,
+            'avg_e2e_delay': avg_delay,
+            'total_generated': self.request_cursor,
+            'active_count': len(self.active_requests),
+            'completed_count': total_completed,
+            'dropped_count': total_dropped
+        }

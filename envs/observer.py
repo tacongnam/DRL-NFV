@@ -4,14 +4,90 @@ import config
 class Observer:
     @staticmethod
     def get_state_dim():
-        # 3 (Res) + 10 (Install) + 10 (Idle) + 3 (Global) + 1 (Connectivity)
-        return 3 + (2 * config.MAX_VNF_TYPES) + 3 + 1
+        # 3(Res) + 20(VNF) + 3(Global) + 1(Connect)
+        return 27 + (2 * config.MAX_VNF_TYPES - 20) # Dynamic adjustment
 
     @staticmethod
-    def get_active_requests(sfc_manager):
-        return [r for r in sfc_manager.active_requests 
-                if not r.is_completed and not r.is_dropped]
+    def _get_dc_features(dc):
+        """Hàm helper: Trích xuất đặc trưng cơ bản của DC."""
+        if not dc.is_server:
+            return np.zeros(3), np.zeros(config.MAX_VNF_TYPES), np.zeros(config.MAX_VNF_TYPES)
+        
+        # Resource
+        res = np.array([dc.cpu/config.MAX_CPU, dc.ram/config.MAX_RAM, dc.storage/config.MAX_STORAGE], dtype=np.float32)
+        res = np.clip(res, 0.0, 1.0)
+        
+        # VNFs
+        installed, idle = np.zeros(config.MAX_VNF_TYPES), np.zeros(config.MAX_VNF_TYPES)
+        for v in dc.installed_vnfs:
+            if v.vnf_type < config.MAX_VNF_TYPES:
+                installed[v.vnf_type] += 1
+                if v.is_idle(): idle[v.vnf_type] += 1
+        
+        return res, installed/10.0, idle/10.0
 
+    @staticmethod
+    def get_dc_state(dc, sfc_manager, global_stats=None, topology=None):
+        """State cho VAE: Resource + Global + Connectivity"""
+        res_state, install, idle = Observer._get_dc_features(dc)
+
+        # Global stats
+        src_count, min_time, bw_need = 0.0, 1.0, 0.0
+        if global_stats and dc.id in global_stats:
+            st = global_stats[dc.id]
+            src_count = min(st['source_count'] / 10.0, 1.0)
+            min_time = min(st['min_time'] / 100.0, 1.0)
+            bw_need = min(st['bw_sum'] / (config.MAX_BW * 2), 1.0)
+
+        # Connectivity
+        conn = 0.0
+        if topology and dc.id in topology.physical_graph:
+            g = topology.physical_graph
+            cap = sum(g[dc.id][n].get('capacity', 1000) for n in g[dc.id])
+            avail = sum(g[dc.id][n].get('bw', 0) for n in g[dc.id])
+            conn = avail / cap if cap > 0 else 0.0
+        elif not topology: 
+            conn = 1.0
+
+        return np.concatenate([res_state, install, idle, [src_count, min_time, bw_need, conn]], dtype=np.float32)
+
+    @staticmethod
+    def get_drl_observation(dc, sfc_manager, topology=None, active_reqs=None):
+        """State cho DQN (3 nhánh)."""
+        if active_reqs is None:
+            active_reqs = [r for r in sfc_manager.active_requests if not r.is_completed and not r.is_dropped]
+
+        # Branch 1: DC State
+        res_state, install, idle = Observer._get_dc_features(dc)
+        s1 = np.concatenate([res_state, install, idle], dtype=np.float32)
+
+        # Branch 2: Demand (Local)
+        dc_reqs = [r for r in active_reqs if r.source == dc.id]
+        vnf_demand = np.zeros(config.MAX_VNF_TYPES, dtype=np.float32)
+        for r in dc_reqs:
+            for v in r.chain: 
+                if v < config.MAX_VNF_TYPES: vnf_demand[v] += 1
+        vnf_demand /= max(1, len(active_reqs))
+        s2 = np.concatenate([vnf_demand, Observer._aggregate_chain_stats(dc_reqs, 3)], dtype=np.float32)
+
+        # Branch 3: Global
+        total = len(active_reqs)
+        avg_rem = np.mean([r.get_remaining_time() for r in active_reqs]) / 100.0 if total else 1.0
+        avg_bw = np.mean([r.bandwidth for r in active_reqs]) / 1000.0 if total else 0.0
+        
+        fin = len(sfc_manager.completed_history) + len(sfc_manager.dropped_history)
+        drop_rate = len(sfc_manager.dropped_history) / fin if fin else 0.0
+        
+        glob_demand = np.zeros(config.MAX_VNF_TYPES, dtype=np.float32)
+        for r in active_reqs:
+            for v in r.chain:
+                if v < config.MAX_VNF_TYPES: glob_demand[v] += 1
+        glob_demand /= max(1, total)
+
+        s3 = np.concatenate([[total/50.0, avg_rem, avg_bw, drop_rate], glob_demand, Observer._aggregate_chain_stats(active_reqs, 5)], dtype=np.float32)
+
+        return (s1, s2, s3)
+    
     @staticmethod
     def precompute_global_stats(sfc_manager, active_reqs=None):
         if active_reqs is None:
@@ -40,75 +116,7 @@ class Observer:
             entry['bw_sum'] += req.bandwidth
             
         return stats_map
-
-    @staticmethod
-    def get_dc_state(dc, sfc_manager, global_stats=None, topology=None):
-        # --- 1. Resource State ---
-        if not dc.is_server:
-            res_state = np.zeros(3, dtype=np.float32)
-            installed_counts = np.zeros(config.MAX_VNF_TYPES, dtype=np.float32)
-            idle_counts = np.zeros(config.MAX_VNF_TYPES, dtype=np.float32)
-        else:
-            res_state = np.array([
-                (dc.cpu / config.MAX_CPU) if dc.cpu else 0.0,
-                (dc.ram / config.MAX_RAM) if dc.ram else 0.0,
-                (dc.storage / config.MAX_STORAGE) if dc.storage else 0.0
-            ], dtype=np.float32)
-            
-            res_state = np.clip(res_state, 0.0, 1.0)
-
-            installed_counts = np.zeros(config.MAX_VNF_TYPES, dtype=np.float32)
-            idle_counts = np.zeros(config.MAX_VNF_TYPES, dtype=np.float32)
-            
-            for vnf in dc.installed_vnfs:
-                vnf_idx = vnf.vnf_type
-                if vnf_idx < config.MAX_VNF_TYPES:
-                    installed_counts[vnf_idx] += 1
-                    if vnf.is_idle():
-                        idle_counts[vnf_idx] += 1
-            
-            installed_counts /= 10.0
-            idle_counts /= 10.0
-
-        # --- 2. Global/Request State ---
-        sfc_source_count = 0.0
-        min_remaining_time = 1.0
-        total_bw_need = 0.0
-        
-        if global_stats is not None and dc.id in global_stats:
-            st = global_stats[dc.id]
-            sfc_source_count = min(st.get('source_count', 0) / 10.0, 1.0)
-            
-            raw_min_time = st.get('min_time', 100.0)
-            min_remaining_time = min(raw_min_time / 100.0, 1.0)
-            
-            total_bw_need = min(st.get('bw_sum', 0) / (config.MAX_BW * 2), 1.0)
-
-        # --- 3. Network Connectivity ---
-        avg_connectivity = 0.0
-        if topology:
-            graph = topology.physical_graph
-            if dc.id in graph:
-                total_cap = 0.0
-                total_avail = 0.0
-                for nbr, datadict in graph[dc.id].items():
-                    total_cap += datadict.get('capacity', config.LINK_BW_CAPACITY)
-                    total_avail += datadict.get('bw', 0)
-                
-                if total_cap > 0:
-                    avg_connectivity = total_avail / total_cap
-        else:
-            avg_connectivity = 1.0
-
-        state = np.concatenate([
-            res_state,
-            installed_counts,
-            idle_counts,
-            np.array([sfc_source_count, min_remaining_time, total_bw_need, avg_connectivity], dtype=np.float32)
-        ], dtype=np.float32)
-        
-        return state
-
+    
     @staticmethod
     def calculate_dc_value(dc, sfc_manager, prev_state, global_stats=None):
         if not dc.is_server:
@@ -125,36 +133,16 @@ class Observer:
         
         idle_count = sum(1 for v in dc.installed_vnfs if v.is_idle())
         idle_bonus = min(idle_count / 5.0, 1.0)
+
+        # Chuẩn hóa chi phí (Giả sử max cost tổng ~ 500)
+        norm_cost = (dc.cost_c + dc.cost_r + dc.cost_h) / 500.0 
+        cost_penalty = min(norm_cost, 1.0)
         
-        # Công thức Value cải tiến: Kết hợp Tài nguyên + Kết nối mạng
-        final_value = (0.4 * resource_val) + (0.4 * connectivity_score) + (0.2 * idle_bonus)
+        # Công thức Value cải tiến: Resource + Connectivity - Cost
+        final_value = (0.4 * resource_val) + (0.3 * connectivity_score) + (0.3 * idle_bonus) - (0.3 * cost_penalty)
         
         return final_value * 100.0
 
-    @staticmethod
-    def get_all_dc_states(dcs, active_reqs, topology=None):
-        global_stats = Observer.precompute_global_stats(None, active_reqs)
-        states = []
-        for dc in dcs:
-            if dc.is_server:
-                s = Observer.get_dc_state(dc, None, global_stats, topology)
-                states.append(s)
-        return np.array(states, dtype=np.float32)
-    
-    @staticmethod
-    def _encode_chain_pattern(chain, max_length=4):
-        chain_seq = np.full(max_length, -1, dtype=np.float32)
-        for i, vnf in enumerate(chain[:max_length]):
-            if vnf < config.MAX_VNF_TYPES:
-                chain_seq[i] = vnf / config.MAX_VNF_TYPES
-        
-        vnf_presence = np.zeros(config.MAX_VNF_TYPES, dtype=np.float32)
-        for vnf in chain:
-            if vnf < config.MAX_VNF_TYPES:
-                vnf_presence[vnf] = 1.0
-        
-        return np.concatenate([chain_seq, vnf_presence])
-    
     @staticmethod
     def _aggregate_chain_stats(active_reqs, max_top_chains=5):
         from collections import Counter
@@ -190,70 +178,50 @@ class Observer:
         return np.concatenate(result)
     
     @staticmethod
-    def get_drl_observation(dc, sfc_manager, topology=None, active_reqs=None):
-        # Đảm bảo thứ tự tham số khớp với env.py
-        if active_reqs is None:
-            active_reqs = Observer.get_active_requests(sfc_manager)
-
-        # --- FIX: Thêm Storage vào để đủ 3 resource features (CPU, RAM, STORAGE) ---
-        # Shape cũ: 2 (CPU, RAM) -> Tổng 22 -> Lỗi
-        # Shape mới: 3 (CPU, RAM, Storage) -> Tổng 23 -> Khớp Model
-        res_state = np.array([
-            (dc.cpu / config.MAX_CPU) if dc.cpu else 0.0,
-            (dc.ram / config.MAX_RAM) if dc.ram else 0.0,
-            (dc.storage / config.MAX_STORAGE) if dc.storage else 0.0 
-        ], dtype=np.float32)
-        
-        installed_counts = np.zeros(config.MAX_VNF_TYPES, dtype=np.float32)
-        idle_counts = np.zeros(config.MAX_VNF_TYPES, dtype=np.float32)
-        
-        if dc.is_server:
-            for vnf in dc.installed_vnfs:
-                idx = vnf.vnf_type
-                if idx < config.MAX_VNF_TYPES:
-                    installed_counts[idx] += 1
-                    if vnf.is_idle(): 
-                        idle_counts[idx] += 1
-            installed_counts /= 10.0
-            idle_counts /= 10.0
-        
-        # 3 + 10 + 10 = 23 features
-        s1 = np.concatenate([res_state, installed_counts, idle_counts], dtype=np.float32)
-
-        vnf_demand_at_dc = np.zeros(config.MAX_VNF_TYPES, dtype=np.float32)
-        dc_chains = []
+    def precompute_global_stats(sfc_manager, active_reqs): # Giữ nguyên logic cũ
+        stats = {}
         for req in active_reqs:
-            if req.source == dc.id:
-                for vnf_type in req.chain:
-                    if isinstance(vnf_type, int) and vnf_type < config.MAX_VNF_TYPES:
-                        vnf_demand_at_dc[vnf_type] += 1
-                dc_chains.append(req)
-        
-        vnf_demand_at_dc /= max(1, len(active_reqs))
-        chain_patterns_dc = Observer._aggregate_chain_stats(dc_chains, max_top_chains=3)
-        s2 = np.concatenate([vnf_demand_at_dc, chain_patterns_dc], dtype=np.float32)
+            sid = req.source
+            if sid not in stats: stats[sid] = {'source_count': 0, 'min_time': 9999, 'bw_sum': 0}
+            stats[sid]['source_count'] += 1
+            stats[sid]['min_time'] = min(stats[sid]['min_time'], req.get_remaining_time())
+            stats[sid]['bw_sum'] += req.bandwidth
+        return stats
 
-        total_count = len(active_reqs) / 50.0
-        avg_rem = np.mean([r.get_remaining_time() for r in active_reqs]) / 100.0 if active_reqs else 1.0
-        avg_bw = np.mean([r.bandwidth for r in active_reqs]) / 1000.0 if active_reqs else 0.0
+    @staticmethod
+    def calculate_dc_value(dc, sfc_manager, prev_state, global_stats=None):
+        if not dc.is_server: return -10.0
+        # Prev state last idx is connectivity
+        conn = prev_state[-1] if len(prev_state) > 0 else 0.0
         
-        total_finished = len(sfc_manager.completed_history) + len(sfc_manager.dropped_history)
-        dropped_rate = len(sfc_manager.dropped_history) / total_finished if total_finished > 0 else 0.0
+        res = (dc.cpu/config.MAX_CPU + dc.ram/config.MAX_RAM)/2
+        idle = min(sum(1 for v in dc.installed_vnfs if v.is_idle())/5.0, 1.0)
         
-        global_vnf_demand = np.zeros(config.MAX_VNF_TYPES, dtype=np.float32)
-        if active_reqs:
-            for req in active_reqs:
-                for vnf_type in req.chain:
-                    if isinstance(vnf_type, int) and vnf_type < config.MAX_VNF_TYPES:
-                        global_vnf_demand[vnf_type] += 1
-            global_vnf_demand /= max(1, len(active_reqs))
+        norm_cost = min((dc.cost_c + dc.cost_r + dc.cost_h)/500.0, 1.0)
         
-        chain_patterns_global = Observer._aggregate_chain_stats(active_reqs, max_top_chains=5)
-        
-        s3 = np.concatenate([
-            np.array([total_count, avg_rem, avg_bw, dropped_rate], dtype=np.float32),
-            global_vnf_demand,
-            chain_patterns_global
-        ], dtype=np.float32)
+        return (0.4 * res + 0.3 * conn + 0.2 * idle - 0.2 * norm_cost) * 100.0
 
-        return (s1, s2, s3)
+    @staticmethod
+    def _aggregate_chain_stats(reqs, top_k): # Giữ nguyên, chỉ thu gọn
+        from collections import Counter
+        counts = Counter(tuple(r.chain) for r in reqs)
+        res = []
+        for chain, c in counts.most_common(top_k):
+            pat = np.full(4, -1, dtype=np.float32)
+            for i, v in enumerate(chain[:4]): pat[i] = v / config.MAX_VNF_TYPES
+            pres = np.zeros(config.MAX_VNF_TYPES); pres[list(chain)] = 1.0
+            
+            # Simplified stats calc
+            sub = [r for r in reqs if tuple(r.chain) == chain]
+            bw = np.mean([r.bandwidth for r in sub]) / 1000.0
+            rem = np.mean([r.get_remaining_time() for r in sub]) / 100.0
+            res.append(np.concatenate([pat, pres, [c/len(reqs), bw, rem]]))
+            
+        feat = 4 + config.MAX_VNF_TYPES + 3
+        while len(res) < top_k: res.append(np.zeros(feat, dtype=np.float32))
+        return np.concatenate(res)
+    
+    @staticmethod
+    def get_all_dc_states(dcs, active_reqs, topology=None):
+        g = Observer.precompute_global_stats(None, active_reqs)
+        return np.array([Observer.get_dc_state(d, None, g, topology) for d in dcs if d.is_server], dtype=np.float32)

@@ -15,7 +15,6 @@ DRL-NFV/
 │   ├── request.py                  # SFC Request
 │   ├── sfc_manager.py              # Quản lý requests
 │   ├── simulator.py                # Discrete-event simulator
-│   ├── statistics.py               # Thống kê metrics
 │   ├── topology.py                 # Network topology manager
 │   └── vnf.py                      # VNF Instance
 │
@@ -282,7 +281,6 @@ Results saved: comparison_results.json
 - **`simulator.py`**: Discrete-event simulation, time advance
 - **`topology.py`**: K-shortest paths, bandwidth allocation/release
 - **`vnf.py`**: VNF instance (idle/busy state, processing time)
-- **`statistics.py`**: Calculate acceptance ratio, delay, throughput
 
 ### `envs/`
 **Gym Environment interface**
