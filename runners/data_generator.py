@@ -8,7 +8,7 @@ class DataGenerator:
     def generate_scenario(num_nodes_range=(30, 50),  # Mạng trung bình-lớn để train nhanh hơn 100 node
                           server_ratio=0.15,           # 20% server
                           num_vnf_types=config.MAX_VNF_TYPES,
-                          num_requests_range=(80, 150)): # Request dày đặc
+                          num_requests_range=(100, 1000)): # Request dày đặc
         
         # 1. Barabasi-Albert Graph (Scale-Free)
         num_nodes = random.randint(*num_nodes_range)
