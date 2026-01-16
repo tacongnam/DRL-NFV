@@ -18,7 +18,6 @@ class SFCEnvironment(gym.Env):
         
         # Define Observation Space
         chain_feat = 4 + config.MAX_VNF_TYPES + 3
-        # State shapes khớp với 3 nhánh input của DQN
         self.observation_space = gym.spaces.Tuple((
             gym.spaces.Box(low=-1, high=np.inf, shape=(3 + 2*config.MAX_VNF_TYPES,), dtype=np.float32), # DC State
             gym.spaces.Box(low=-1, high=np.inf, shape=(config.MAX_VNF_TYPES + 3*chain_feat,), dtype=np.float32), # Demand
@@ -31,9 +30,9 @@ class SFCEnvironment(gym.Env):
         self.step_count = 0
 
     def reset(self, seed=None, options=None):
-        # Gymnasium yêu cầu tham số seed và options
         super().reset(seed=seed)
         
+        # Reset Core Components
         self.topology = TopologyManager(self.topology.physical_graph.copy(), k_paths=3)
         self.dcs = [self._create_dc(dc) for dc in self.initial_dcs]
         
@@ -58,23 +57,44 @@ class SFCEnvironment(gym.Env):
         curr_dc_id = self.dc_order[self.current_dc_idx]
         curr_dc = self._get_dc_by_id(curr_dc_id)
         
+        # 1. Execute Action
         reward, completed = self._execute_action(curr_dc, action)
         
+        # 2. Update DC Loop
         server_count = sum(1 for dc in self.dcs if dc.is_server)
         self.current_dc_idx = (self.current_dc_idx + 1) % max(1, server_count)
         self.actions_this_step += 1
         
+        # 3. Time Advance Logic with EVENT SKIPPING
+        # Chỉ trôi thời gian khi đã hết lượt hành động của timestep hiện tại
         if self.actions_this_step >= config.ACTIONS_PER_TIME_STEP:
-            drop_penalty = self.simulator.advance_time()
-            reward += drop_penalty
-            
             self.actions_this_step = 0
-            self._update_dc_order()
             self.current_dc_idx = 0
+            self._update_dc_order()
+            
+            # --- TỐI ƯU HÓA: Event Skipping ---
+            # Vòng lặp này tự động tua nhanh thời gian nếu không có request nào active.
+            # Giúp Agent không phải học cách "WAIT" hàng nghìn lần khi không có việc gì làm.
+            step_penalty = 0.0
+            while True:
+                # Advance simulator time
+                drop_penalty = self.simulator.advance_time()
+                step_penalty += drop_penalty
+                
+                # Điều kiện dừng tua nhanh:
+                # 1. Có request đang active (Agent cần xử lý ngay)
+                # 2. Hoặc Simulation đã kết thúc
+                has_active_work = len(self.sfc_manager.active_requests) > 0
+                is_done = self.simulator.is_done()
+                
+                if has_active_work or is_done:
+                    break
+                    
+            reward += step_penalty
         
         # Check termination
         done = self.simulator.is_done()
-        truncated = False # Gymnasium yêu cầu trả về terminated, truncated
+        truncated = False
         
         self.step_count += 1
         
@@ -110,7 +130,6 @@ class SFCEnvironment(gym.Env):
         if not self.dc_order:
             self._update_dc_order()
         curr_dc = self._get_dc_by_id(self.dc_order[self.current_dc_idx])
-        # Truyền topology để Observer tính toán trạng thái mạng (nếu đã update Observer)
         return Observer.get_drl_observation(curr_dc, self.sfc_manager, self.topology)
     
     def _get_valid_actions_mask(self):
@@ -140,10 +159,3 @@ class SFCEnvironment(gym.Env):
             if dc.id == dc_id:
                 return dc
         return self.dcs[0]
-    
-    def get_first_dc(self):
-        server_dc = next((d for d in self.dcs if d.is_server), None)
-        if server_dc is None:
-            raise ValueError("No server DCs found to determine VAE state dimension.")
-        else:
-            return server_dc
