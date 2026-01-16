@@ -61,7 +61,7 @@ class VAETrainer:
                 total_loss += loss.numpy()
                 steps += 1
             
-            if (epoch + 1) % 5 == 0:
+            if (epoch + 1) % 10 == 0:
                 print(f"    Epoch {epoch+1}/{epochs} - Loss: {total_loss/steps:.4f}")
     
     def train_value_network(self, epochs=None, batch_size=None):
