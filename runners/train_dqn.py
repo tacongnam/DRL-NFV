@@ -37,7 +37,7 @@ def train_dqn_random(runner, num_episodes, dc_selector):
     agent = None
     # Buffers for logging
     hist = {'rw': [], 'ar': [], 'drop': []}
-    total_steps = num_episodes * config.MAX_SIM_TIME_PER_EPISODE * config.ACTIONS_PER_TIME_STEP
+    total_steps = num_episodes * config.MAX_SIM_TIME_PER_EPISODE * config.ACTIONS_PER_TIME_STEP * config.TIME_STEP
     curr_step = 0
     
     for ep in range(num_episodes):
@@ -68,7 +68,7 @@ def train_dqn_random(runner, num_episodes, dc_selector):
             # Log
             hist['rw'].append(rw); hist['ar'].append(ar); hist['drop'].append(drop)
             
-            if (ep + 1) % 10 == 0:
+            if (ep + 1) % 25 == 0:
                 print(f"Ep {ep+1}/{num_episodes} | Rw: {np.mean(hist['rw']):.1f} | AR: {np.mean(hist['ar']):.1f}% | Drop: {np.mean(hist['drop']):.1f} | Eps: {epsilon:.3f}")
                 hist = {'rw': [], 'ar': [], 'drop': []} # Reset buffer
             
