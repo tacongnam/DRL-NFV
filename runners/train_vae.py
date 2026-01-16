@@ -102,7 +102,3 @@ def collect_and_train_vae_random(runner, num_episodes, dc_selector, dqn_model_pa
     else:
         print("Not enough samples collected to train VAE.")
         return None
-
-def collect_and_train_vae_file(runner, file_path, num_episodes, dc_selector):
-    # Hàm này ít dùng trong pipeline random, nhưng cũng nên sửa tương tự nếu cần
-    pass
