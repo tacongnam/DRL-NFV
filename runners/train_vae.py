@@ -4,13 +4,17 @@ import config
 from envs import RandomSelector, Observer, PrioritySelector
 from agents import VAETrainer, DQNAgent
 
-SAMPLING_INTERVAL = 10 
+SAMPLING_INTERVAL = 1 
 
-def collect_and_train_vae_random(runner, num_episodes, dc_selector, dqn_model_path='models/best_model'):
+def collect_and_train_vae_random(runner, num_episodes, dc_selector, dqn_model_path='models/best_model', vae_epochs=None):
     from runners.data_generator import DataGenerator
     
     if dc_selector is None or isinstance(dc_selector, RandomSelector):
         dc_selector = PrioritySelector()
+    
+    # Fallback to config if not provided
+    if vae_epochs is None:
+        vae_epochs = config.GENAI_VAE_EPOCHS
 
     print(f"\n{'='*80}", flush=True)
     print(f"Collecting VAE Data (Optimized Speed)", flush=True)
@@ -34,7 +38,6 @@ def collect_and_train_vae_random(runner, num_episodes, dc_selector, dqn_model_pa
             
             if trainer is None:
                 first_server = next((d for d in runner.dcs if d.is_server), None)
-                # FIX: Truyền topology vào để lấy đúng dimension mới
                 dummy_state = Observer.get_dc_state(first_server, env.sfc_manager, None, env.topology)
                 trainer = VAETrainer(dummy_state.shape[0])
             
@@ -48,7 +51,7 @@ def collect_and_train_vae_random(runner, num_episodes, dc_selector, dqn_model_pa
             
             while not done:
                 step_idx = env.step_count
-                should_collect = (step_idx % SAMPLING_INTERVAL == 0)
+                should_collect = len(env.sfc_manager.active_requests) > 0
                 
                 prev_vae_states = {}
                 if should_collect:
@@ -56,7 +59,6 @@ def collect_and_train_vae_random(runner, num_episodes, dc_selector, dqn_model_pa
                     global_stats = Observer.precompute_global_stats(env.sfc_manager, active_reqs)
                     for dc in env.dcs:
                         if dc.is_server:
-                            # FIX: Truyền topology
                             prev_vae_states[dc.id] = Observer.get_dc_state(dc, env.sfc_manager, global_stats, env.topology)
                 
                 mask = env._get_valid_actions_mask()
@@ -77,22 +79,22 @@ def collect_and_train_vae_random(runner, num_episodes, dc_selector, dqn_model_pa
                         if dc.is_server:
                             prev_s = prev_vae_states.get(dc.id)
                             if prev_s is not None:
-                                # FIX: Truyền topology
                                 curr_s = Observer.get_dc_state(dc, env.sfc_manager, global_stats_new, env.topology)
                                 value = Observer.calculate_dc_value(dc, env.sfc_manager, prev_s, global_stats_new)
                                 trainer.collect_transition(prev_s, curr_s, value)
             
-            if (ep_idx + 1) % 25 == 0:
+            if (ep_idx + 1) % 20 == 0:
                 print(f"Collected Episodes {ep_idx+1}/{num_episodes} | Total Samples: {trainer.size}", flush=True)
 
         except Exception as e:
-            # print(f"Skip episode error: {e}")
+            print(f"Skip episode error: {e}")
             continue
     
-    if trainer and trainer.size > 1000:
+    min_samples = config.GENAI_BATCH_SIZE * 2
+    if trainer and trainer.size > min_samples:
         print(f"\nTraining VAE on {trainer.size} samples...", flush=True)
-        trainer.train_vae()
-        trainer.train_value_network()
+        trainer.train_vae(epochs=vae_epochs)
+        trainer.train_value_network(epochs=vae_epochs)
         
         os.makedirs("models", exist_ok=True)
         trainer.save_model("models/vae_model")
@@ -100,5 +102,8 @@ def collect_and_train_vae_random(runner, num_episodes, dc_selector, dqn_model_pa
         print("VAE Model saved.")
         return trainer.agent
     else:
-        print("Not enough samples collected to train VAE.")
+        print(f"⚠️ Not enough samples ({trainer.size if trainer else 0}). Need at least {min_samples}.")
         return None
+    
+def collect_and_train_vae_file(runner, file_path, num_episodes, dc_selector):
+    pass

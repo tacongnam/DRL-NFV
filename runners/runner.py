@@ -27,7 +27,7 @@ class Runner:
             last_arrival = max(r['arrival_time'] for r in requests)
             max_delay = max(r['max_delay'] for r in requests)
             # Thêm buffer an toàn
-            config.MAX_SIM_TIME_PER_EPISODE = last_arrival + max_delay + 50.0
+            config.MAX_SIM_TIME_PER_EPISODE = last_arrival + max_delay + 0.5
             print(f"  >>> Auto-set Max Sim Time: {config.MAX_SIM_TIME_PER_EPISODE:.1f}")
 
         print(f"Loaded: {len([d for d in dcs if d.is_server])} servers, {config.NUM_VNF_TYPES} VNFs, {len(requests)} requests")
@@ -111,9 +111,10 @@ class Runner:
         return collect_and_train_vae(cls, num_episodes, dc_selector)
     
     @classmethod
-    def train_vae_random(cls, num_episodes, dc_selector):
+    def train_vae_random(cls, num_episodes, dc_selector, vae_epochs=None):
         from runners.train_vae import collect_and_train_vae_random
-        return collect_and_train_vae_random(cls, num_episodes, dc_selector)
+        if vae_epochs is None: vae_epochs = config.GENAI_VAE_EPOCHS
+        return collect_and_train_vae_random(cls, num_episodes, dc_selector, vae_epochs=vae_epochs)
 
     @classmethod
     def compare_single_file(cls, data_file, dqn_model_path, vae_dqn_model_path, vae_model_path, num_episodes):

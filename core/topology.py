@@ -13,7 +13,6 @@ class TopologyManager:
 
         # FIX: filter_edge chỉ nhận (u, v), không nhận d
         def filter_edge(u, v):
-            # Truy cập dữ liệu cạnh trực tiếp từ đồ thị gốc
             return self.physical_graph[u][v].get('bw', 0.0) >= bw_demand
 
         try:
@@ -39,16 +38,16 @@ class TopologyManager:
         """Kiểm tra nhanh xem có đường đi hay không."""
         if src == dst: return True
         
-        # Optimization: Kiểm tra nhanh nếu src bị cô lập (không có cạnh ra đủ BW)
-        try:
-            # Check nhanh các cạnh nối trực tiếp với src
-            src_has_link = False
-            for n in self.physical_graph[src]:
-                if self.physical_graph[src][n].get('bw', 0) >= bw_demand:
-                    src_has_link = True
-                    break
-            if not src_has_link: return False
-        except KeyError:
+        # 1. Fast Fail: Kiểm tra xem src và dst có bị cô lập không
+        # (Nếu không có cạnh nào nối ra từ src đủ BW thì chắc chắn fail)
+        def is_isolated(node):
+            # Duyệt các neighbors của node trong đồ thị gốc
+            for nbr in self.physical_graph[node]:
+                if self.physical_graph[node][nbr].get('bw', 0.0) >= bw_demand:
+                    return False # Có ít nhất 1 lối ra
+            return True # Bị cô lập hoàn toàn
+
+        if is_isolated(src) or is_isolated(dst):
             return False
 
         # Filter edges cho view

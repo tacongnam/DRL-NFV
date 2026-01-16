@@ -159,3 +159,13 @@ class SFCEnvironment(gym.Env):
             if dc.id == dc_id:
                 return dc
         return self.dcs[0]
+    
+    def get_first_dc(self):
+        """Trả về DC server đầu tiên tìm thấy (Dùng để lấy shape input cho VAE)."""
+        for dc in self.dcs:
+            if dc.is_server:
+                return dc
+        # Fallback nếu không có server (hiếm khi xảy ra)
+        if self.dcs:
+            return self.dcs[0]
+        raise ValueError("Environment has no DataCenters!")
