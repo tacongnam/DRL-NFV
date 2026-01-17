@@ -5,7 +5,6 @@ __pycache__/
 *.so
 .Python
 venv/
-models/
 
 # Results
 *.png
@@ -27,4 +26,3 @@ models/
 .DS_Store
 Thumbs.db
 .vscode
-*.h5
