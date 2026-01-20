@@ -12,6 +12,9 @@ venv/
 *.log
 *.json
 
+models/
+*.h5
+
 # IDE
 .vscode/
 .idea/
