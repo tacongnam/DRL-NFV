@@ -17,6 +17,23 @@ import sys
 import json
 import argparse
 import config
+
+
+def ensure_directories():
+    """Create required directories if they don't exist."""
+    dirs = [
+        "models/vgae_pretrained",
+        "models/ll_pretrained",
+        "models/hrl_final",
+        "data/train",
+        "data/test"
+    ]
+    for d in dirs:
+        os.makedirs(d, exist_ok=True)
+
+
+# Ensure dirs on startup
+ensure_directories()
 from env.vnf import VNF, ListOfVnfs
 from env.request import Request, ListOfRequests
 from env.network import Network
@@ -92,43 +109,80 @@ def get_test_files(data_dir: str = "data") -> list:
     return sorted(files)
 
 
-def run_train(episodes: int, ll_pretrained: str = None, save_dir: str = "models/hrl_final", train_file: str = None):
+TRAIN_DIR = "data/train"
+
+def get_train_files(train_dir: str = TRAIN_DIR, train_files: list = None) -> list:
+    """Get training files from directory or list."""
+    if train_files:
+        files = [f if os.path.isabs(f) else os.path.join("data", f) for f in train_files]
+        return [f for f in files if os.path.exists(f)]
+    
+    if os.path.exists(train_dir):
+        files = [os.path.join(train_dir, f) for f in os.listdir(train_dir) if f.endswith('.json')]
+        return sorted(files)
+    return []
+
+
+def run_train(episodes: int, ll_pretrained: str = None, save_dir: str = "models/hrl_final",
+              train_file: str = None, train_dir: str = TRAIN_DIR, train_files: list = None):
     print("=" * 50)
     print("TRAINING MODE")
     print("=" * 50)
     print(f"Episodes: {episodes}")
     print(f"LL Pretrained: {ll_pretrained}")
     print(f"Save to: {save_dir}")
-    print(f"Train file: {train_file}")
 
-    # Use provided train file or default
-    if train_file:
-        if not os.path.exists(train_file):
-            print(f"Error: Train file not found: {train_file}")
-            return
-    else:
-        use_default = "data/nsf_rural_easy_s1.json"
-        if not os.path.exists(use_default):
-            print(f"Error: No default train file found: {use_default}")
-            return
-        train_file = use_default
+    all_results = []
+    eval_files = get_train_files(train_dir, train_files)
     
-    env = load_env_from_json(train_file)
-    print(f"Training on: {os.path.basename(train_file)}")
-    strategy = HRL_VGAE_Strategy(
-        env,
-        is_training=True,
-        episodes=episodes,
-        use_ll_score=True,
-        ll_pretrained_path=ll_pretrained,
-    )
-    env.set_strategy(strategy)
-    stats = env.run_simulation()
-
+    if train_file:
+        eval_files = [train_file] if os.path.exists(train_file) else []
+    
+    if not eval_files:
+        print(f"Error: No training files found in {train_dir}")
+        return
+    
+    print(f"Found {len(eval_files)} training file(s)")
+    
+    strategy = None
+    all_results = []
+    pretrained_path = ll_pretrained  # Save original pretrained path
+    
+    for i, t_file in enumerate(eval_files):
+        print(f"\n--- Training on {os.path.basename(t_file)} ({i+1}/{len(eval_files)}) ---")
+        env = load_env_from_json(t_file)
+        
+        strategy = HRL_VGAE_Strategy(
+            env,
+            is_training=True,
+            episodes=episodes,
+            use_ll_score=True,
+            ll_pretrained_path=pretrained_path if i == 0 else None,
+        )
+        
+        # Load previous model weights if continuing training
+        if i > 0 and os.path.exists(os.path.join(save_dir, "hl_pmdrl_weights.weights.h5")):
+            strategy.load_model(save_dir)
+        
+        env.set_strategy(strategy)
+        stats = env.run_simulation()
+        all_results.append({'file': os.path.basename(t_file), 'stats': stats})
+    
+    # Save final model
     os.makedirs(save_dir, exist_ok=True)
-    strategy.save_model(save_dir)
-    print(f"\nTraining complete. Acceptance Ratio: {stats.get('acceptance_ratio', 0):.3f}")
-    print(f"Model saved to: {save_dir}")
+    if strategy:
+        strategy.save_model(save_dir)
+    
+    # Print summary
+    print("\n" + "=" * 50)
+    print("TRAINING SUMMARY")
+    print("=" * 50)
+    print(f"{'File':<40} {'Acceptance':<12} {'Accepted':<10}")
+    print("-" * 62)
+    for r in all_results:
+        print(f"{r['file']:<40} {r['stats'].get('acceptance_ratio', 0):<12.3f} {r['stats'].get('accepted_requests', 0):<10}")
+    
+    print(f"\nModel saved to: {save_dir}")
     return strategy
 
 
@@ -221,6 +275,8 @@ def main():
                         help="Directory to save/load trained models")
     parser.add_argument("--train-file", type=str, default=None,
                         help="Path to training data file (auto-generated via data/generate.py)")
+    parser.add_argument("--train-dir", type=str, default=TRAIN_DIR,
+                        help="Directory containing training files")
     parser.add_argument("--test-dir", type=str, default=None,
                         help="Directory containing test files for eval mode")
     parser.add_argument("--test-files", type=str, nargs="+", default=None,
@@ -230,7 +286,8 @@ def main():
 
     if args.mode == "train":
         run_train(episodes=args.episodes, ll_pretrained=args.ll_pretrained,
-                  save_dir=args.model_dir, train_file=args.train_file)
+                  save_dir=args.model_dir, train_file=args.train_file,
+                  train_dir=args.train_dir)
     elif args.mode == "eval":
         run_eval(model_dir=args.model_dir, test_dir=args.test_dir,
                  test_files=args.test_files)
