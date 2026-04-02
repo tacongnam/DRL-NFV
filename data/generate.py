@@ -204,12 +204,14 @@ def main():
                         help="Number of requests per file")
     parser.add_argument("--output", type=str, default="data",
                         help="Output directory")
+    parser.add_argument("--seed-offset", type=int, default=0,
+                        help="Seed offset to avoid file overlap")
     args = parser.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
 
     for i in range(args.num_files):
-        seed = 42 + i
+        seed = 42 + args.seed_offset + i
         data = generate_single_file(
             topology=args.topology,
             distribution=args.distribution,

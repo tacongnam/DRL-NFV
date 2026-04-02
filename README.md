@@ -1,82 +1,199 @@
-# HRL-VGAE: VNF Placement trong mạng lõi 5G
-**Bài toán:** Đặt VNF trong mạng lõi 5G bằng Hierarchical RL kết hợp VGAE và Pareto-front MO-DRL.
+# DRL-NFV: Deep Reinforcement Learning for NFV VNF Placement
 
----
+A Hierarchical Reinforcement Learning approach with Variational Graph Autoencoder (HRL-VGAE) for optimizing Virtual Network Function (VNF) placement in Network Function Virtualization (NFV) environments.
 
-## WORKFLOW THỰC HIỆN
+## Architecture
 
-### Bước 1: Sinh dữ liệu training
-
-```bash
-# Sinh 20 file training (NSF topology, rural distribution, dễ)
-python data/generate.py --topology nsf --distribution rural --difficulty easy \
-    --num-files 20 --requests 50 --scale 50 --output data/train/
-
-# Sinh file test lớn (COGENT topology, center distribution, khó)
-python data/generate.py --topology cogent --distribution centers --difficulty hard \
-    --num-files 5 --requests 150 --scale 100 --output data/test/
+```
+┌─────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│  Generate   │ ──▶ │  Pre-train   │ ──▶ │    Train     │ ──▶ │    Eval      │
+│  (data/)    │     │  (VGAE+LL)   │     │   (HRL)      │     │  (test/)     │
+└─────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
 ```
 
-### Bước 2: Pre-train VGAE + LL-DQN (Tùy chọn nhưng khuyến khích)
+## Project Structure
 
-```bash
-python -m models.pretrain --phase both
 ```
-
-### Bước 3: Training HRL (đa file)
-
-```bash
-# Train trên tất cả file trong data/train/
-python main.py --mode train --episodes 300 --train-dir data/train/ --model-dir models/hrl_final/
-
-# Train trên file cụ thể
-python main.py --mode train --episodes 300 --train-file data/train/nsf_rural_easy_s1.json
-```
-
-### Bước 4: Evaluation trên test files
-
-```bash
-# Test tất cả file trong data/test/
-python main.py --mode eval --model-dir models/hrl_final/ --test-dir data/test/
-
-# Test trên file cụ thể
-python main.py --mode eval --model-dir models/hrl_final/ --test-files data/test/COGENT_centers_hard_s1.json
-```
-
----
-
-## THAM SỐ KHUYẾN NGHỊ
-
-| Tham số | Giá trị khuyến nghị | Ghi chú |
-|---------|---------------------|---------|
-| --episodes | 300-500 | 300: cơ bản, 500+: production |
-| --train-dir | data/train/ | Thư mục chứa ~20 file training đã sinh |
-| --test-dir | data/test/ | Thư mục chứa file test lớn |
-| --ll-pretrained | models/ll_pretrained/... | LL-Score giúp HL chọn tốt hơn |
-
-**Độ tin cậy theo Episodes:** 300 → 60-75%, 500+ → 70-80%
-
----
-
-## CẤU TRÚC THƯ MỤC
-```
-├── main.py                 # Entry point (train / eval / baseline)
+DRL-NFV/
+├── main.py                 # Main entry point with all modes
+├── config.py               # Configuration constants
 ├── data/
-│   ├── generate.py         # Data generator
-│   ├── train/              # ~20 training files (sinh bởi generate.py)
-│   └── test/               # Test files (sinh bởi generate.py)
+│   ├── generate.py         # Synthetic data generator
+│   ├── train/              # Training data (generated)
+│   └── test/               # Test data (generated)
 ├── models/
-│   ├── pretrain.py         # Pre-training script
-│   ├── vgae_pretrained/    # VGAE weights
-│   ├── ll_pretrained/      # LL-DQN weights
-│   └── hrl_final/          # Final HRL model (HL + LL weights)
+│   ├── model.py            # Neural network architectures
+│   ├── pretrain.py         # Pre-training script (VGAE + LL-DQN)
+│   ├── train.py            # Legacy training script
+│   ├── vgae_pretrained/    # Pre-trained VGAE weights
+│   └── ll_pretrained/      # Pre-trained Low-Level DQN weights
+├── env/                    # Environment modules
+│   ├── env.py              # Main environment
+│   ├── network.py          # Network topology
+│   ├── request.py          # Request/SFC handling
+│   └── vnf.py              # VNF definitions
 └── strategy/
-    ├── hrl.py              # HRL-VGAE strategy
-    └── ...
+    ├── hrl.py              # HRL-VGAE strategy (main algorithm)
+    ├── fifs.py             # Greedy FIFS baseline
+    └── glb.py              # Greedy GLB baseline
 ```
 
-## .GITIGNORE
-File `.gitignore` đã được cấu hình để:
-- Bỏ qua `data/train/`, `data/test/`
-- Bỏ qua các file weights `*.h5`
-- Giữ lại các file code, config, và ví dụ data
+## Quick Start
+
+### Full Automated Pipeline
+
+Run the complete pipeline from data generation to evaluation:
+
+```bash
+python main.py --mode pipeline \
+               --topology nsf \
+               --distribution rural \
+               --difficulty easy \
+               --num-train-files 5 \
+               --num-test-files 3 \
+               --episodes 300
+```
+
+### Step-by-Step Execution
+
+#### Step 1: Generate Training/Test Data
+
+```bash
+# Generate data using main.py
+python main.py --mode generate \
+               --topology nsf \
+               --distribution rural \
+               --difficulty easy \
+               --num-train-files 10 \
+               --num-test-files 3
+
+# Or use generate.py directly
+python data/generate.py --topology nsf --distribution rural \
+                        --difficulty easy --num-files 10 \
+                        --scale 50 --output data/train
+```
+
+#### Step 2: Pre-train Models
+
+Pre-train VGAE (graph encoder) and Low-Level DQN (VNF placement):
+
+```bash
+# Using main.py
+python main.py --mode pretrain --train-dir data/train
+
+# Or use pretrain.py directly
+python models/pretrain.py --phase both --train-dir data/train \
+                          --vgae-epochs 100 --ll-episodes 200
+```
+
+#### Step 3: Train HRL Policy
+
+Train the High-Level RL agent (SFC scheduling):
+
+```bash
+python main.py --mode train --episodes 300 \
+               --ll-pretrained models/ll_pretrained \
+               --train-dir data/train
+```
+
+#### Step 4: Evaluate on Test Data
+
+```bash
+python main.py --mode eval --model-dir models/hrl_final \
+               --test-dir data/test
+```
+
+### Run Baselines
+
+Compare with greedy baselines:
+
+```bash
+python main.py --mode baseline
+```
+
+## Pipeline Modes
+
+| Mode | Description |
+|------|-------------|
+| `pipeline` | Full automated: generate → pretrain → train → eval |
+| `generate` | Generate synthetic training/test data |
+| `pretrain` | Pre-train VGAE and Low-Level DQN |
+| `train` | Train HRL policy |
+| `eval` | Evaluate trained model on test data |
+| `baseline` | Run greedy baselines (FIFS, GLB) |
+
+## Command-Line Arguments
+
+### Data Generation
+- `--topology`: Network topology (`nsf`, `conus`, `cogent`)
+- `--distribution`: Server distribution (`uniform`, `rural`, `urban`, `centers`)
+- `--difficulty`: Difficulty level (`easy`, `hard`)
+- `--scale`: Resource scale factor (default: 50)
+- `--requests`: Number of requests per file (default: 50)
+- `--num-train-files`: Number of training files to generate
+- `--num-test-files`: Number of test files to generate
+
+### Training
+- `--episodes`: Training episodes (default: 300)
+- `--ll-pretrained`: Path to pre-trained LL model
+- `--model-dir`: Directory to save/load models
+- `--train-dir`: Directory containing training files
+
+### Pre-training
+- `--vgae-epochs`: VGAE pre-training epochs (default: 100)
+- `--ll-episodes`: LL-DQN pre-training episodes (default: 200)
+
+## Algorithm: HRL-VGAE
+
+The Hierarchical Reinforcement Learning with Variational Graph Autoencoder consists of:
+
+1. **VGAE (Graph Encoder)**: Encodes network topology into latent node embeddings
+2. **Low-Level Agent (LL-DQN)**: Places individual VNFs onto data center nodes
+3. **High-Level Agent (HL-PM-DRL)**: Schedules SFCs using Pareto-based Multi-Objective DRL
+
+### Pre-training Flow
+
+1. **VGAE Pre-training**: Collect graph snapshots from training environments, train VGAE to reconstruct adjacency matrices
+2. **LL-DQN Pre-training**: Use pre-trained VGAE embeddings to train VNF placement decisions
+
+### Training Flow
+
+1. **State Representation**: VGAE encodes current network state into latent embeddings
+2. **High-Level Action**: HL agent selects which SFC to process next
+3. **Low-Level Action**: LL agent places each VNF of the selected SFC
+4. **Reward**: Based on acceptance ratio, resource utilization, and delay constraints
+5. **Update**: Both HL and LL agents update their policies via experience replay
+
+## Dependencies
+
+- TensorFlow 2.x
+- NumPy
+- NetworkX
+- Python 3.7+
+
+```bash
+pip install tensorflow numpy networkx
+```
+
+## Files Output
+
+After running the pipeline:
+
+```
+models/
+├── vgae_pretrained/
+│   └── vgae_weights.weights.h5       # Pre-trained VGAE
+├── ll_pretrained/
+│   └── ll_dqn_weights.weights.h5      # Pre-trained Low-Level DQN
+└── hrl_final/
+    ├── ll_dqn_weights.weights.h5       # Final Low-Level model
+    └── hl_pmdrl_weights.weights.h5     # Final High-Level model
+```
+
+## Citation
+
+If you use this code, please cite the relevant paper.
+
+## License
+
+MIT License

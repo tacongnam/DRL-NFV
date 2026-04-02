@@ -3,6 +3,9 @@ import numpy as np
 import random
 from typing import List
 
+# Suppress TensorFlow warnings
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 class ReplayBuffer:
     def __init__(self, capacity=10000):
@@ -86,12 +89,15 @@ class VGAENetwork:
                 self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
 
 
-class PMDRL_NN(tf.keras.Sequential):
+class PMDRL_NN(tf.keras.Model):
     def __init__(self, input_dim: int = 12):
-        super().__init__([
-            tf.keras.layers.Dense(64, activation='relu', input_dim=input_dim),
-            tf.keras.layers.Dense(2)
-        ])
+        super().__init__()
+        self.dense1 = tf.keras.layers.Dense(64, activation='relu', input_shape=(input_dim,))
+        self.output_layer = tf.keras.layers.Dense(2)
+
+    def call(self, inputs):
+        x = self.dense1(inputs)
+        return self.output_layer(x)
 
 
 class HighLevelAgent:
@@ -200,12 +206,15 @@ class HighLevelAgent:
         self.target_net.set_weights(self.policy_net.get_weights())
 
 
-class DQN_NN(tf.keras.Sequential):
+class DQN_NN(tf.keras.Model):
     def __init__(self, input_dim: int = 11):
-        super().__init__([
-            tf.keras.layers.Dense(64, activation='relu', input_dim=input_dim),
-            tf.keras.layers.Dense(1)
-        ])
+        super().__init__()
+        self.dense1 = tf.keras.layers.Dense(64, activation='relu', input_shape=(input_dim,))
+        self.output_layer = tf.keras.layers.Dense(1)
+
+    def call(self, inputs):
+        x = self.dense1(inputs)
+        return self.output_layer(x)
 
 
 class LowLevelAgent:
