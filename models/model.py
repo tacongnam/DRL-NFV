@@ -5,6 +5,7 @@ from typing import List
 
 # Suppress TensorFlow warnings
 import os
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 class ReplayBuffer:
@@ -89,15 +90,18 @@ class VGAENetwork:
                 self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
 
 
-class PMDRL_NN(tf.keras.Model):
+class PMDRL_NN(tf.keras.Sequential):
     def __init__(self, input_dim: int = 12):
-        super().__init__()
-        self.dense1 = tf.keras.layers.Dense(64, activation='relu', input_shape=(input_dim,))
-        self.output_layer = tf.keras.layers.Dense(2)
+        super().__init__(name="pmdrl_nn")
 
-    def call(self, inputs):
-        x = self.dense1(inputs)
-        return self.output_layer(x)
+        # Add layers using Input(shape) instead of input_dim
+        self.add(tf.keras.layers.Input(shape=(input_dim,)))
+        self.add(tf.keras.layers.Dense(64, activation='relu'))
+        self.add(tf.keras.layers.Dense(2))
+        
+        # Ensure the model is built by calling it with dummy input
+        dummy_input = tf.zeros((1, input_dim))
+        self.call(dummy_input)
 
 
 class HighLevelAgent:
@@ -206,15 +210,18 @@ class HighLevelAgent:
         self.target_net.set_weights(self.policy_net.get_weights())
 
 
-class DQN_NN(tf.keras.Model):
+class DQN_NN(tf.keras.Sequential):
     def __init__(self, input_dim: int = 11):
-        super().__init__()
-        self.dense1 = tf.keras.layers.Dense(64, activation='relu', input_shape=(input_dim,))
-        self.output_layer = tf.keras.layers.Dense(1)
+        super().__init__(name="dqn_nn")
 
-    def call(self, inputs):
-        x = self.dense1(inputs)
-        return self.output_layer(x)
+        # Add layers using Input(shape) instead of input_dim
+        self.add(tf.keras.layers.Input(shape=(input_dim,)))
+        self.add(tf.keras.layers.Dense(64, activation='relu'))
+        self.add(tf.keras.layers.Dense(1))
+        
+        # Ensure the model is built by calling it with dummy input
+        dummy_input = tf.zeros((1, input_dim))
+        self.call(dummy_input)
 
 
 class LowLevelAgent:

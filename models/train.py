@@ -160,6 +160,7 @@ def train_hrl_vgae(env: Env):
 if __name__ == "__main__":
     from main import load_from_dict
     import os
+    os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' # Ẩn warning rác của TensorFlow
     
     # Chạy mô phỏng huấn luyện

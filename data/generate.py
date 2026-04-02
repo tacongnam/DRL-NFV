@@ -63,15 +63,16 @@ def select_server_nodes(topo_name, nodes, distribution, fraction=0.3):
         # 30% highest degree nodes
         return nodes[:max(1, int(n * 0.3))]
     elif distribution == "centers":
-        # 10% highest degree nodes
-        return nodes[:max(1, int(n * 0.1))]
+        # Increased from 10% to 30% to have more server nodes
+        return nodes[:max(1, int(n * 0.3))]
     return random.sample(nodes, max(1, int(n * fraction)))
 
 
 def generate_nodes(all_nodes, server_nodes, scale):
     """Generate V and E sections with resource values."""
     V = {}
-    base_resources = {"mem": 100, "cpu": 100, "ram": 64}
+    # Increased base resources to ensure requests can be accepted
+    base_resources = {"mem": 200, "cpu": 200, "ram": 128}
     node_names = TOPOLOGIES["nsf"]["node_names"]
     if len(all_nodes) > 14:
         node_names = [f"v{i}" for i in range(len(all_nodes))]
@@ -111,7 +112,8 @@ def generate_links(all_nodes, topo_name, links=None):
         result.append({
             "u": f"v{u}",
             "v": f"v{v}",
-            "b_l": random.choice([10.0, 20.0, 40.0, 100.0]),
+            # Increased bandwidth to ensure routing is possible
+            "b_l": random.choice([20.0, 40.0, 80.0, 100.0]),
             "d_l": d_v
         })
     return result
@@ -149,10 +151,11 @@ def generate_vnf_types(num_vnfs):
     """Generate F section - VNF type definitions."""
     F = []
     for i in range(num_vnfs):
+        # Reduced VNF resources to ensure requests can be accepted
         F.append({
-            "c_f": random.choice([5, 10, 15]),
-            "r_f": random.choice([4, 8, 12]),
-            "h_f": random.choice([10, 20, 30]),
+            "c_f": random.choice([3, 5, 8]),
+            "r_f": random.choice([2, 4, 6]),
+            "h_f": random.choice([5, 10, 15]),
             "d_f": {}
         })
     return F

@@ -61,13 +61,13 @@ from strategy.fifs import GreedyFIFS
 from strategy.glb import GreedyGLB
 from strategy.hrl import HRL_VGAE_Strategy
 
-# Recommended training parameters
-DEFAULT_EPISODES = 300          # 300 episodes for reasonable convergence
+# Recommended training parameters - Optimized for 6-10 hour training
+DEFAULT_EPISODES = 100          # Reduced from 300 to 100 for faster training
 DEFAULT_LEARNING_RATE = 0.0005  # Standard for DRL
 DEFAULT_GAMMA = 0.95            # Discount factor
 BATCH_SIZE = 32
-TARGET_UPDATE_FREQ = 500
-VGAE_TRAIN_FREQ = 100
+TARGET_UPDATE_FREQ = 200        # Reduced from 500 for more frequent updates
+VGAE_TRAIN_FREQ = 50            # Reduced from 100 for more frequent VGAE updates
 
 
 def load_env_from_json(filepath: str) -> Env:
@@ -130,11 +130,6 @@ def get_data_files(data_dir: str) -> list:
         return sorted(files)
     return []
 
-
-# ============================================================
-# PIPELINE MODE: Generate -> Pretrain -> Train -> Eval
-# ============================================================
-
 def run_pipeline(args):
     """Run the complete pipeline: generate -> pretrain -> train -> eval."""
     print("\n" + "=" * 60)
@@ -142,13 +137,11 @@ def run_pipeline(args):
     print("Generate -> Pre-train -> Train -> Evaluate")
     print("=" * 60 + "\n")
 
-    # Step 1: Generate data (10 easy + 10 hard = 20 training files)
     print("\n[STEP 1/4] Generating training and test data...")
     print("-" * 40)
-    num_easy_train = 10
-    num_hard_train = 10
+    num_easy_train = 5
+    num_hard_train = 5
     
-    # Generate easy training files
     print(f"Generating {num_easy_train} easy training files...")
     result = subprocess.run([
         sys.executable, "data/generate.py",
@@ -164,7 +157,6 @@ def run_pipeline(args):
         print("Error: Generating easy training data failed!")
         return
 
-    # Generate hard training files (with seed offset to avoid overlap)
     print(f"Generating {num_hard_train} hard training files...")
     result = subprocess.run([
         sys.executable, "data/generate.py",

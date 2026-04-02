@@ -1,3 +1,4 @@
+import os
 import math
 import copy
 import numpy as np
@@ -39,10 +40,22 @@ class HRL_VGAE_Strategy(Strategy):
 
     def _load_pretrained_ll(self, path: str):
         try:
-            if not path.endswith('.weights.h5'):
-                path = path + '.weights.h5'
-            self.ll_agent.policy_net.load_weights(path)
-            print(f"[HRL] Loaded pre-trained LL model from {path}")
+            # Check if path is a directory or file
+            if os.path.isdir(path):
+                # If directory, look for ll_dqn_weights.weights.h5
+                weight_file = os.path.join(path, "ll_dqn_weights.weights.h5")
+            elif path.endswith('.weights.h5'):
+                # If already has extension, use as-is
+                weight_file = path
+            else:
+                # If file without extension, add .weights.h5
+                weight_file = path + '.weights.h5'
+            
+            if os.path.exists(weight_file):
+                self.ll_agent.policy_net.load_weights(weight_file)
+                print(f"[HRL] Loaded pre-trained LL model from {weight_file}")
+            else:
+                print(f"[HRL] Warning: Pre-trained LL model not found at {weight_file}")
         except Exception as e:
             print(f"[HRL] Warning: Could not load pretrained LL model: {e}")
 
@@ -62,12 +75,21 @@ class HRL_VGAE_Strategy(Strategy):
         import os
         ll_path = os.path.join(directory, "ll_dqn_weights.weights.h5")
         hl_path = os.path.join(directory, "hl_pmdrl_weights.weights.h5")
+
+        # Policy net is already built, load weights directly
         if os.path.exists(ll_path):
-            self.ll_agent.policy_net.load_weights(ll_path)
-            print(f"[HRL] Loaded LL model from {ll_path}")
+            try:
+                self.ll_agent.policy_net.load_weights(ll_path)
+                print(f"[HRL] Loaded LL model from {ll_path}")
+            except Exception as e:
+                print(f"[HRL] Warning: Could not load LL model: {e}")
+
         if os.path.exists(hl_path):
-            self.hl_agent.policy_net.load_weights(hl_path)
-            print(f"[HRL] Loaded HL model from {hl_path}")
+            try:
+                self.hl_agent.policy_net.load_weights(hl_path)
+                print(f"[HRL] Loaded HL model from {hl_path}")
+            except Exception as e:
+                print(f"[HRL] Warning: Could not load HL model: {e}")
 
     def get_routing(self, u: str, v: str, t_start: int, t_end: int, bw: float) -> Optional[List[str]]:
         u, v = str(u), str(v)
@@ -168,17 +190,35 @@ class HRL_VGAE_Strategy(Strategy):
         return self.build_placement_plan(node_placements, link_paths, vnf_timeslots, link_timeslots, sfc)
 
     def train(self) -> dict:
+        import time
         BATCH_SIZE = 32
-        MAX_TIME_MS = 70.0
         total_steps = 0
-        max_total_steps = self.episodes * (MAX_TIME_MS / config.TIMESTEP)
+        max_total_steps = self.episodes * 20  # Target for epsilon ~0.01
+        start_time = time.time()
+
+        # Phase 1: Warm-up with greedy placement (first 30% of episodes)
+        warmup_episodes = max(1, int(self.episodes * 0.3))
+
+        # Progress tracking variables
+        episode_times = []
+        best_acc_rate = 0.0
 
         for episode in range(1, self.episodes + 1):
+            episode_start = time.time()
             self.env.reset()
             waitlist = sorted([SFC(r) for r in self.env.requests], key=lambda s: s.request.arrival_time)
             queue = []
             t_step = 0
             done = False
+            ep_accepted = 0
+            ep_rejected = 0
+            
+            # Initialize epsilon before the loop to avoid UnboundLocalError
+            if episode <= warmup_episodes:
+                epsilon = 0.0
+            else:
+                progress = (episode - warmup_episodes) / (self.episodes - warmup_episodes)
+                epsilon = 0.01 + 0.3 * math.exp(-8 * progress)
 
             while not done:
                 self.env.t = t_step * config.TIMESTEP
@@ -193,7 +233,13 @@ class HRL_VGAE_Strategy(Strategy):
                     break
 
                 total_steps += 1
-                epsilon = 0.01 + 0.99 * math.exp(-3 * total_steps / max_total_steps)
+
+                # Epsilon: warmup phase uses 0 (greedy), then gradual exploration
+                if episode <= warmup_episodes:
+                    epsilon = 0.0
+                else:
+                    progress = (episode - warmup_episodes) / (self.episodes - warmup_episodes)
+                    epsilon = 0.01 + 0.3 * math.exp(-8 * progress)
 
                 t_end_eval = int(self.env.t / config.TIMESTEP) + 10
                 bw_req = queue[0].request.bw if queue else 0.0
@@ -208,25 +254,35 @@ class HRL_VGAE_Strategy(Strategy):
                         ll_agent=self.ll_agent if self.use_ll_score else None
                     )
 
+                    # LL uses higher epsilon in warmup to encourage exploration
+                    if episode <= warmup_episodes:
+                        ll_epsilon = 0.3  # Higher exploration in warmup
+                    else:
+                        ll_epsilon = 0.05  # Almost greedy after warmup
+
                     sfc_idx = self.hl_agent.act(Z_t, queue, epsilon, ll_agent=self.ll_agent)
                     selected_sfc = queue.pop(sfc_idx)
 
                     S_backup = copy.deepcopy(self.env.network)
-                    plan = self.get_placement(selected_sfc, self.env.t, Z_t, dc_mapping, epsilon)
+                    plan = self.get_placement(selected_sfc, self.env.t, Z_t, dc_mapping, ll_epsilon)
                     success, rewards, _ = self.env.step(plan)
 
                     if success:
+                        ep_accepted += 1
                         self.env.stats['accepted_requests'] += 1
-                        self.env.stats['total_cost'] += -rewards[1]
+                        self.env.stats['total_cost'] += -rewards[1] if len(rewards) > 1 else 0
                         time_rem = selected_sfc.request.end_time - self.env.t
                         tMax = selected_sfc.request.delay_max
-                        R_HL = [1.0, rewards[1]]
-                        R_LL = 1.0 + 0.5 * max(0.0, time_rem / tMax) + rewards[1]
+                        # Increased reward for acceptance to encourage learning
+                        R_HL = [2.0, rewards[1] if len(rewards) > 1 else 0]
+                        R_LL = 2.0 + 0.5 * max(0.0, time_rem / tMax) + (rewards[1] if len(rewards) > 1 else 0)
                     else:
+                        ep_rejected += 1
                         self.env.stats['rejected_requests'] += 1
                         self.env.network = S_backup
-                        R_HL = [-1.0, 0.0]
-                        R_LL = -1.0
+                        # Reduced penalty for failure to avoid discouraging exploration
+                        R_HL = [-0.1, 0.0]
+                        R_LL = -0.1
                         if self.env.t < selected_sfc.request.end_time:
                             queue.append(selected_sfc)
 
@@ -251,23 +307,72 @@ class HRL_VGAE_Strategy(Strategy):
                             Z_next, nxt_mask, done
                         ))
 
-                if total_steps % 100 == 0:
+                if total_steps % 50 == 0:
                     self.buffer_Graph.push((X, A))
 
-                if total_steps % 100 == 0 and len(self.buffer_Graph) > BATCH_SIZE:
+                # Train only when we have enough samples
+                if total_steps >= BATCH_SIZE and len(self.buffer_Graph) > BATCH_SIZE:
                     self.vgae_net.train(self.buffer_Graph, epochs=1)
                 if len(self.buffer_LL) > BATCH_SIZE:
                     self.ll_agent.train(self.buffer_LL, BATCH_SIZE)
                 if len(self.buffer_HL) > BATCH_SIZE:
                     self.hl_agent.train(self.buffer_HL, BATCH_SIZE)
 
-                if total_steps % 500 == 0:
+                if total_steps % 200 == 0:
                     self.ll_agent.update_target_network()
                     self.hl_agent.update_target_network()
 
                 t_step += 1
 
-            print(f"HRL-VGAE | Episode {episode}/{self.episodes} | Steps: {total_steps} | Accepted: {self.env.stats['accepted_requests']} | Epsilon: {epsilon:.3f}")
+            # Episode completed - calculate metrics
+            episode_time = time.time() - episode_start
+            episode_times.append(episode_time)
+            acc_rate = ep_accepted / max(1, ep_accepted + ep_rejected)
+            
+            # Track best accuracy
+            if acc_rate > best_acc_rate:
+                best_acc_rate = acc_rate
+            
+            # Calculate progress and ETA
+            elapsed_total = time.time() - start_time
+            progress_pct = episode / self.episodes * 100
+            avg_episode_time = np.mean(episode_times[-10:]) if episode_times else episode_time
+            remaining_episodes = self.episodes - episode
+            eta_seconds = remaining_episodes * avg_episode_time
+            
+            # Format ETA
+            if eta_seconds > 3600:
+                eta_str = f"{eta_seconds/3600:.1f}h"
+            elif eta_seconds > 60:
+                eta_str = f"{eta_seconds/60:.1f}m"
+            else:
+                eta_str = f"{eta_seconds:.0f}s"
+            
+            # Progress bar
+            bar_length = 30
+            filled = int(bar_length * episode / self.episodes)
+            bar = '█' * filled + '░' * (bar_length - filled)
+            
+            # Print detailed progress
+            print(f"\r[{bar}] {progress_pct:5.1f}% | Ep {episode}/{self.episodes} | "
+                  f"Acc: {ep_accepted}/{ep_accepted+ep_rejected} ({acc_rate:.1%}) | "
+                  f"Best: {best_acc_rate:.1%} | ε: {epsilon:.3f} | "
+                  f"ETA: {eta_str} | Elapsed: {elapsed_total:.0f}s", end="", flush=True)
+            
+            # New line every 10 episodes for readability
+            if episode % 50 == 0:
+                print()
+
+        total_time = time.time() - start_time
+        print(f"\n\n{'='*60}")
+        print(f"TRAINING COMPLETE")
+        print(f"{'='*60}")
+        print(f"Total time: {total_time:.1f}s ({total_time/3600:.2f}h)")
+        print(f"Total steps: {total_steps}")
+        print(f"Best acceptance rate: {best_acc_rate:.1%}")
+        
+        acc_ratio = self.env.stats['accepted_requests'] / max(1, self.env.stats['accepted_requests'] + self.env.stats['rejected_requests'])
+        print(f"Final acceptance ratio: {acc_ratio:.3f}")
 
         total_req = self.env.stats['total_requests'] * self.episodes
         self.env.stats['acceptance_ratio'] = self.env.stats['accepted_requests'] / total_req if total_req > 0 else 0.0

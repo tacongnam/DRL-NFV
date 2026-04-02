@@ -40,7 +40,7 @@ DRL-NFV/
 
 ## Quick Start
 
-### Full Automated Pipeline
+### Full Automated Pipeline (Recommended)
 
 Run the complete pipeline from data generation to evaluation:
 
@@ -51,27 +51,24 @@ python main.py --mode pipeline \
                --difficulty easy \
                --num-train-files 5 \
                --num-test-files 3 \
-               --episodes 300
+               --episodes 100
 ```
+
+**Expected time**: 6-10 hours (optimized from 1-2 days)
 
 ### Step-by-Step Execution
 
 #### Step 1: Generate Training/Test Data
 
 ```bash
-# Generate data using main.py
-python main.py --mode generate \
-               --topology nsf \
-               --distribution rural \
-               --difficulty easy \
-               --num-train-files 10 \
-               --num-test-files 3
+# Generate training data (10 files: 5 easy + 5 hard)
+python main.py --mode generate --topology nsf --distribution rural --difficulty easy --num-train-files 10 --num-test-files 3
 
 # Or use generate.py directly
-python data/generate.py --topology nsf --distribution rural \
-                        --difficulty easy --num-files 10 \
-                        --scale 50 --output data/train
+python data/generate.py --topology nsf --distribution rural --difficulty easy --num-files 5 --scale 50 --output data/train
 ```
+
+**Output**: JSON files in `data/train/` and `data/test/`
 
 #### Step 2: Pre-train Models
 
@@ -86,15 +83,26 @@ python models/pretrain.py --phase both --train-dir data/train \
                           --vgae-epochs 100 --ll-episodes 200
 ```
 
+**Output**: 
+- `models/vgae_pretrained/vgae_weights.weights.h5`
+- `models/ll_pretrained/ll_dqn_weights.weights.h5`
+
 #### Step 3: Train HRL Policy
 
 Train the High-Level RL agent (SFC scheduling):
 
 ```bash
-python main.py --mode train --episodes 300 \
+python main.py --mode train --episodes 100 \
                --ll-pretrained models/ll_pretrained \
                --train-dir data/train
 ```
+
+**Features**:
+- Real-time progress bar with ETA
+- Best acceptance rate tracking
+- Detailed metrics per episode
+
+**Output**: `models/hrl_final/` with final model weights
 
 #### Step 4: Evaluate on Test Data
 
@@ -102,6 +110,8 @@ python main.py --mode train --episodes 300 \
 python main.py --mode eval --model-dir models/hrl_final \
                --test-dir data/test
 ```
+
+**Note**: Evaluation is fast and suitable for real-time processing
 
 ### Run Baselines
 
@@ -134,7 +144,7 @@ python main.py --mode baseline
 - `--num-test-files`: Number of test files to generate
 
 ### Training
-- `--episodes`: Training episodes (default: 300)
+- `--episodes`: Training episodes (default: 100, optimized for 6-10h training)
 - `--ll-pretrained`: Path to pre-trained LL model
 - `--model-dir`: Directory to save/load models
 - `--train-dir`: Directory containing training files
