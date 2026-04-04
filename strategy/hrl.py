@@ -366,14 +366,14 @@ class HRL_VGAE_Strategy(Strategy):
         return plan
 
     def train(self) -> dict:
-        total_steps        = 0
-        best_acc_rate      = 0.0
-        t0                 = time.time()
+        total_steps         = 0
+        best_acc_rate       = 0.0
+        t0                  = time.time()
         total_steps_planned = self.episodes * len(self.env.requests)
 
         for episode in range(1, self.episodes + 1):
             ep_t0 = time.time()
-            self.env.reset()
+            self.env.reset()          # resets stats, network, waitlist
             self._graph_cache.clear()
 
             sfcs = sorted([SFC(r) for r in self.env.requests],
@@ -382,29 +382,27 @@ class HRL_VGAE_Strategy(Strategy):
 
             for sfc in sfcs:
                 total_steps += 1
-                # Epsilon theo PDF: 0.01 + 0.99*exp(-step*3/total)
-                epsilon = 0.01 + 0.99 * math.exp(-total_steps * 3.0 / max(1, total_steps_planned))
-                greedy_prob = max(0.0, 1.0 - total_steps / max(1, total_steps_planned * 0.5))
+                epsilon     = 0.01 + 0.99 * math.exp(-total_steps * 3.0 / max(1, total_steps_planned))
+                greedy_prob = max(0.0, 1.0 - total_steps / max(1, total_steps_planned * 0.8))  # FIX: 0.5→0.8
 
                 self.env.t = sfc.request.arrival_time
                 t_start    = self.env._get_timeslot(self.env.t)
                 t_end      = self.env._get_timeslot(sfc.request.end_time)
 
                 Z_t, dc_mapping = self._get_z(t_start, t_end, sfc.request.bw)
-                cache_key = (t_start, round(sfc.request.bw, 2))
-                cached    = self._graph_cache.get(cache_key)
-                X, A      = (cached[2], cached[3]) if cached else (None, None)
+                cached  = self._graph_cache.get((t_start, round(sfc.request.bw, 2)))
+                X, A    = (cached[2], cached[3]) if cached else (None, None)
 
-                snap = self._snapshot(self.env.network)
+                snap       = self._snapshot(self.env.network)
                 use_greedy = (np.random.random() < greedy_prob)
 
                 if use_greedy:
-                    plan = self._greedy_placement_with_traj(sfc, self.env.t, Z_t, dc_mapping)
+                    plan          = self._greedy_placement_with_traj(sfc, self.env.t, Z_t, dc_mapping)
                     R_LL_override = 1.5
                 else:
                     plan = self.get_placement(sfc, self.env.t, Z_t, dc_mapping, epsilon)
                     if plan is None:
-                        plan = self._greedy_placement_with_traj(sfc, self.env.t, Z_t, dc_mapping)
+                        plan          = self._greedy_placement_with_traj(sfc, self.env.t, Z_t, dc_mapping)
                         R_LL_override = 1.0
                     else:
                         R_LL_override = None
@@ -413,28 +411,33 @@ class HRL_VGAE_Strategy(Strategy):
 
                 if success:
                     ep_accepted += 1
-                    self.env.stats['accepted_requests'] += 1
-                    self.env.stats['total_cost'] += abs(rewards[1] if len(rewards) > 1 else 0.)
-                    raw_cost = abs(rewards[1]) if len(rewards) > 1 else 0.0
+                    # FIX: không cộng vào env.stats thủ công — để process_request hoặc
+                    # tổng hợp cuối episode. Chỉ track local counter.
+                    raw_cost  = abs(rewards[1]) if len(rewards) > 1 else 0.0
                     cost_norm = raw_cost / max(1.0, raw_cost)
-                    R_HL = [BASE_AR_REWARD, -cost_norm]
-                    vnf_f = ([sfc.request.vnfs[0].resource.get(k, 0.) for k in config.RESOURCE_TYPE]
-                            if sfc.request.vnfs else [0., 0., 0.])
-                    R_LL = R_LL_override if R_LL_override is not None else \
-                        self._compute_ll_reward(True, rewards, sfc, self.env.t, Z_t, vnf_f)
+                    R_HL      = [BASE_AR_REWARD, -cost_norm]
+                    vnf_f     = ([sfc.request.vnfs[0].resource.get(k, 0.) for k in config.RESOURCE_TYPE]
+                                if sfc.request.vnfs else [0., 0., 0.])
+                    R_LL      = R_LL_override if R_LL_override is not None else \
+                                self._compute_ll_reward(True, rewards, sfc, self.env.t, Z_t, vnf_f)
                     self._graph_cache.clear()
                 else:
                     ep_rejected += 1
-                    self.env.stats['rejected_requests'] += 1
                     self._restore(self.env.network, snap)
+                    # FIX: clear cache sau restore vì network state đã thay đổi
+                    self._graph_cache.clear()
                     R_HL = [-PENALTY_DROP, 0.]
                     R_LL = -PENALTY_DROP
 
+                # FIX: push HL buffer với queue thực (dùng sfcs còn lại) thay vì [sfc] đơn lẻ
+                remaining_sfcs = [s for s in sfcs if s is not sfc]
                 Z_mean    = Z_t.mean(axis=0, keepdims=True)
                 sfc_feats = self.hl_agent.extract_sfc_features([sfc], Z_t, self.ll_agent)
+                sfc_feats_next = (self.hl_agent.extract_sfc_features(remaining_sfcs[:self.hl_agent.max_queue], Z_t, self.ll_agent)
+                                if remaining_sfcs else sfc_feats)
                 is_done   = (sfc is sfcs[-1])
 
-                self.buf_HL.push((Z_mean, sfc_feats, 0, R_HL, Z_mean, sfc_feats, is_done))
+                self.buf_HL.push((Z_mean, sfc_feats, 0, R_HL, Z_mean, sfc_feats_next, is_done))
                 for i, step in enumerate(self._ll_traj):
                     nxt = self._ll_traj[i+1]["valid_mask"] if i+1 < len(self._ll_traj) else []
                     self.buf_LL.push((step["Z_t"], list(step["vnf_feat"]),
@@ -452,7 +455,9 @@ class HRL_VGAE_Strategy(Strategy):
                 if total_steps % VGAE_TRAIN_FREQ == 0 and len(self.buf_Graph) >= 4:
                     self.vgae_net.train(self.buf_Graph, epochs=1)
 
-            acc_rate      = ep_accepted / max(1, ep_accepted + ep_rejected)
+            # FIX: ghi stats từ local counter (không double-count)
+            total_ep = ep_accepted + ep_rejected
+            acc_rate      = ep_accepted / max(1, total_ep)
             best_acc_rate = max(best_acc_rate, acc_rate)
             ep_time       = time.time() - ep_t0
             eta_s         = (self.episodes - episode) * ep_time
@@ -466,12 +471,14 @@ class HRL_VGAE_Strategy(Strategy):
                 print()
 
         print(f"\n[HRL] Done {time.time()-t0:.1f}s  best_acc={best_acc_rate:.1%}")
-        total_req = self.env.stats["total_requests"] * self.episodes
-        self.env.stats["acceptance_ratio"] = (self.env.stats["accepted_requests"] / total_req
-                                            if total_req > 0 else 0.)
-        self.env.stats["algorithm_name"] = self.name
+        # FIX: stats tổng hợp từ episode cuối (env.stats đã reset mỗi episode)
+        # Trả về acceptance ratio của episode cuối thay vì tổng sai
+        self.env.stats["accepted_requests"]  = ep_accepted
+        self.env.stats["rejected_requests"]  = ep_rejected
+        self.env.stats["acceptance_ratio"]   = acc_rate
+        self.env.stats["algorithm_name"]     = self.name
         return self.env.stats
-    
+
     def run_simulation_eval(self) -> dict:
         self.env.reset()
         self._graph_cache.clear()
@@ -526,15 +533,13 @@ class HRL_VGAE_Strategy(Strategy):
                 self.env.stats["accepted_requests"] += 1
                 self.env.stats["total_cost"] += abs(rewards[1] if len(rewards) > 1 else 0.)
                 self._graph_cache.clear()
-                # Advance time đến SFC tiếp theo
                 if pending:
                     t = max(t, pending[0].request.arrival_time) if not queue else t
             else:
                 self._restore(self.env.network, snap)
-                # Re-queue nếu chưa hết deadline (waitlist đúng PDF)
+                self._graph_cache.clear()
                 if t < selected_sfc.request.end_time - config.TIMESTEP:
                     queue.append(selected_sfc)
-                    # Advance time nhỏ để tránh loop vô hạn
                     if pending:
                         next_t = pending[0].request.arrival_time
                         t = min(t + config.TIMESTEP, next_t)
