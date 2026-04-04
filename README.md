@@ -92,9 +92,7 @@ python models/pretrain.py --phase both --train-dir data/train \
 Train the High-Level RL agent (SFC scheduling):
 
 ```bash
-python main.py --mode train --episodes 100 \
-               --ll-pretrained models/ll_pretrained \
-               --train-dir data/train
+python main.py --mode train --episodes 100 --ll-pretrained models/ll_pretrained --train-dir data/train
 ```
 
 **Features**:
