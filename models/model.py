@@ -31,11 +31,6 @@ import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 
-
-# ─────────────────────────────────────────────────────────────
-# Replay Buffer
-# ─────────────────────────────────────────────────────────────
-
 class ReplayBuffer:
     def __init__(self, capacity: int = 10_000):
         self.buf = collections.deque(maxlen=capacity)
@@ -50,9 +45,7 @@ class ReplayBuffer:
         return len(self.buf)
 
 
-# ─────────────────────────────────────────────────────────────
-# VGAE  (Graph Convolutional Encoder + Gaussian Latent Space)
-# ─────────────────────────────────────────────────────────────
+# VGAE (Graph Convolutional Encoder + Gaussian Latent Space)
 
 class GCNLayer(layers.Layer):
     """Single Graph Convolutional layer:  H' = σ(Â H W)"""
@@ -95,7 +88,7 @@ class VGAENetwork:
 
         self.optimizer = keras.optimizers.Adam(lr)
 
-    # ── graph normalisation ──────────────────────────────────
+    # Graph normalisation
 
     @staticmethod
     def _norm_adj(A: np.ndarray) -> tf.Tensor:
@@ -106,7 +99,7 @@ class VGAENetwork:
         D   = np.diag(1.0 / np.sqrt(deg.flatten()))
         return tf.constant(D @ Ai @ D, dtype=tf.float32)
 
-    # ── encode ───────────────────────────────────────────────
+    # Encode
 
     def encode(self, X: np.ndarray, A: np.ndarray) -> np.ndarray:
         """Return mean embedding Z (N, latent_dim).  No gradient tape."""
@@ -118,7 +111,7 @@ class VGAENetwork:
         mu     = self.gcn_mu(h, A_hat)
         return mu.numpy()
 
-    # ── train step ───────────────────────────────────────────
+    # Train step
 
     def _train_step(self, X_t: tf.Tensor, A_hat: tf.Tensor, A_t: tf.Tensor):
         with tf.GradientTape() as tape:
@@ -160,7 +153,7 @@ class VGAENetwork:
                 A_t   = tf.constant(A, dtype=tf.float32)
                 self._train_step(X_t, A_hat, A_t)
 
-    # ── weight I/O ───────────────────────────────────────────
+    # Weight I/O
 
     def save_weights(self, path: str):
         # Force build by running a dummy pass
@@ -192,9 +185,7 @@ class VGAENetwork:
             self._built = True
 
 
-# ─────────────────────────────────────────────────────────────
 # Small shared MLP builder
-# ─────────────────────────────────────────────────────────────
 
 def _mlp(input_dim: int, hidden: int, out_dim: int, name: str) -> keras.Model:
     inp = keras.Input(shape=(input_dim,), name=name + "_in")
@@ -204,9 +195,7 @@ def _mlp(input_dim: int, hidden: int, out_dim: int, name: str) -> keras.Model:
     return keras.Model(inp, out, name=name)
 
 
-# ─────────────────────────────────────────────────────────────
-# Low-Level Agent  (DQN + Action Masking)
-# ─────────────────────────────────────────────────────────────
+# Low-Level Agent (DQN + Action Masking)
 
 class LowLevelAgent:
     """
@@ -247,7 +236,7 @@ class LowLevelAgent:
     def update_target_network(self):
         self._sync_target()
 
-    # ── feature construction ────────────────────────────────
+    # Feature construction
 
     def _make_state(self, Z_t: np.ndarray, vnf_feat) -> np.ndarray:
         """Z_mean + VNF resource vector → flat state (1, latent_dim+3)."""
@@ -263,7 +252,7 @@ class LowLevelAgent:
 
         return np.concatenate([z_mean, f_arr])[None]             # (1, feat_dim)
 
-    # ── action selection ────────────────────────────────────
+    # Action selection
 
     def act(self, Z_t: np.ndarray, vnf_feat: list,
             valid_indices: List[int], epsilon: float = 0.0) -> int:
@@ -283,7 +272,7 @@ class LowLevelAgent:
         mask[valid_clip] = q[valid_clip]
         return int(np.argmax(mask))
 
-    # ── reward weighting ────────────────────────────────────
+    # Reward weighting
 
     def get_reward_weights(self, Z_t: np.ndarray, vnf_feat: list) -> Tuple[float, float]:
         state = self._make_state(Z_t, vnf_feat)
@@ -292,7 +281,7 @@ class LowLevelAgent:
         beta  = float(w[1]) * 1.0   # β ∈ (0, 1)
         return alpha, beta
 
-    # ── training ────────────────────────────────────────────
+    # Training
 
     def train(self, buffer: ReplayBuffer, batch_size: int = 32):
         if len(buffer) < batch_size:
@@ -302,8 +291,10 @@ class LowLevelAgent:
         states, actions, rewards, next_states, next_masks, dones = [], [], [], [], [], []
         for (Z, vnf_f, act, rew, Z_next, nxt_mask, done) in batch:
             states.append(self._make_state(Z, vnf_f)[0])
-            actions.append(act)
-            rewards.append(rew if np.isscalar(rew) else float(rew))
+            actions.append(int(act))
+            # R_LL luôn scalar từ hrl.py, nhưng phòng trường hợp list
+            r = float(rew[0]) if hasattr(rew, '__len__') else float(rew)
+            rewards.append(r)
             next_states.append(self._make_state(Z_next, vnf_f)[0])
             next_masks.append(nxt_mask)
             dones.append(float(done))
@@ -313,12 +304,11 @@ class LowLevelAgent:
         R  = tf.constant(np.array(rewards,     dtype=np.float32))
         D  = tf.constant(np.array(dones,       dtype=np.float32))
 
-        # Target Q
         Q_next = self.target_net(Sn, training=False).numpy()
         for i, mask in enumerate(next_masks):
-            valid_clip = [m for m in mask if m < self.max_dcs]
+            valid_clip = [m for m in mask if isinstance(m, int) and m < self.max_dcs]
             if valid_clip:
-                masked   = np.full(self.max_dcs, -1e9, dtype=np.float32)
+                masked = np.full(self.max_dcs, -1e9, dtype=np.float32)
                 masked[valid_clip] = Q_next[i, valid_clip]
                 Q_next[i] = masked
         Q_next_max = tf.constant(Q_next.max(axis=1), dtype=tf.float32)
@@ -326,17 +316,15 @@ class LowLevelAgent:
 
         with tf.GradientTape() as tape:
             Q_pred = self.policy_net(S, training=True)
-            idx    = tf.stack([tf.range(len(actions)), actions], axis=1)
+            idx    = tf.stack([tf.range(len(actions), dtype=tf.int32),
+                            tf.constant(actions, dtype=tf.int32)], axis=1)
             Q_sa   = tf.gather_nd(Q_pred, idx)
             loss   = tf.reduce_mean(tf.square(target - Q_sa))
 
         grads = tape.gradient(loss, self.policy_net.trainable_variables)
         self.opt.apply_gradients(zip(grads, self.policy_net.trainable_variables))
 
-
-# ─────────────────────────────────────────────────────────────
-# High-Level Agent  (PMDRL – Pareto-front Multi-Objective DRL)
-# ─────────────────────────────────────────────────────────────
+# High-Level Agent (PMDRL – Pareto-front Multi-Objective DRL)
 
 class HighLevelAgent:
     """
@@ -376,31 +364,30 @@ class HighLevelAgent:
     def update_target_network(self):
         self._sync_target()
 
-    # ── SFC feature extraction ──────────────────────────────
+    # SFC feature extraction
 
     def extract_sfc_features(self, queue: list, Z_t: Optional[np.ndarray] = None,
-                             ll_agent: Optional[LowLevelAgent] = None) -> np.ndarray:
-        """Return (len(queue), FEAT_PER_SFC) feature matrix."""
+                         ll_agent: Optional[LowLevelAgent] = None) -> np.ndarray:
         feats = []
+        # Tính max delay trong queue để normalize động
+        max_delay = max((s.request.delay_max for s in queue), default=1.0)
+        max_delay = max(max_delay, 1.0)
         for sfc in queue:
-            req = sfc.request
+            req     = sfc.request
             n_vnfs  = len(req.vnfs)
             bw      = req.bw
-            # Delay budget normalised [0,1] (assume max budget ~10 for easy level)
-            d_norm  = min(1.0, req.delay_max / 10.0)
-            ll_score = 0.5   # default
+            d_norm  = min(1.0, req.delay_max / max_delay)   # normalize động
+            ll_score = 0.5
             if self.use_ll_score and Z_t is not None and ll_agent is not None and n_vnfs > 0:
-                vnf_feat = [req.vnfs[0].resource.get("mem", 0),
-                            req.vnfs[0].resource.get("cpu", 0),
-                            req.vnfs[0].resource.get("ram", 0)]
-                # Quick LL Q-value as proxy for feasibility
-                state = ll_agent._make_state(Z_t, vnf_feat)
-                q     = ll_agent.policy_net(state, training=False).numpy()[0]
-                ll_score = float(q.max()) / (abs(q.max()) + 1.0)   # soft normalise
+                vnf_feat = [req.vnfs[0].resource.get(k, 0) for k in ["mem","cpu","ram"]]
+                state    = ll_agent._make_state(Z_t, vnf_feat)
+                q        = ll_agent.policy_net(state, training=False).numpy()[0]
+                q_max    = float(q.max())
+                ll_score = q_max / (abs(q_max) + 1.0)
             feats.append([bw, float(n_vnfs), d_norm, ll_score])
-        return np.array(feats, dtype=np.float32)          # (Q, FEAT_PER_SFC)
+        return np.array(feats, dtype=np.float32)
 
-    # ── state for a single SFC candidate ────────────────────
+    # State for a single SFC candidate
 
     def _state_for(self, Z_t: np.ndarray, sfc_feat) -> np.ndarray:
         """Z_mean + SFC feature vector → flat state (1, latent_dim+FEAT_PER_SFC)."""
@@ -409,7 +396,7 @@ class HighLevelAgent:
         f_arr  = np.asarray(sfc_feat, dtype=np.float32).ravel()
         return np.concatenate([z_mean, f_arr])[None]    # (1, feat_dim)
 
-    # ── Pareto-front non-dominated sorting ──────────────────
+    # Pareto-front non-dominated sorting
 
     @staticmethod
     def _nondominated_sort(q_matrix: np.ndarray) -> List[int]:
@@ -431,7 +418,7 @@ class HighLevelAgent:
         front = [i for i in range(N) if dom_count[i] == 0]
         return front if front else list(range(N))
 
-    # ── action selection ────────────────────────────────────
+    # Action selection
 
     def act(self, Z_t: np.ndarray, queue: list, epsilon: float = 0.0,
             ll_agent: Optional[LowLevelAgent] = None) -> int:
@@ -458,8 +445,6 @@ class HighLevelAgent:
         best = max(front, key=lambda i: q_mat[i, 0])
         return best
 
-    # ── training ────────────────────────────────────────────
-
     def train(self, buffer: ReplayBuffer, batch_size: int = 32):
         if len(buffer) < batch_size:
             return
@@ -470,8 +455,8 @@ class HighLevelAgent:
         for (Z_mean, sfc_feats, sfc_idx, R_HL, Z_next_mean, sfc_feats_next, done) in batch:
             if len(sfc_feats) == 0:
                 continue
-            sfc_idx_clip = min(sfc_idx, len(sfc_feats) - 1)
-            s    = self._state_for(Z_mean.reshape(-1), sfc_feats[sfc_idx_clip])[0]
+            sfc_idx_clip = min(int(sfc_idx), len(sfc_feats) - 1)
+            s = self._state_for(Z_mean.reshape(-1), sfc_feats[sfc_idx_clip])[0]
             states.append(s)
             actions.append(sfc_idx_clip)
             r_ar   = float(R_HL[0]) if hasattr(R_HL, '__len__') else float(R_HL)
@@ -479,7 +464,6 @@ class HighLevelAgent:
             rewards_ar.append(r_ar)
             rewards_cost.append(r_cost)
             dones.append(float(done))
-            # Next state: use first SFC in next queue (or zeros)
             if len(sfc_feats_next) > 0:
                 ns = self._state_for(Z_next_mean.reshape(-1), sfc_feats_next[0])[0]
             else:
@@ -489,20 +473,22 @@ class HighLevelAgent:
         if not states:
             return
 
-        S   = tf.constant(np.array(states,       dtype=np.float32))
-        Sn  = tf.constant(np.array(next_states,  dtype=np.float32))
-        R_ar   = tf.constant(np.array(rewards_ar,   dtype=np.float32))
-        R_cost = tf.constant(np.array(rewards_cost, dtype=np.float32))
-        D      = tf.constant(np.array(dones,        dtype=np.float32))
+        S      = tf.constant(np.array(states,      dtype=np.float32))
+        Sn     = tf.constant(np.array(next_states, dtype=np.float32))
+        R_ar   = tf.constant(np.array(rewards_ar,  dtype=np.float32))
+        R_cost = tf.constant(np.array(rewards_cost,dtype=np.float32))
+        D      = tf.constant(np.array(dones,       dtype=np.float32))
 
-        Q_next = self.target_net(Sn, training=False)     # (B, 2)
+        Q_next   = self.target_net(Sn, training=False)
         tgt_ar   = R_ar   + self.gamma * Q_next[:, 0] * (1.0 - D)
         tgt_cost = R_cost + self.gamma * Q_next[:, 1] * (1.0 - D)
-        target   = tf.stack([tgt_ar, tgt_cost], axis=1)  # (B, 2)
 
         with tf.GradientTape() as tape:
             Q_pred = self.policy_net(S, training=True)   # (B, 2)
-            loss   = tf.reduce_mean(tf.square(target - Q_pred))
+            # FIX: loss chỉ trên 2 đầu ra, không cần gather vì output dim=2 luôn tương ứng action
+            loss_ar   = tf.reduce_mean(tf.square(tgt_ar   - Q_pred[:, 0]))
+            loss_cost = tf.reduce_mean(tf.square(tgt_cost - Q_pred[:, 1]))
+            loss = loss_ar + loss_cost
 
         grads = tape.gradient(loss, self.policy_net.trainable_variables)
         self.opt.apply_gradients(zip(grads, self.policy_net.trainable_variables))

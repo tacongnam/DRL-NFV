@@ -80,6 +80,9 @@ class HRL_VGAE_Strategy(Strategy):
         self.buf_LL    = ReplayBuffer(capacity=10_000)
         self.buf_Graph = ReplayBuffer(capacity=1_000)
 
+        self._total_steps_global = 0
+        self._total_steps_planned = None  # set in train()
+
         # Trajectory of LL decisions for current SFC (cleared each SFC)
         self._ll_traj: List[dict] = []
 
@@ -310,275 +313,238 @@ class HRL_VGAE_Strategy(Strategy):
     # Reward calculation (no magic numbers)
 
     def _compute_ll_reward(self, success: bool, env_rewards: list,
-                            sfc: SFC, current_time: float,
-                            Z_t: np.ndarray, vnf_feat: list) -> float:
+                        sfc: SFC, current_time: float,
+                        Z_t: np.ndarray, vnf_feat: list) -> float:
         if not success:
             return -PENALTY_DROP
 
         alpha, beta = self.ll_agent.get_reward_weights(Z_t, vnf_feat)
-        time_rem = sfc.request.end_time - current_time
-        tMax     = max(sfc.request.delay_max, 1e-6)
-        time_bonus = alpha * max(0.0, time_rem / tMax)
+        time_rem  = max(0.0, sfc.request.end_time - current_time)
+        tMax      = max(sfc.request.delay_max, 1e-6)
 
-        cost_neg   = env_rewards[1] if len(env_rewards) > 1 else 0.0
-        cost_pen   = beta * abs(cost_neg)   # env_rewards[1] is negative cost
+        # Normalize cost về [0,1]
+        raw_cost  = abs(env_rewards[1]) if len(env_rewards) > 1 else 0.0
+        max_cost  = max(1.0, raw_cost)
+        cost_norm = raw_cost / max_cost
 
-        return R_BASE_LL + time_bonus - cost_pen
+        return R_BASE_LL + alpha * (time_rem / tMax) - beta * cost_norm
 
-    # Training loop (matches PDF overall flow)
+    def _greedy_placement_with_traj(self, sfc, current_time, Z_t, dc_mapping):
+        """Greedy + capture LL trajectory để imitation learning."""
+        self._ll_traj = []
+        t_start = self.env._get_timeslot(current_time)
+        t_end   = self.env._get_timeslot(sfc.request.end_time)
+        
+        from strategy.fifs import GreedyFIFS
+        greedy = GreedyFIFS(self.env)
+        plan   = greedy.get_placement(sfc, current_time)
+        if plan is None:
+            return None
+        
+        # Reconstruct trajectory: với mỗi VNF, tìm DC greedy đã chọn
+        for i, vnf in enumerate(sfc.request.vnfs):
+            node_plan = plan.get('nodes', {}).get(str(i))
+            if node_plan is None:
+                continue
+            chosen_dc = node_plan['dc']
+            if chosen_dc not in dc_mapping:
+                continue
+            action_idx = dc_mapping.index(chosen_dc)
+            cand = [str(x) for x in vnf.get_dcs()]
+            if '-1' in cand or not cand:
+                cand = dc_mapping
+            valid_indices = [
+                idx for idx, dc_id in enumerate(dc_mapping)
+                if dc_id in cand and idx < MAX_DCS
+                and self.env._check_can_deploy_vnf(
+                    self.env.network.nodes[dc_id], vnf, t_start, t_end)
+            ]
+            self._ll_traj.append({
+                "Z_t": Z_t, "vnf_feat": [vnf.resource.get(k,0.) for k in config.RESOURCE_TYPE],
+                "action_idx": action_idx, "valid_mask": valid_indices,
+            })
+        return plan
 
     def train(self) -> dict:
-        total_steps   = 0
-        best_acc_rate = 0.0
-        t0            = time.time()
-
-        # Warm-up: 15% of episodes use high epsilon để fill buffer nhanh hơn
-        warmup_eps = max(1, int(self.episodes * 0.15))
+        total_steps        = 0
+        best_acc_rate      = 0.0
+        t0                 = time.time()
+        total_steps_planned = self.episodes * len(self.env.requests)
 
         for episode in range(1, self.episodes + 1):
             ep_t0 = time.time()
             self.env.reset()
-            self._graph_cache.clear()   # invalidate graph cache each episode
+            self._graph_cache.clear()
 
-            # Sort all requests by arrival time
-            waitlist = sorted(
-                [SFC(r) for r in self.env.requests],
-                key=lambda s: s.request.arrival_time)
-            queue: List[SFC] = []
-
+            sfcs = sorted([SFC(r) for r in self.env.requests],
+                        key=lambda s: s.request.arrival_time)
             ep_accepted = ep_rejected = 0
-            t_step = 0
 
-            progress_ratio = max(0.0, (episode - warmup_eps) /
-                                  max(1, self.episodes - warmup_eps))
-            # Giảm epsilon nhanh hơn giúp train nhanh gấp 2-3 lần
-            hl_epsilon = 1.0 if episode <= warmup_eps else \
-                         0.08 + 0.92 * math.exp(-8.0 * progress_ratio)
-            ll_epsilon = 0.7 if episode <= warmup_eps else \
-                         0.05 + 0.65 * math.exp(-8.0 * progress_ratio)
+            for sfc in sfcs:
+                total_steps += 1
+                # Epsilon theo PDF: 0.01 + 0.99*exp(-step*3/total)
+                epsilon = 0.01 + 0.99 * math.exp(-total_steps * 3.0 / max(1, total_steps_planned))
+                greedy_prob = max(0.0, 1.0 - total_steps / max(1, total_steps_planned * 0.5))
 
-            max_t = (max(r.request.end_time for r in waitlist)
-                     if waitlist else 100.0)
-            max_step = int(max_t / config.TIMESTEP) + 1
+                self.env.t = sfc.request.arrival_time
+                t_start    = self.env._get_timeslot(self.env.t)
+                t_end      = self.env._get_timeslot(sfc.request.end_time)
 
-            for t_step in range(max_step):
-                self.env.t = t_step * config.TIMESTEP
-                # Invalidate graph cache only when network state actually changes
-                # (i.e. between timesteps, not between VNF placements in the same step)
-                self._graph_cache.clear()
+                Z_t, dc_mapping = self._get_z(t_start, t_end, sfc.request.bw)
+                cache_key = (t_start, round(sfc.request.bw, 2))
+                cached    = self._graph_cache.get(cache_key)
+                X, A      = (cached[2], cached[3]) if cached else (None, None)
 
-                # Admit arriving requests
-                while waitlist and waitlist[0].request.arrival_time <= self.env.t:
-                    queue.append(waitlist.pop(0))
+                snap = self._snapshot(self.env.network)
+                use_greedy = (np.random.random() < greedy_prob)
 
-                # Drop expired SFCs (Waitlist: only drop when deadline certain)
-                queue = [s for s in queue
-                         if self.env.t <= s.request.end_time]
-
-                if not queue:
-                    if not waitlist:
-                        break
-                    continue
-
-                # Process ALL queued SFCs at this timestep (not just one)
-                # This matches online scheduling: multiple SFCs can be served per slot
-                sfc_processed_this_step = 0
-                max_per_step = len(queue)   # bound to avoid infinite loop
-
-                while queue and sfc_processed_this_step < max_per_step:
-                    total_steps += 1
-                    sfc_processed_this_step += 1
-
-                    # Graph encoding (cached per timestep+bw)
-                    bw_req     = queue[0].request.bw
-                    t_end_eval = t_step + max(
-                        int(queue[0].request.delay_max / config.TIMESTEP), 10)
-                    Z_t, dc_mapping = self._get_z(t_step, t_end_eval, bw_req)
-                    _, _, X, A = self._graph_cache[(t_step, round(bw_req, 2))]
-
-                    # High-Level: select SFC
-                    sfc_idx      = self.hl_agent.act(Z_t, queue, hl_epsilon, self.ll_agent)
-                    selected_sfc = queue.pop(sfc_idx)
-
-                    # Rollback snapshot
-                    snap = self._snapshot(self.env.network)
-
-                    # Low-Level: place VNFs
-                    plan    = self.get_placement(
-                        selected_sfc, self.env.t, Z_t, dc_mapping, ll_epsilon)
-                    success, rewards, _ = self.env.step(plan)
-
-                    if success:
-                        ep_accepted += 1
-                        self.env.stats['accepted_requests'] += 1
-                        self.env.stats['total_cost'] += abs(
-                            rewards[1] if len(rewards) > 1 else 0.0)
-                        R_HL  = [BASE_AR_REWARD, rewards[1] if len(rewards) > 1 else 0.0]
-                        vnf_f0 = ([selected_sfc.request.vnfs[0].resource.get(k, 0.0) for k in config.RESOURCE_TYPE]
-                                   if selected_sfc.request.vnfs else [0., 0., 0.])
-                        R_LL  = self._compute_ll_reward(
-                            True, rewards, selected_sfc, self.env.t, Z_t, vnf_f0)
-                        # After success, invalidate cache (resources changed)
-                        self._graph_cache.clear()
+                if use_greedy:
+                    plan = self._greedy_placement_with_traj(sfc, self.env.t, Z_t, dc_mapping)
+                    R_LL_override = 1.5
+                else:
+                    plan = self.get_placement(sfc, self.env.t, Z_t, dc_mapping, epsilon)
+                    if plan is None:
+                        plan = self._greedy_placement_with_traj(sfc, self.env.t, Z_t, dc_mapping)
+                        R_LL_override = 1.0
                     else:
-                        ep_rejected += 1
-                        self.env.stats['rejected_requests'] += 1
-                        self._restore(self.env.network, snap)   # Rollback
-                        R_HL  = [-PENALTY_DROP, 0.0]
-                        R_LL  = -PENALTY_DROP
-                        # Waitlist: re-queue if deadline not certain to be violated
-                        if self.env.t < selected_sfc.request.end_time - config.TIMESTEP:
-                            queue.append(selected_sfc)
-                        break   # Stop processing queue this timestep on failure
+                        R_LL_override = None
 
-                    # Experience storage
-                    Z_mean         = Z_t.mean(axis=0, keepdims=True)  # (1, latent_dim)
-                    Z_next_mean    = Z_mean.copy()
-                    sfc_feats_t    = self.hl_agent.extract_sfc_features(
-                        [selected_sfc], Z_t, self.ll_agent)            # (1, FEAT_PER_SFC)
-                    sfc_feats_next = (self.hl_agent.extract_sfc_features(
-                        queue[:1], Z_t, self.ll_agent)
-                                      if queue else sfc_feats_t)        # (1, FEAT_PER_SFC)
-
-                    is_done = not queue and not waitlist
-                    self.buf_HL.push((
-                        Z_mean, sfc_feats_t, 0, R_HL,
-                        Z_next_mean, sfc_feats_next, is_done))
-
-                    for i, step in enumerate(self._ll_traj):
-                        nxt_mask = (self._ll_traj[i+1]["valid_mask"]
-                                    if i+1 < len(self._ll_traj) else [])
-                        # Store vnf_feat as flat 1-D list (not nested array)
-                        self.buf_LL.push((
-                            step["Z_t"],
-                            list(step["vnf_feat"]),          # flat list → _make_state flattens
-                            step["action_idx"],
-                            R_LL,
-                            Z_t, nxt_mask,
-                            is_done))
-
-                    if total_steps % VGAE_TRAIN_FREQ == 0:
-                        self.buf_Graph.push((X, A))
-
-                    # Network updates
-                    if len(self.buf_LL) >= BATCH_SIZE:
-                        self.ll_agent.train(self.buf_LL, BATCH_SIZE)
-                    if len(self.buf_HL) >= BATCH_SIZE:
-                        self.hl_agent.train(self.buf_HL, BATCH_SIZE)
-                    if total_steps % TARGET_SYNC == 0:
-                        self.ll_agent.update_target_network()
-                        self.hl_agent.update_target_network()
-                    if total_steps % VGAE_TRAIN_FREQ == 0 and len(self.buf_Graph) >= 4:
-                        self.vgae_net.train(self.buf_Graph, epochs=1)
-
-            # Episode summary
-            acc_rate = ep_accepted / max(1, ep_accepted + ep_rejected)
-            best_acc_rate = max(best_acc_rate, acc_rate)
-            ep_time = time.time() - ep_t0
-            elapsed = time.time() - t0
-
-            remaining = self.episodes - episode
-            eta_s     = remaining * ep_time
-            eta_str   = (f"{eta_s/3600:.1f}h" if eta_s > 3600
-                         else f"{eta_s/60:.1f}m" if eta_s > 60
-                         else f"{eta_s:.0f}s")
-
-            bar_len = 25
-            filled  = int(bar_len * episode / self.episodes)
-            bar     = "█" * filled + "░" * (bar_len - filled)
-
-            print(f"\r[{bar}] {episode}/{self.episodes} | "
-                  f"acc={acc_rate:.1%} best={best_acc_rate:.1%} | "
-                  f"ε_hl={hl_epsilon:.2f} ε_ll={ll_epsilon:.2f} | "
-                  f"ep={ep_time:.1f}s ETA={eta_str}",
-                  end="", flush=True)
-            if episode % 25 == 0:
-                print()
-
-        print(f"\n[HRL] Training done in {time.time()-t0:.1f}s  "
-              f"best_acc={best_acc_rate:.1%}")
-
-        total_req = self.env.stats["total_requests"] * self.episodes
-        self.env.stats["acceptance_ratio"] = (
-            self.env.stats["accepted_requests"] / total_req
-            if total_req > 0 else 0.0)
-        self.env.stats["algorithm_name"] = self.name
-        return self.env.stats
-
-    # Evaluation (online – no training, near-real-time)
-
-    def run_simulation_eval(self) -> dict:
-        """
-        Evaluate the trained policy once, mirroring the online deployment flow:
-          - Advance time step-by-step.
-          - Admit arriving SFCs.
-          - HL picks SFC; LL places VNFs; rollback on failure; waitlist on partial fail.
-          - No gradient updates.
-        This keeps inference latency proportional to real time.
-        """
-        self.env.reset()
-        self._graph_cache.clear()
-
-        waitlist = sorted(
-            [SFC(r) for r in self.env.requests],
-            key=lambda s: s.request.arrival_time)
-        queue: List[SFC] = []
-
-        max_t = (max(r.request.end_time for r in waitlist)
-                 if waitlist else 100.0)
-        max_step = int(max_t / config.TIMESTEP) + 1
-
-        accepted = rejected = 0
-
-        for t_step in range(max_step):
-            self.env.t = t_step * config.TIMESTEP
-            self._graph_cache.clear()   # invalidate at each new timestep
-
-            while waitlist and waitlist[0].request.arrival_time <= self.env.t:
-                queue.append(waitlist.pop(0))
-
-            queue = [s for s in queue if self.env.t <= s.request.end_time]
-
-            if not queue:
-                if not waitlist:
-                    break
-                continue
-
-            # Process all queued SFCs at this timestep
-            max_per_step = len(queue)
-            processed    = 0
-
-            while queue and processed < max_per_step:
-                processed += 1
-
-                bw_req     = queue[0].request.bw
-                t_end_eval = t_step + max(
-                    int(queue[0].request.delay_max / config.TIMESTEP), 10)
-                Z_t, dc_mapping = self._get_z(t_step, t_end_eval, bw_req)
-
-                sfc_idx      = self.hl_agent.act(Z_t, queue, 0.0, self.ll_agent)
-                selected_sfc = queue.pop(sfc_idx)
-
-                snap    = self._snapshot(self.env.network)
-                plan    = self.get_placement(
-                    selected_sfc, self.env.t, Z_t, dc_mapping, 0.0)
                 success, rewards, _ = self.env.step(plan)
 
                 if success:
-                    accepted += 1
-                    self.env.stats["accepted_requests"] += 1
-                    self.env.stats["total_cost"] += abs(
-                        rewards[1] if len(rewards) > 1 else 0.0)
-                    self._graph_cache.clear()   # resources changed
+                    ep_accepted += 1
+                    self.env.stats['accepted_requests'] += 1
+                    self.env.stats['total_cost'] += abs(rewards[1] if len(rewards) > 1 else 0.)
+                    raw_cost = abs(rewards[1]) if len(rewards) > 1 else 0.0
+                    cost_norm = raw_cost / max(1.0, raw_cost)
+                    R_HL = [BASE_AR_REWARD, -cost_norm]
+                    vnf_f = ([sfc.request.vnfs[0].resource.get(k, 0.) for k in config.RESOURCE_TYPE]
+                            if sfc.request.vnfs else [0., 0., 0.])
+                    R_LL = R_LL_override if R_LL_override is not None else \
+                        self._compute_ll_reward(True, rewards, sfc, self.env.t, Z_t, vnf_f)
+                    self._graph_cache.clear()
+                else:
+                    ep_rejected += 1
+                    self.env.stats['rejected_requests'] += 1
+                    self._restore(self.env.network, snap)
+                    R_HL = [-PENALTY_DROP, 0.]
+                    R_LL = -PENALTY_DROP
+
+                Z_mean    = Z_t.mean(axis=0, keepdims=True)
+                sfc_feats = self.hl_agent.extract_sfc_features([sfc], Z_t, self.ll_agent)
+                is_done   = (sfc is sfcs[-1])
+
+                self.buf_HL.push((Z_mean, sfc_feats, 0, R_HL, Z_mean, sfc_feats, is_done))
+                for i, step in enumerate(self._ll_traj):
+                    nxt = self._ll_traj[i+1]["valid_mask"] if i+1 < len(self._ll_traj) else []
+                    self.buf_LL.push((step["Z_t"], list(step["vnf_feat"]),
+                                    step["action_idx"], R_LL, Z_t, nxt, is_done))
+                if X is not None:
+                    self.buf_Graph.push((X, A))
+
+                if len(self.buf_LL) >= BATCH_SIZE:
+                    self.ll_agent.train(self.buf_LL, BATCH_SIZE)
+                if len(self.buf_HL) >= BATCH_SIZE:
+                    self.hl_agent.train(self.buf_HL, BATCH_SIZE)
+                if total_steps % TARGET_SYNC == 0:
+                    self.ll_agent.update_target_network()
+                    self.hl_agent.update_target_network()
+                if total_steps % VGAE_TRAIN_FREQ == 0 and len(self.buf_Graph) >= 4:
+                    self.vgae_net.train(self.buf_Graph, epochs=1)
+
+            acc_rate      = ep_accepted / max(1, ep_accepted + ep_rejected)
+            best_acc_rate = max(best_acc_rate, acc_rate)
+            ep_time       = time.time() - ep_t0
+            eta_s         = (self.episodes - episode) * ep_time
+            eta_str       = (f"{eta_s/3600:.1f}h" if eta_s > 3600
+                            else f"{eta_s/60:.1f}m" if eta_s > 60 else f"{eta_s:.0f}s")
+            cur_eps = 0.01 + 0.99 * math.exp(-total_steps * 3.0 / max(1, total_steps_planned))
+            bar = "█"*int(25*episode/self.episodes) + "░"*(25-int(25*episode/self.episodes))
+            print(f"\r[{bar}] {episode}/{self.episodes} acc={acc_rate:.1%} best={best_acc_rate:.1%} "
+                f"ε={cur_eps:.3f} gr={greedy_prob:.2f} ETA={eta_str}", end="", flush=True)
+            if episode % 25 == 0:
+                print()
+
+        print(f"\n[HRL] Done {time.time()-t0:.1f}s  best_acc={best_acc_rate:.1%}")
+        total_req = self.env.stats["total_requests"] * self.episodes
+        self.env.stats["acceptance_ratio"] = (self.env.stats["accepted_requests"] / total_req
+                                            if total_req > 0 else 0.)
+        self.env.stats["algorithm_name"] = self.name
+        return self.env.stats
+    
+    def run_simulation_eval(self) -> dict:
+        self.env.reset()
+        self._graph_cache.clear()
+
+        # Dùng queue thực sự như PDF: re-queue khi fail, drop khi deadline chắc chắn vi phạm
+        pending = sorted([SFC(r) for r in self.env.requests],
+                        key=lambda s: s.request.arrival_time)
+        queue: List[SFC] = []
+        accepted = rejected = 0
+        t = 0.0
+
+        while pending or queue:
+            # Advance time đến SFC tiếp theo nếu queue rỗng
+            if not queue:
+                if not pending:
+                    break
+                t = pending[0].request.arrival_time
+
+            # Admit arriving
+            while pending and pending[0].request.arrival_time <= t:
+                queue.append(pending.pop(0))
+
+            # Drop expired (chắc chắn vi phạm)
+            expired = [s for s in queue if t > s.request.end_time]
+            for s in expired:
+                rejected += 1
+                self.env.stats["rejected_requests"] += 1
+            queue = [s for s in queue if t <= s.request.end_time]
+
+            if not queue:
+                continue
+
+            # HL chọn SFC tốt nhất (Pareto)
+            bw_req  = queue[0].request.bw
+            t_start = self.env._get_timeslot(t)
+            t_end   = t_start + max(int(queue[0].request.delay_max / config.TIMESTEP), 10)
+            Z_t, dc_mapping = self._get_z(t_start, t_end, bw_req)
+
+            sfc_idx      = self.hl_agent.act(Z_t, queue, 0.0, self.ll_agent)
+            selected_sfc = queue.pop(sfc_idx)
+
+            snap    = self._snapshot(self.env.network)
+            self.env.t = t
+            plan = self.get_placement(selected_sfc, t, Z_t, dc_mapping, 0.0)
+            if plan is None:
+                plan = self._greedy_placement(selected_sfc, t)
+            
+            success, rewards, _ = self.env.step(plan) if plan else (False, [-1., 0.], -1.)
+
+            if success:
+                accepted += 1
+                self.env.stats["accepted_requests"] += 1
+                self.env.stats["total_cost"] += abs(rewards[1] if len(rewards) > 1 else 0.)
+                self._graph_cache.clear()
+                # Advance time đến SFC tiếp theo
+                if pending:
+                    t = max(t, pending[0].request.arrival_time) if not queue else t
+            else:
+                self._restore(self.env.network, snap)
+                # Re-queue nếu chưa hết deadline (waitlist đúng PDF)
+                if t < selected_sfc.request.end_time - config.TIMESTEP:
+                    queue.append(selected_sfc)
+                    # Advance time nhỏ để tránh loop vô hạn
+                    if pending:
+                        next_t = pending[0].request.arrival_time
+                        t = min(t + config.TIMESTEP, next_t)
+                    else:
+                        t += config.TIMESTEP
                 else:
                     rejected += 1
                     self.env.stats["rejected_requests"] += 1
-                    self._restore(self.env.network, snap)
-                    if self.env.t < selected_sfc.request.end_time - config.TIMESTEP:
-                        queue.append(selected_sfc)
-                    break   # stop processing this timestep on failure
 
         total = accepted + rejected
-        self.env.stats["acceptance_ratio"] = accepted / total if total > 0 else 0.0
+        self.env.stats["acceptance_ratio"] = accepted / total if total > 0 else 0.
         self.env.stats["algorithm_name"]   = self.name
         return self.env.stats

@@ -229,11 +229,16 @@ def pretrain_ll(train_dir: str, vgae: VGAENetwork,
                              env.network.nodes[d], vnf, t_s, t_e)]
                 if not valid:
                     continue
-                # Imitation: reward = +1 for greedy action, 0 otherwise
-                buf_LL.push((Z, np.array([vnf_feat],np.float32), act_idx,
-                             1.0, Z, valid, False))
 
-            # Apply plan so next VNF sees updated resources
+                buf_LL.push((Z, np.array(vnf_feat, np.float32), act_idx,
+                            1.5, Z, valid, False))
+
+                for neg_idx in valid:
+                    if neg_idx != act_idx:
+                        buf_LL.push((Z, np.array(vnf_feat, np.float32), neg_idx,
+                                    -0.5, Z, valid, False))
+                        break
+
             env.step(plan)
 
         # Train from buffer
