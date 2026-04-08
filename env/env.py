@@ -16,11 +16,6 @@ from env.request import Request, SFC, ListOfRequests
 from env.vnf import VNF, ListOfVnfs
 import config
 
-
-# ─────────────────────────────────────────────
-# STRATEGY  (abstract base)
-# ─────────────────────────────────────────────
-
 class Strategy(ABC):
     def __init__(self, env: Env):
         self.env  = env
@@ -52,11 +47,6 @@ class Strategy(ABC):
 
         return plan
 
-
-# ─────────────────────────────────────────────
-# ENV
-# ─────────────────────────────────────────────
-
 class Env(gym.Env):
     """
     NFV placement environment.
@@ -67,8 +57,8 @@ class Env(gym.Env):
     báo symbolic — override nếu tích hợp thư viện RL bên ngoài.
     """
 
-    _OBS_DIM = 1   # placeholder
-    _ACT_DIM = 1   # placeholder
+    _OBS_DIM = 1
+    _ACT_DIM = 1
 
     def __init__(self, network: Network, vnfs: ListOfVnfs, requests: ListOfRequests):
         super().__init__()
@@ -84,8 +74,6 @@ class Env(gym.Env):
         self.strategy: Optional[Strategy] = None
         self.t        = 0.0
         self.stats    = self._empty_stats()
-
-    # ── internal helpers ────────────────────
 
     def _empty_stats(self) -> dict:
         return {
@@ -108,8 +96,6 @@ class Env(gym.Env):
         for l in self.network.links:
             l.used = {0: 0.0}
 
-    # ── gym interface ───────────────────────
-
     def reset(self, *, seed=None, options=None):
         """Gymnasium >= 0.26: trả về (obs, info)."""
         super().reset(seed=seed)
@@ -119,8 +105,6 @@ class Env(gym.Env):
         self.stats    = self._empty_stats()
         return np.zeros(self._OBS_DIM, dtype=np.float32), {}
 
-    # ── helpers ──────────────────────────────
-
     def set_strategy(self, strategy: Strategy):
         self.strategy = strategy
 
@@ -128,12 +112,17 @@ class Env(gym.Env):
         return int(round(t / config.TIMESTEP))
 
     def _check_can_deploy_vnf(self, node: Node, vnf: VNF,
-                               t_start: int, t_end: int) -> bool:
+                           t_start: int, t_end: int) -> bool:
         if node.type == config.NODE_SWITCH or node.cap is None:
             return False
+        relevant = [t for t in node.used if t_start <= t <= t_end]
+        if not relevant:
+            used_before = max((t for t in node.used if t < t_start), default=None)
+            base = node.used[used_before] if used_before is not None else {k: 0.0 for k in config.RESOURCE_TYPE}
+            return not any(base[k] + vnf.resource[k] > node.cap[k] for k in config.RESOURCE_TYPE)
         return all(
-            not node.check_violated(t, vnf.resource)
-            for t in range(t_start, t_end + 1)
+            not any(node.used[t][k] + vnf.resource[k] > node.cap[k] for k in config.RESOURCE_TYPE)
+            for t in relevant
         )
 
     def step(self, plan: Optional[Dict]) -> Tuple[bool, List[float], float]:
@@ -267,8 +256,6 @@ class Env(gym.Env):
             while self.waitlist:
                 if not self.strategy.process_waitlist():
                     break
-
-    # ── statistics ──────────────────────────
 
     def print_statistics(self):
         s = self.stats

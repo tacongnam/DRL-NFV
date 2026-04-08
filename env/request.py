@@ -17,7 +17,7 @@ class Request:
         self.name = name
         self.arrival_time = arrival_time
         self.delay_max = delay_max
-        self.end_time = self.arrival_time + self.delay_max + config.TIMESTEP
+        self.end_time = self.arrival_time + self.delay_max
 
         self.start_node = start_node
         self.end_node = end_node

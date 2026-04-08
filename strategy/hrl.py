@@ -373,7 +373,7 @@ class HRL_VGAE_Strategy(Strategy):
 
         for episode in range(1, self.episodes + 1):
             ep_t0 = time.time()
-            self.env.reset()          # resets stats, network, waitlist
+            self.env.reset()
             self._graph_cache.clear()
 
             sfcs = sorted([SFC(r) for r in self.env.requests],
@@ -381,6 +381,9 @@ class HRL_VGAE_Strategy(Strategy):
             ep_accepted = ep_rejected = 0
 
             for sfc in sfcs:
+                self._graph_cache.clear()
+                Z_t, dc_mapping = self._get_z(t_start, t_end, sfc.request.bw)
+
                 total_steps += 1
                 epsilon     = 0.01 + 0.99 * math.exp(-total_steps * 3.0 / max(1, total_steps_planned))
                 greedy_prob = max(0.0, 1.0 - total_steps / max(1, total_steps_planned * 0.8))  # FIX: 0.5→0.8
@@ -388,8 +391,6 @@ class HRL_VGAE_Strategy(Strategy):
                 self.env.t = sfc.request.arrival_time
                 t_start    = self.env._get_timeslot(self.env.t)
                 t_end      = self.env._get_timeslot(sfc.request.end_time)
-
-                Z_t, dc_mapping = self._get_z(t_start, t_end, sfc.request.bw)
                 cached  = self._graph_cache.get((t_start, round(sfc.request.bw, 2)))
                 X, A    = (cached[2], cached[3]) if cached else (None, None)
 
@@ -411,11 +412,14 @@ class HRL_VGAE_Strategy(Strategy):
 
                 if success:
                     ep_accepted += 1
-                    # FIX: không cộng vào env.stats thủ công — để process_request hoặc
-                    # tổng hợp cuối episode. Chỉ track local counter.
                     raw_cost  = abs(rewards[1]) if len(rewards) > 1 else 0.0
-                    cost_norm = raw_cost / max(1.0, raw_cost)
-                    R_HL      = [BASE_AR_REWARD, -cost_norm]
+                    max_possible_cost = max(1.0, sum(
+                        self.env.network.nodes[dc].get_cost(vnf)
+                        for dc in list(self.env.network.nodes)[:1]
+                        for vnf in sfc.request.vnfs
+                    ) if sfc.request.vnfs else 1.0)
+                    cost_norm = min(1.0, raw_cost / max_possible_cost)
+                    R_HL = [BASE_AR_REWARD, -cost_norm]
                     vnf_f     = ([sfc.request.vnfs[0].resource.get(k, 0.) for k in config.RESOURCE_TYPE]
                                 if sfc.request.vnfs else [0., 0., 0.])
                     R_LL      = R_LL_override if R_LL_override is not None else \
@@ -424,12 +428,10 @@ class HRL_VGAE_Strategy(Strategy):
                 else:
                     ep_rejected += 1
                     self._restore(self.env.network, snap)
-                    # FIX: clear cache sau restore vì network state đã thay đổi
                     self._graph_cache.clear()
                     R_HL = [-PENALTY_DROP, 0.]
                     R_LL = -PENALTY_DROP
 
-                # FIX: push HL buffer với queue thực (dùng sfcs còn lại) thay vì [sfc] đơn lẻ
                 remaining_sfcs = [s for s in sfcs if s is not sfc]
                 Z_mean    = Z_t.mean(axis=0, keepdims=True)
                 sfc_feats = self.hl_agent.extract_sfc_features([sfc], Z_t, self.ll_agent)
@@ -471,8 +473,6 @@ class HRL_VGAE_Strategy(Strategy):
                 print()
 
         print(f"\n[HRL] Done {time.time()-t0:.1f}s  best_acc={best_acc_rate:.1%}")
-        # FIX: stats tổng hợp từ episode cuối (env.stats đã reset mỗi episode)
-        # Trả về acceptance ratio của episode cuối thay vì tổng sai
         self.env.stats["accepted_requests"]  = ep_accepted
         self.env.stats["rejected_requests"]  = ep_rejected
         self.env.stats["acceptance_ratio"]   = acc_rate
@@ -483,7 +483,6 @@ class HRL_VGAE_Strategy(Strategy):
         self.env.reset()
         self._graph_cache.clear()
 
-        # Dùng queue thực sự như PDF: re-queue khi fail, drop khi deadline chắc chắn vi phạm
         pending = sorted([SFC(r) for r in self.env.requests],
                         key=lambda s: s.request.arrival_time)
         queue: List[SFC] = []
@@ -491,17 +490,14 @@ class HRL_VGAE_Strategy(Strategy):
         t = 0.0
 
         while pending or queue:
-            # Advance time đến SFC tiếp theo nếu queue rỗng
             if not queue:
                 if not pending:
                     break
                 t = pending[0].request.arrival_time
 
-            # Admit arriving
             while pending and pending[0].request.arrival_time <= t:
                 queue.append(pending.pop(0))
 
-            # Drop expired (chắc chắn vi phạm)
             expired = [s for s in queue if t > s.request.end_time]
             for s in expired:
                 rejected += 1
@@ -511,11 +507,10 @@ class HRL_VGAE_Strategy(Strategy):
             if not queue:
                 continue
 
-            # HL chọn SFC tốt nhất (Pareto)
-            bw_req  = queue[0].request.bw
+            bw_req  = max(s.request.bw for s in queue)
             t_start = self.env._get_timeslot(t)
-            t_end   = t_start + max(int(queue[0].request.delay_max / config.TIMESTEP), 10)
-            Z_t, dc_mapping = self._get_z(t_start, t_end, bw_req)
+            t_end_rough = t_start + max(int(max(s.request.delay_max for s in queue) / config.TIMESTEP), 10)
+            Z_t, dc_mapping = self._get_z(t_start, t_end_rough, bw_req)
 
             sfc_idx      = self.hl_agent.act(Z_t, queue, 0.0, self.ll_agent)
             selected_sfc = queue.pop(sfc_idx)
@@ -524,7 +519,7 @@ class HRL_VGAE_Strategy(Strategy):
             self.env.t = t
             plan = self.get_placement(selected_sfc, t, Z_t, dc_mapping, 0.0)
             if plan is None:
-                plan = self._greedy_placement(selected_sfc, t)
+                plan = self._greedy_placement_with_traj(selected_sfc, t)
             
             success, rewards, _ = self.env.step(plan) if plan else (False, [-1., 0.], -1.)
 
