@@ -440,6 +440,7 @@ def main():
     p.add_argument("--baselines",       nargs="+", default=None,
                    choices=list(BASELINE_REGISTRY.keys()))
     p.add_argument("--plot-out",        type=str, default=None)
+    p.add_argument("--output",          type=str, default="data/train")
 
     args = p.parse_args()
 
