@@ -5,12 +5,16 @@ from env.env import Strategy
 from env.request import SFC
 import config
 
-class GreedyFIFS(Strategy):
+
+class DeadlineAwareGreedy(Strategy):
 
     def __init__(self, env):
         super().__init__(env)
-        self.name = "GreedyFIFS"
+        self.name = "DeadlineAwareGreedy"
         self._graph_cache: dict = {}
+
+    def request_sort_key(self, r):
+        return r.end_time
 
     def _bw_pruned_graph(self, t_start: int, t_end: int, bw: float) -> nx.Graph:
         key = (t_start, t_end, round(bw, 2))
@@ -42,9 +46,20 @@ class GreedyFIFS(Strategy):
         t_start = self.env._get_timeslot(current_time)
         t_end   = self.env._get_timeslot(sfc.request.end_time)
 
+        time_remaining = sfc.request.end_time - current_time
+        prefer_close   = time_remaining < sfc.request.delay_max * 0.5
+
         node_placements, vnf_timeslots = [], []
         link_paths,      link_timeslots = [], []
         prev_dc = sfc.request.start_node
+
+        all_delays: dict = {}
+        if prefer_close:
+            try:
+                G = self._bw_pruned_graph(t_start, t_end, sfc.request.bw)
+                all_delays = dict(nx.shortest_path_length(G, weight='delay'))
+            except Exception:
+                pass
 
         for vnf in sfc.request.vnfs:
             candidate_dcs = vnf.get_dcs()
@@ -56,8 +71,13 @@ class GreedyFIFS(Strategy):
                 dc_node = self.env.network.nodes.get(str(dc_name))
                 if dc_node is None:
                     continue
-                if self.env._check_can_deploy_vnf(dc_node, vnf, t_start, t_end):
-                    valid_dcs.append((dc_node.get_cost(vnf), str(dc_name)))
+                if not self.env._check_can_deploy_vnf(dc_node, vnf, t_start, t_end):
+                    continue
+                if prefer_close:
+                    score = all_delays.get(prev_dc, {}).get(str(dc_name), float('inf'))
+                else:
+                    score = dc_node.get_cost(vnf)
+                valid_dcs.append((score, str(dc_name)))
 
             if not valid_dcs:
                 return None

@@ -5,12 +5,13 @@ from env.env import Strategy
 from env.request import SFC
 import config
 
-class GreedyFIFS(Strategy):
+class ShortestPathFirst(Strategy):
 
     def __init__(self, env):
         super().__init__(env)
-        self.name = "GreedyFIFS"
+        self.name = "ShortestPathFirst"
         self._graph_cache: dict = {}
+        self._path_cache: dict = {}
 
     def _bw_pruned_graph(self, t_start: int, t_end: int, bw: float) -> nx.Graph:
         key = (t_start, t_end, round(bw, 2))
@@ -37,10 +38,36 @@ class GreedyFIFS(Strategy):
         except (nx.NetworkXNoPath, nx.NetworkXError):
             return None
 
+    def _path_delay(self, path: List[str]) -> float:
+        if not path or len(path) < 2:
+            return 0.0
+        total = 0.0
+        for u, v in zip(path[:-1], path[1:]):
+            link = next((l for l in self.env.network.links
+                         if {l.u.name, l.v.name} == {u, v}), None)
+            if link:
+                total += link.delay
+        return total
+
+    def _all_pairs_delay(self, t_start: int, t_end: int, bw: float) -> dict:
+        key = (t_start, t_end, round(bw, 2))
+        if key in self._path_cache:
+            return self._path_cache[key]
+        G = self._bw_pruned_graph(t_start, t_end, bw)
+        try:
+            result = dict(nx.shortest_path_length(G, weight='delay'))
+        except Exception:
+            result = {}
+        self._path_cache[key] = result
+        return result
+
     def get_placement(self, sfc: SFC, current_time: float) -> Optional[Dict]:
         self._graph_cache.clear()
+        self._path_cache.clear()
         t_start = self.env._get_timeslot(current_time)
         t_end   = self.env._get_timeslot(sfc.request.end_time)
+
+        all_delays = self._all_pairs_delay(t_start, t_end, sfc.request.bw)
 
         node_placements, vnf_timeslots = [], []
         link_paths,      link_timeslots = [], []
@@ -56,8 +83,10 @@ class GreedyFIFS(Strategy):
                 dc_node = self.env.network.nodes.get(str(dc_name))
                 if dc_node is None:
                     continue
-                if self.env._check_can_deploy_vnf(dc_node, vnf, t_start, t_end):
-                    valid_dcs.append((dc_node.get_cost(vnf), str(dc_name)))
+                if not self.env._check_can_deploy_vnf(dc_node, vnf, t_start, t_end):
+                    continue
+                delay = all_delays.get(prev_dc, {}).get(str(dc_name), float('inf'))
+                valid_dcs.append((delay, str(dc_name)))
 
             if not valid_dcs:
                 return None

@@ -51,7 +51,6 @@ class Env(gym.Env):
     """
     NFV placement environment.
 
-    Kế thừa gym.Env để tương thích với stable-baselines3 / RLlib.
     Vòng lặp chính được điều khiển bởi Strategy.train() / run_simulation(),
     không phải vòng lặp gym chuẩn. observation_space và action_space được khai
     báo symbolic — override nếu tích hợp thư viện RL bên ngoài.
@@ -117,8 +116,8 @@ class Env(gym.Env):
             return False
         relevant = [t for t in node.used if t_start <= t <= t_end]
         if not relevant:
-            used_before = max((t for t in node.used if t < t_start), default=None)
-            base = node.used[used_before] if used_before is not None else {k: 0.0 for k in config.RESOURCE_TYPE}
+            prev_t = max((t for t in node.used if t < t_start), default=None)
+            base = node.used[prev_t] if prev_t is not None else {k: 0.0 for k in config.RESOURCE_TYPE}
             return not any(base[k] + vnf.resource[k] > node.cap[k] for k in config.RESOURCE_TYPE)
         return all(
             not any(node.used[t][k] + vnf.resource[k] > node.cap[k] for k in config.RESOURCE_TYPE)
@@ -154,21 +153,20 @@ class Env(gym.Env):
             # 2. Allocate bandwidth trên các path
             sfc_bw = plan.get('bw', 1.0)
             for link_plan in plan.get('links', {}).values():
-                path    = link_plan['path']
-                T1, T2  = link_plan['T1'], link_plan['T2']
+                path   = link_plan['path']
+                T1, T2 = link_plan['T1'], link_plan['T2']
 
                 for u, v in zip(path[:-1], path[1:]):
                     target = next(
                         (l for l in self.network.links
-                         if {l.u.name, l.v.name} == {u, v}),
+                        if {l.u.name, l.v.name} == {u, v}),
                         None
                     )
                     if target is None:
                         self.network = backup
                         return False, [-1.0, 0.0], -1.0
 
-                    # FIX: kiểm tra bandwidth trước khi commit
-                    if any(target.check_violated(t, sfc_bw) for t in range(T1, T2 + 1)):
+                    if target.get_available_bandwidth(T1, T2 + 1) < sfc_bw:
                         self.network = backup
                         return False, [-1.0, 0.0], -1.0
 
@@ -212,20 +210,19 @@ class Env(gym.Env):
         if self.strategy is None:
             raise RuntimeError("No strategy set — call env.set_strategy() first")
 
-        # DRL strategy với is_training=True → nhường vòng lặp cho Strategy.train()
         if getattr(self.strategy, 'is_training', False) and hasattr(self.strategy, 'train'):
             return self.strategy.train()
 
-        # Baseline: chạy tuần tự
-        self.reset()   # trả về (obs, info) — không cần unpack ở đây
-        for req in sorted(self.requests, key=lambda r: r.arrival_time):
+        self.reset()
+        sort_key = getattr(self.strategy, 'request_sort_key', lambda r: r.arrival_time)
+        for req in sorted(self.requests, key=sort_key):
             self.t = req.arrival_time
             self.process_request(SFC(req))
 
         accepted = self.stats['accepted_requests']
         total    = self.stats['total_requests']
         self.stats['average_cost']     = (self.stats['total_cost'] / accepted
-                                          if accepted > 0 else 0.0)
+                                        if accepted > 0 else 0.0)
         self.stats['acceptance_ratio'] = accepted / total if total > 0 else 0.0
         self.stats['algorithm_name']   = self.strategy.name
         return self.stats

@@ -1,3 +1,4 @@
+import random
 from typing import Dict, List, Optional
 import networkx as nx
 
@@ -5,12 +6,14 @@ from env.env import Strategy
 from env.request import SFC
 import config
 
-class GreedyFIFS(Strategy):
+class RandomFit(Strategy):
 
-    def __init__(self, env):
+    def __init__(self, env, seed: int = None):
         super().__init__(env)
-        self.name = "GreedyFIFS"
+        self.name = "RandomFit"
         self._graph_cache: dict = {}
+        if seed is not None:
+            random.seed(seed)
 
     def _bw_pruned_graph(self, t_start: int, t_end: int, bw: float) -> nx.Graph:
         key = (t_start, t_end, round(bw, 2))
@@ -51,20 +54,19 @@ class GreedyFIFS(Strategy):
             if '-1' in candidate_dcs:
                 candidate_dcs = [n.name for n in self.env.network.get_dc_node()]
 
-            valid_dcs = []
-            for dc_name in candidate_dcs:
-                dc_node = self.env.network.nodes.get(str(dc_name))
-                if dc_node is None:
-                    continue
-                if self.env._check_can_deploy_vnf(dc_node, vnf, t_start, t_end):
-                    valid_dcs.append((dc_node.get_cost(vnf), str(dc_name)))
+            valid_dcs = [
+                str(dc_name) for dc_name in candidate_dcs
+                if self.env.network.nodes.get(str(dc_name)) is not None
+                and self.env._check_can_deploy_vnf(
+                    self.env.network.nodes[str(dc_name)], vnf, t_start, t_end)
+            ]
 
             if not valid_dcs:
                 return None
 
-            valid_dcs.sort(key=lambda x: x[0])
+            random.shuffle(valid_dcs)
             chosen_dc, path = None, None
-            for _, dc_candidate in valid_dcs:
+            for dc_candidate in valid_dcs:
                 p = self.get_routing(prev_dc, dc_candidate, t_start, t_end, sfc.request.bw)
                 if p is not None:
                     chosen_dc, path = dc_candidate, p

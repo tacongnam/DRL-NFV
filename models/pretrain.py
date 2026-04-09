@@ -1,31 +1,12 @@
-"""
-models/pretrain.py  –  Pre-training pipeline for HRL-VGAE
-
-Phase 1 – VGAE pre-training
-  • Load training JSON files, build DC-full graphs.
-  • Train VGAE to reconstruct adjacency matrices (unsupervised).
-  • Save to models/vgae_pretrained/vgae_weights.npy
-
-Phase 2 – Low-Level DQN pre-training
-  • Use the frozen pre-trained VGAE encoder.
-  • Run Greedy-FIFS as a teacher: collect (state, greedy_action) pairs.
-  • Supervised imitation learning → warm-start LL policy.
-  • Save to models/ll_pretrained/ll_dqn_weights.weights.h5
-
-Both phases are fast: < 30 min total on CPU.
-"""
-
 from __future__ import annotations
 
-import os, sys, json, argparse, copy, time
+import os, sys, json, argparse, time
 import numpy as np
 
-# ── path fix ──────────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
-import tensorflow as tf
 
 import config
 from env.vnf import VNF, ListOfVnfs
@@ -35,15 +16,11 @@ from env.env import Env
 from models.model import VGAENetwork, LowLevelAgent, ReplayBuffer
 from strategy.fifs import GreedyFIFS
 
-LATENT_DIM   = 8
-MAX_DCS      = 60
-VGAE_DIR     = "models/vgae_pretrained"
-LL_DIR       = "models/ll_pretrained"
+LATENT_DIM = 8
+MAX_DCS    = 60
+VGAE_DIR   = "models/vgae_pretrained"
+LL_DIR     = "models/ll_pretrained"
 
-
-# ─────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────
 
 def load_env(path: str) -> Env:
     with open(path) as f:
@@ -56,8 +33,8 @@ def load_env(path: str) -> Env:
         if nd.get("server", False):
             network.add_dc_node(
                 name=nid, delay=nd.get("d_v", 0.0),
-                capacity={"mem": nd.get("h_v",1.), "cpu": nd.get("c_v",1.), "ram": nd.get("r_v",1.)},
-                cost={"mem": nd.get("cost_h",1.), "cpu": nd.get("cost_c",1.), "ram": nd.get("cost_r",1.)})
+                capacity={"mem": nd.get("h_v", 1.), "cpu": nd.get("c_v", 1.), "ram": nd.get("r_v", 1.)},
+                cost={"mem": nd.get("cost_h", 1.), "cpu": nd.get("cost_c", 1.), "ram": nd.get("cost_r", 1.)})
         else:
             network.add_switch_node(nid)
 
@@ -67,16 +44,16 @@ def load_env(path: str) -> Env:
 
     for idx, vd in enumerate(data.get("F", [])):
         vnfs.add_vnf(VNF(idx,
-                         h_f=vd.get("h_f",1.), c_f=vd.get("c_f",1.), r_f=vd.get("r_f",1.),
-                         d_f={k:v for k,v in vd.get("d_f",{}).items()}))
+                         h_f=vd.get("h_f", 1.), c_f=vd.get("c_f", 1.), r_f=vd.get("r_f", 1.),
+                         d_f={k: v for k, v in vd.get("d_f", {}).items()}))
 
     for idx, rd in enumerate(data.get("R", [])):
         requests.add_request(Request(
-            name=idx, arrival_time=rd.get("T",0),
-            delay_max=rd.get("d_max",100.),
-            start_node=str(rd.get("st_r","")), end_node=str(rd.get("d_r","")),
-            VNFs=[vnfs.vnfs[str(vi)] for vi in rd.get("F_r",[])],
-            bandwidth=rd.get("b_r",1.)))
+            name=idx, arrival_time=rd.get("T", 0),
+            delay_max=rd.get("d_max", 100.),
+            start_node=str(rd.get("st_r", "")), end_node=str(rd.get("d_r", "")),
+            VNFs=[vnfs.vnfs[str(vi)] for vi in rd.get("F_r", [])],
+            bandwidth=rd.get("b_r", 1.)))
     return Env(network, vnfs, requests)
 
 
@@ -85,7 +62,7 @@ def build_dc_graph(env: Env, t_start: int, t_end: int, bw: float):
     dcs = [nid for nid, n in env.network.nodes.items() if n.type == config.NODE_DC]
     n   = len(dcs)
     if n == 0:
-        return np.zeros((0,3),np.float32), np.zeros((0,0),np.float32), []
+        return np.zeros((0, 3), np.float32), np.zeros((0, 0), np.float32), []
 
     G = nx.Graph()
     for nid in env.network.nodes:
@@ -99,47 +76,42 @@ def build_dc_graph(env: Env, t_start: int, t_end: int, bw: float):
     except Exception:
         all_len = {}
 
-    max_r = {k:1.0 for k in config.RESOURCE_TYPE}
+    max_r = {k: 1.0 for k in config.RESOURCE_TYPE}
     for nd in env.network.nodes.values():
         if nd.type == config.NODE_DC and nd.cap:
             for k in config.RESOURCE_TYPE:
                 max_r[k] = max(max_r[k], nd.cap[k])
 
-    X = np.zeros((n,3), np.float32)
-    A = np.zeros((n,n), np.float32)
+    X = np.zeros((n, 3), np.float32)
+    A = np.zeros((n, n), np.float32)
     for i, did in enumerate(dcs):
-        res = env.network.nodes[did].get_min_available_resource(t_start, t_end)
-        X[i] = [res[k]/max_r[k] for k in config.RESOURCE_TYPE]
+        res  = env.network.nodes[did].get_min_available_resource(t_start, t_end)
+        X[i] = [res[k] / max_r[k] for k in config.RESOURCE_TYPE]
         for j, dj in enumerate(dcs):
             if i == j:
-                A[i,j] = 1.0
+                A[i, j] = 1.0
             else:
                 d = all_len.get(did, {}).get(dj, None)
                 if d is not None and d > 0:
-                    A[i,j] = 1.0 / (d+1.0)
+                    A[i, j] = 1.0 / (d + 1.0)
     return X, A, dcs
 
-
-# ─────────────────────────────────────────────────────────────
-# Phase 1: VGAE pre-training
-# ─────────────────────────────────────────────────────────────
 
 def pretrain_vgae(train_dir: str, epochs: int = 200, batch: int = 16):
     files = sorted([os.path.join(train_dir, f)
                     for f in os.listdir(train_dir) if f.endswith(".json")])
     if not files:
         print(f"[Pretrain-VGAE] No JSON files in {train_dir}")
-        return
+        return None
 
     print(f"\n{'='*50}")
     print(f"PHASE 1: VGAE Pre-training  ({len(files)} files, {epochs} epochs)")
     print(f"{'='*50}")
 
-    vgae   = VGAENetwork(latent_dim=LATENT_DIM)
-    buf    = ReplayBuffer(capacity=2000)
+    vgae = VGAENetwork(latent_dim=LATENT_DIM)
+    buf  = ReplayBuffer(capacity=2000)
 
-    # Collect graph snapshots
-    print("Collecting graph snapshots …")
+    print("Collecting graph snapshots ...")
     for fp in files:
         env = load_env(fp)
         env.reset()
@@ -153,10 +125,10 @@ def pretrain_vgae(train_dir: str, epochs: int = 200, batch: int = 16):
 
     if len(buf) < 4:
         print("[Pretrain-VGAE] Too few snapshots, skipping")
-        return
+        return None
 
     t0 = time.time()
-    for ep in range(1, epochs+1):
+    for ep in range(1, epochs + 1):
         vgae.train(buf, epochs=1, batch=batch)
         if ep % 50 == 0 or ep == epochs:
             print(f"  epoch {ep}/{epochs}  ({time.time()-t0:.1f}s)")
@@ -168,17 +140,13 @@ def pretrain_vgae(train_dir: str, epochs: int = 200, batch: int = 16):
     return vgae
 
 
-# ─────────────────────────────────────────────────────────────
-# Phase 2: Low-Level DQN pre-training (imitation from FIFS)
-# ─────────────────────────────────────────────────────────────
-
 def pretrain_ll(train_dir: str, vgae: VGAENetwork,
                 episodes: int = 200, batch: int = 32):
     files = sorted([os.path.join(train_dir, f)
                     for f in os.listdir(train_dir) if f.endswith(".json")])
     if not files:
         print(f"[Pretrain-LL] No JSON files in {train_dir}")
-        return
+        return None
 
     print(f"\n{'='*50}")
     print(f"PHASE 2: LL-DQN Pre-training (imitation)  ({episodes} ep)")
@@ -189,8 +157,8 @@ def pretrain_ll(train_dir: str, vgae: VGAENetwork,
     buf_LL = ReplayBuffer(capacity=20_000)
 
     t0 = time.time()
-    for ep in range(1, episodes+1):
-        fp  = files[(ep-1) % len(files)]
+    for ep in range(1, episodes + 1):
+        fp  = files[(ep - 1) % len(files)]
         env = load_env(fp)
         env.reset()
 
@@ -208,12 +176,10 @@ def pretrain_ll(train_dir: str, vgae: VGAENetwork,
                 continue
             Z = vgae.encode(X, A)
 
-            # Get FIFS placement as teacher signal
             plan = fifs.get_placement(sfc, req.arrival_time)
             if plan is None:
                 continue
 
-            # For each VNF, record (state, greedy_dc_idx) as an imitation sample
             for k, vnf in enumerate(req.vnfs):
                 if str(k) not in plan.get("nodes", {}):
                     continue
@@ -223,6 +189,7 @@ def pretrain_ll(train_dir: str, vgae: VGAENetwork,
                 act_idx = dcs.index(greedy_dc)
                 if act_idx >= MAX_DCS:
                     continue
+
                 vnf_feat = [vnf.resource.get(rk, 0.0) for rk in config.RESOURCE_TYPE]
                 valid = [i for i, d in enumerate(dcs)
                          if i < MAX_DCS and env._check_can_deploy_vnf(
@@ -231,24 +198,24 @@ def pretrain_ll(train_dir: str, vgae: VGAENetwork,
                     continue
 
                 buf_LL.push((Z, np.array(vnf_feat, np.float32), act_idx,
-                            1.5, Z, valid, False))
+                             2.0, Z, valid, False))
 
-                for neg_idx in valid:
-                    if neg_idx != act_idx:
-                        buf_LL.push((Z, np.array(vnf_feat, np.float32), neg_idx,
-                                    -0.5, Z, valid, False))
-                        break
+                neg_candidates = [i for i in valid if i != act_idx]
+                for neg_idx in neg_candidates[:3]:
+                    buf_LL.push((Z, np.array(vnf_feat, np.float32), neg_idx,
+                                 -1.0, Z, valid, False))
 
             env.step(plan)
 
-        # Train from buffer
         if len(buf_LL) >= batch:
-            for _ in range(min(10, len(buf_LL) // batch)):
+            for _ in range(min(20, len(buf_LL) // batch)):
                 ll_agent.train(buf_LL, batch)
 
         if ep % 50 == 0 or ep == episodes:
             print(f"  ep {ep}/{episodes}  buffer={len(buf_LL)}  "
                   f"({time.time()-t0:.1f}s)")
+
+        env.reset()
 
     os.makedirs(LL_DIR, exist_ok=True)
     out = os.path.join(LL_DIR, "ll_dqn_weights.weights.h5")
@@ -257,14 +224,9 @@ def pretrain_ll(train_dir: str, vgae: VGAENetwork,
     return ll_agent
 
 
-# ─────────────────────────────────────────────────────────────
-# Entry point
-# ─────────────────────────────────────────────────────────────
-
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--phase",       default="both",
-                    choices=["vgae","ll","both"])
+    ap.add_argument("--phase",       default="both", choices=["vgae", "ll", "both"])
     ap.add_argument("--train-dir",   default="data/train")
     ap.add_argument("--vgae-epochs", type=int, default=200)
     ap.add_argument("--ll-episodes", type=int, default=200)

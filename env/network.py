@@ -30,34 +30,38 @@ class Node:
         t = "Switch" if self.type == config.NODE_SWITCH else "DC"
         return f"Node {self.name} ({t})"
 
-    # ── capacity checks ──────────────────────
-
     def check_violated(self, T: int, resource: dict = None) -> bool:
-        """True nếu thêm resource tại timeslot T sẽ vượt cap."""
         if self.type == config.NODE_SWITCH or self.cap is None:
             return False
         if resource is None:
             resource = {k: 0.0 for k in config.RESOURCE_TYPE}
-
-        used_at_T = self.used.get(T, {k: 0.0 for k in config.RESOURCE_TYPE})
+        if T in self.used:
+            used_at_T = self.used[T]
+        else:
+            prev_t = max((t for t in self.used if t < T), default=None)
+            used_at_T = self.used[prev_t] if prev_t is not None else {k: 0.0 for k in config.RESOURCE_TYPE}
         return any(used_at_T[k] + resource[k] > self.cap[k] for k in config.RESOURCE_TYPE)
 
     def get_min_available_resource(self, t_start: int, t_end: int) -> dict:
         min_res = {k: self.cap[k] for k in config.RESOURCE_TYPE}
-        for t in range(t_start, t_end + 1):
-            if t in self.used:
+        relevant = [t for t in self.used if t_start <= t <= t_end]
+        if not relevant:
+            prev_t = max((t for t in self.used if t < t_start), default=None)
+            if prev_t is not None:
                 for k in config.RESOURCE_TYPE:
-                    min_res[k] = min(min_res[k], self.cap[k] - self.used[t][k])
+                    min_res[k] = self.cap[k] - self.used[prev_t][k]
+            return min_res
+        for t in relevant:
+            for k in config.RESOURCE_TYPE:
+                min_res[k] = min(min_res[k], self.cap[k] - self.used[t][k])
         return min_res
 
-    # ── resource accounting ──────────────────
-
     def use(self, resource: dict, start_T: int, end_T: int):
-        """Ghi nhận tiêu thụ resource trong [start_T, end_T)."""
+        # Khi T không có trong used, lấy giá trị từ key liền trước thay vì T-1 (T-1 có thể cũng không tồn tại)
         for T in range(start_T, end_T):
             if T not in self.used:
-                # FIX: copy dict — không gán tham chiếu để tránh aliasing
-                prev = self.used.get(T - 1, {k: 0.0 for k in config.RESOURCE_TYPE})
+                prev_t = max((t for t in self.used if t < T), default=None)
+                prev = self.used[prev_t] if prev_t is not None else {k: 0.0 for k in config.RESOURCE_TYPE}
                 self.used[T] = {k: prev[k] for k in config.RESOURCE_TYPE}
             for k in config.RESOURCE_TYPE:
                 self.used[T][k] += resource[k]
@@ -68,10 +72,12 @@ class Node:
         return sum(vnf.resource[k] * self.cost[k] for k in config.RESOURCE_TYPE)
 
     def get_state(self, T: int) -> dict:
-        used_T = self.used.get(T, {k: 0.0 for k in config.RESOURCE_TYPE})
+        if T in self.used:
+            used_T = self.used[T]
+        else:
+            prev_t = max((t for t in self.used if t < T), default=None)
+            used_T = self.used[prev_t] if prev_t is not None else {k: 0.0 for k in config.RESOURCE_TYPE}
         return {k: self.cap[k] - used_T[k] for k in config.RESOURCE_TYPE}
-
-    # ── vnf install/remove ───────────────────
 
     def exist_vnf(self, vnf_id) -> bool:
         return self.type == config.NODE_DC and vnf_id in self.vnfs
@@ -104,34 +110,44 @@ class Link:
         return None
 
     def check_violated(self, T: int, bandwidth: float = 0.0) -> bool:
-        used_T = self.used.get(T, 0.0)
+        if T in self.used:
+            used_T = self.used[T]
+        else:
+            prev_t = max((t for t in self.used if t < T), default=None)
+            used_T = self.used[prev_t] if prev_t is not None else 0.0
         return used_T + bandwidth > self.cap
 
     def use(self, bandwidth: float, start_T: int, end_T: int):
-        """Ghi nhận tiêu thụ bandwidth trong [start_T, end_T)."""
         for T in range(start_T, end_T):
             if T not in self.used:
-                # FIX: .get() tránh KeyError khi T-1 chưa tồn tại
-                self.used[T] = self.used.get(T - 1, 0.0)
+                prev_t = max((t for t in self.used if t < T), default=None)
+                self.used[T] = self.used[prev_t] if prev_t is not None else 0.0
             self.used[T] += bandwidth
 
     def get_available_bandwidth(self, start_T: int, end_T: int) -> float:
         bw = self.cap
-        for T in range(start_T, end_T):
-            if T in self.used:
-                bw = min(bw, self.cap - self.used[T])
+        relevant = [t for t in self.used if start_T <= t < end_T]
+        if not relevant:
+            prev_t = max((t for t in self.used if t < start_T), default=None)
+            if prev_t is not None:
+                bw = min(bw, self.cap - self.used[prev_t])
+            return bw
+        for t in relevant:
+            bw = min(bw, self.cap - self.used[t])
         return bw
 
     def get_state(self, T: int) -> float:
-        return self.cap - self.used.get(T, 0.0)
-
+        if T in self.used:
+            used_T = self.used[T]
+        else:
+            prev_t = max((t for t in self.used if t < T), default=None)
+            used_T = self.used[prev_t] if prev_t is not None else 0.0
+        return self.cap - used_T    
 
 class Network:
     def __init__(self):
         self.nodes: dict = {}
         self.links: list = []
-
-    # ── node helpers ────────────────────────
 
     def get_switch_node(self):
         return [n for n in self.nodes.values() if n.type == config.NODE_SWITCH]
@@ -168,16 +184,11 @@ class Network:
             self.add_link(link.u.name, link.v.name,
                           link.cap, link.delay, link.used)
 
-    # ── violation checks ────────────────────
-
     def check_violated_nodes(self, T: int) -> int:
-        # FIX: get_dc_node() với dấu () — trước đây thiếu ()
         return sum(n.check_violated(T) for n in self.get_dc_node())
 
     def check_violated_links(self, T: int) -> int:
         return sum(l.check_violated(T) for l in self.links)
-
-    # ── graph conversion ────────────────────
 
     def to_graph(self) -> nx.Graph:
         G = nx.Graph()
@@ -185,12 +196,9 @@ class Network:
             G.add_node(node.name, type=node.type, cap=node.cap,
                        used=node.used, VNFs=node.vnfs, links=node.links)
         for link in self.links:
-            # FIX: thêm delay vào edge attr để shortest_path(weight='delay') hoạt động đúng
             G.add_edge(link.u.name, link.v.name,
                        cap=link.cap, used=link.used, delay=link.delay)
         return G
-
-    # ── visualisation ───────────────────────
 
     def visualize(self, pos_path=None, info=False, topo=False,
                   out_path=None, path_p=None):

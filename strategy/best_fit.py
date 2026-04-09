@@ -3,13 +3,14 @@ import networkx as nx
 
 from env.env import Strategy
 from env.request import SFC
+from env.network import Node
 import config
 
-class GreedyFIFS(Strategy):
+class BestFit(Strategy):
 
     def __init__(self, env):
         super().__init__(env)
-        self.name = "GreedyFIFS"
+        self.name = "BestFit"
         self._graph_cache: dict = {}
 
     def _bw_pruned_graph(self, t_start: int, t_end: int, bw: float) -> nx.Graph:
@@ -37,6 +38,11 @@ class GreedyFIFS(Strategy):
         except (nx.NetworkXNoPath, nx.NetworkXError):
             return None
 
+    def _compute_waste(self, node: Node, vnf_resource: dict, t_start: int, t_end: int) -> float:
+        remaining = node.get_min_available_resource(t_start, t_end)
+        waste = sum(remaining[k] - vnf_resource.get(k, 0.0) for k in config.RESOURCE_TYPE)
+        return waste
+
     def get_placement(self, sfc: SFC, current_time: float) -> Optional[Dict]:
         self._graph_cache.clear()
         t_start = self.env._get_timeslot(current_time)
@@ -56,8 +62,10 @@ class GreedyFIFS(Strategy):
                 dc_node = self.env.network.nodes.get(str(dc_name))
                 if dc_node is None:
                     continue
-                if self.env._check_can_deploy_vnf(dc_node, vnf, t_start, t_end):
-                    valid_dcs.append((dc_node.get_cost(vnf), str(dc_name)))
+                if not self.env._check_can_deploy_vnf(dc_node, vnf, t_start, t_end):
+                    continue
+                waste = self._compute_waste(dc_node, vnf.resource, t_start, t_end)
+                valid_dcs.append((waste, str(dc_name)))
 
             if not valid_dcs:
                 return None

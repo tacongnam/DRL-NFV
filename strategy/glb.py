@@ -6,47 +6,46 @@ from env.request import SFC
 from env.network import Node
 import config
 
-
 class GreedyGLB(Strategy):
-    """Greedy Load-Balanced: chọn DC có tài nguyên còn lại nhiều nhất (cân bằng tải)."""
 
     def __init__(self, env):
         super().__init__(env)
         self.name = "GreedyGLB"
+        self._graph_cache: dict = {}
+
+    def _bw_pruned_graph(self, t_start: int, t_end: int, bw: float) -> nx.Graph:
+        key = (t_start, t_end, round(bw, 2))
+        if key in self._graph_cache:
+            return self._graph_cache[key]
+        G = nx.Graph()
+        for nid in self.env.network.nodes:
+            G.add_node(nid)
+        for link in self.env.network.links:
+            if link.get_available_bandwidth(t_start, t_end) >= bw:
+                G.add_edge(link.u.name, link.v.name, delay=link.delay)
+        self._graph_cache[key] = G
+        return G
 
     def get_routing(self, u: str, v: str, t_start: int, t_end: int, bw: float) -> Optional[List[str]]:
         u, v = str(u), str(v)
         if u == v:
             return [u]
-
-        G = self.env.network.to_graph()
+        G = self._bw_pruned_graph(t_start, t_end, bw)
         if u not in G or v not in G:
             return None
-
-        edges_to_remove =[]
-        for a, b in G.edges():
-            link_obj = next(
-                (l for l in self.env.network.links if {l.u.name, l.v.name} == {a, b}),
-                None
-            )
-            if not link_obj or link_obj.get_available_bandwidth(t_start, t_end) < bw:
-                edges_to_remove.append((a, b))
-
-        G.remove_edges_from(edges_to_remove)
-
         try:
             return nx.shortest_path(G, u, v, weight='delay')
         except (nx.NetworkXNoPath, nx.NetworkXError):
             return None
 
     def _compute_node_score(self, node: Node, t_start: int, t_end: int) -> float:
-        """Min ratio tài nguyên còn lại / capacity trên mọi resource type."""
         remaining = node.get_min_available_resource(t_start, t_end)
-        scores    = [remaining[k] / node.cap[k] if node.cap[k] > 0 else 0.0
-                     for k in config.RESOURCE_TYPE]
+        scores = [remaining[k] / node.cap[k] if node.cap[k] > 0 else 0.0
+                  for k in config.RESOURCE_TYPE]
         return max(0.0, min(scores))
 
     def get_placement(self, sfc: SFC, current_time: float) -> Optional[Dict]:
+        self._graph_cache.clear()
         t_start = self.env._get_timeslot(current_time)
         t_end   = self.env._get_timeslot(sfc.request.end_time)
 
@@ -54,9 +53,8 @@ class GreedyGLB(Strategy):
         link_paths,      link_timeslots = [], []
         prev_dc = sfc.request.start_node
 
-        for vnf_idx, vnf in enumerate(sfc.request.vnfs):
+        for vnf in sfc.request.vnfs:
             candidate_dcs = vnf.get_dcs()
-            # FIX: '-1' = wildcard → expand ra toàn bộ DC trong mạng
             if '-1' in candidate_dcs:
                 candidate_dcs = [n.name for n in self.env.network.get_dc_node()]
 
@@ -73,16 +71,14 @@ class GreedyGLB(Strategy):
                 return None
 
             valid_dcs.sort(key=lambda x: x[0], reverse=True)
-            chosen_dc = None
-            path = None
-            for score, dc_candidate in valid_dcs:
+            chosen_dc, path = None, None
+            for _, dc_candidate in valid_dcs:
                 p = self.get_routing(prev_dc, dc_candidate, t_start, t_end, sfc.request.bw)
                 if p is not None:
-                    chosen_dc = dc_candidate
-                    path = p
-                    break  # Tìm thấy DC và đường đi hợp lệ -> Chốt
+                    chosen_dc, path = dc_candidate, p
+                    break
 
-            if chosen_dc is None or path is None:
+            if chosen_dc is None:
                 return None
 
             node_placements.append(chosen_dc)
@@ -91,7 +87,6 @@ class GreedyGLB(Strategy):
             link_timeslots.append((t_start, t_end))
             prev_dc = chosen_dc
 
-        # Segment cuối: VNF cuối → end_node
         final_path = self.get_routing(prev_dc, sfc.request.end_node, t_start, t_end, sfc.request.bw)
         if final_path is None:
             return None
