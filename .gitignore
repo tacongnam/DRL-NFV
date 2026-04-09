@@ -23,9 +23,6 @@ env/
 .DS_Store
 Thumbs.db
 
-# Generated Data Directories
-data/train/
-
 # Logs
 *.log
 
