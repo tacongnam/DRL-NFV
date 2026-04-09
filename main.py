@@ -3,33 +3,39 @@ import os, sys, json, argparse, subprocess
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 for _d in ["models/vgae_pretrained", "models/ll_pretrained",
            "models/hrl_final", "data/train", "data/test"]:
-    os.makedirs(_d, exist_ok=True)
+    os.makedirs(os.path.join(ROOT_DIR, _d), exist_ok=True)
+
+sys.path.insert(0, ROOT_DIR)
 
 from env.vnf      import VNF, ListOfVnfs
 from env.request  import Request, ListOfRequests
 from env.network  import Network
 from env.env      import Env
-from strategy.fifs          import GreedyFIFS
-from strategy.glb           import GreedyGLB
-from strategy.spf           import ShortestPathFirst
-from strategy.best_fit      import BestFit
+from strategy.fifs           import GreedyFIFS
+from strategy.glb            import GreedyGLB
+from strategy.spf            import ShortestPathFirst
+from strategy.best_fit       import BestFit
 from strategy.deadline_aware import DeadlineAwareGreedy
-from strategy.random_fit    import RandomFit
-from strategy.hrl           import HRL_VGAE_Strategy
+from strategy.random_fit     import RandomFit
+from strategy.hrl            import HRL_VGAE_Strategy
 
-TRAIN_DIR        = "data/train"
-TEST_DIR         = "data/test"
+TRAIN_DIR        = os.path.join(ROOT_DIR, "data/train")
+TEST_DIR         = os.path.join(ROOT_DIR, "data/test")
+GENERATE_SCRIPT  = os.path.join(ROOT_DIR, "data/generate.py")
+PRETRAIN_SCRIPT  = os.path.join(ROOT_DIR, "models/pretrain.py")
 DEFAULT_EPISODES = 300
 
 BASELINE_REGISTRY = {
-    "fifs":     ("GreedyFIFS",           GreedyFIFS),
-    "glb":      ("GreedyGLB",            GreedyGLB),
-    "spf":      ("ShortestPathFirst",    ShortestPathFirst),
-    "bestfit":  ("BestFit",              BestFit),
-    "deadline": ("DeadlineAwareGreedy",  DeadlineAwareGreedy),
-    "random":   ("RandomFit",            RandomFit),
+    "fifs":     ("GreedyFIFS",          GreedyFIFS),
+    "glb":      ("GreedyGLB",           GreedyGLB),
+    "spf":      ("ShortestPathFirst",   ShortestPathFirst),
+    "bestfit":  ("BestFit",             BestFit),
+    "deadline": ("DeadlineAwareGreedy", DeadlineAwareGreedy),
+    "random":   ("RandomFit",           RandomFit),
 }
 
 
@@ -74,98 +80,93 @@ def get_data_files(d: str):
     return []
 
 
+def _run_subprocess(cmd):
+    result = subprocess.run(cmd, cwd=ROOT_DIR)
+    if result.returncode != 0:
+        print(f"[WARN] Command failed: {' '.join(str(c) for c in cmd)}")
+    return result.returncode == 0
+
+
+def _generate_data(topology, distribution, difficulty, scale, requests,
+                   num_files, output_dir, seed_offset=0):
+    return _run_subprocess([
+        sys.executable, GENERATE_SCRIPT,
+        "--topology",    topology,
+        "--distribution", distribution,
+        "--difficulty",  difficulty,
+        "--scale",       str(scale),
+        "--num-files",   str(num_files),
+        "--requests",    str(requests),
+        "--seed-offset", str(seed_offset),
+        "--output",      output_dir,
+    ])
+
+
 def _plot_baseline_results(results: list, out_path: str = None):
     try:
         import matplotlib
-        matplotlib.use("Agg" if out_path else "TkAgg")
+        matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        import matplotlib.patches as mpatches
         import numpy as np
     except ImportError:
-        print("[Plot] matplotlib not available, skipping chart.")
+        print("[Plot] matplotlib not available, skipping.")
         return
 
-    names  = [r["name"] for r in results]
-    ar     = [r["ar"] for r in results]
-    cost   = [r["cost"] for r in results]
-    delay  = [r["delay"] for r in results]
-
-    x      = np.arange(len(names))
-    width  = 0.55
+    names = [r["name"]  for r in results]
+    ar    = [r["ar"]    for r in results]
+    cost  = [r["cost"]  for r in results]
+    delay = [r["delay"] for r in results]
+    x     = np.arange(len(names))
+    w     = 0.55
     colors = plt.cm.tab10(np.linspace(0, 0.9, len(names)))
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     fig.suptitle("Baseline Algorithm Comparison", fontsize=14, fontweight="bold")
 
-    ax = axes[0]
-    bars = ax.bar(x, ar, width, color=colors, edgecolor="white", linewidth=0.8)
-    ax.set_title("Acceptance Ratio")
-    ax.set_ylabel("Ratio")
-    ax.set_ylim(0, 1.05)
-    ax.set_xticks(x)
-    ax.set_xticklabels(names, rotation=30, ha="right", fontsize=9)
-    ax.yaxis.grid(True, linestyle="--", alpha=0.5)
-    ax.set_axisbelow(True)
-    for bar, v in zip(bars, ar):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
-                f"{v:.3f}", ha="center", va="bottom", fontsize=8)
-
-    ax = axes[1]
-    bars = ax.bar(x, cost, width, color=colors, edgecolor="white", linewidth=0.8)
-    ax.set_title("Total Cost")
-    ax.set_ylabel("Cost")
-    ax.set_xticks(x)
-    ax.set_xticklabels(names, rotation=30, ha="right", fontsize=9)
-    ax.yaxis.grid(True, linestyle="--", alpha=0.5)
-    ax.set_axisbelow(True)
-    for bar, v in zip(bars, cost):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + max(cost) * 0.01,
-                f"{v:.1f}", ha="center", va="bottom", fontsize=8)
-
-    ax = axes[2]
-    bars = ax.bar(x, delay, width, color=colors, edgecolor="white", linewidth=0.8)
-    ax.set_title("Total Delay")
-    ax.set_ylabel("Delay")
-    ax.set_xticks(x)
-    ax.set_xticklabels(names, rotation=30, ha="right", fontsize=9)
-    ax.yaxis.grid(True, linestyle="--", alpha=0.5)
-    ax.set_axisbelow(True)
-    for bar, v in zip(bars, delay):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + max(delay) * 0.01,
-                f"{v:.1f}", ha="center", va="bottom", fontsize=8)
+    for ax, vals, title, ylabel in [
+        (axes[0], ar,    "Acceptance Ratio", "Ratio"),
+        (axes[1], cost,  "Total Cost",       "Cost"),
+        (axes[2], delay, "Total Delay",      "Delay"),
+    ]:
+        bars = ax.bar(x, vals, w, color=colors, edgecolor="white", linewidth=0.8)
+        ax.set_title(title)
+        ax.set_ylabel(ylabel)
+        ax.set_xticks(x)
+        ax.set_xticklabels(names, rotation=30, ha="right", fontsize=9)
+        ax.yaxis.grid(True, linestyle="--", alpha=0.5)
+        ax.set_axisbelow(True)
+        mx = max(vals) if max(vals) > 0 else 1
+        fmt = ".3f" if title == "Acceptance Ratio" else ".1f"
+        for bar, v in zip(bars, vals):
+            ax.text(bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + mx * 0.01,
+                    f"{v:{fmt}}", ha="center", va="bottom", fontsize=8)
 
     plt.tight_layout()
-    if out_path:
-        plt.savefig(out_path, dpi=150, bbox_inches="tight")
-        print(f"[Plot] Saved → {out_path}")
-    else:
-        try:
-            plt.show()
-        except Exception:
-            save_fallback = "baseline_comparison.png"
-            plt.savefig(save_fallback, dpi=150, bbox_inches="tight")
-            print(f"[Plot] Saved → {save_fallback}")
+    save_to = out_path or os.path.join(ROOT_DIR, "baseline_comparison.png")
+    plt.savefig(save_to, dpi=150, bbox_inches="tight")
+    print(f"[Plot] Saved → {save_to}")
     plt.close()
 
 
 def _plot_eval_vs_baselines(hrl_results: list, baseline_results: list, out_path: str = None):
     try:
         import matplotlib
-        matplotlib.use("Agg" if out_path else "TkAgg")
+        matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
         import numpy as np
     except ImportError:
         return
 
-    all_results = baseline_results + hrl_results
-    names  = [r["name"] for r in all_results]
-    ar     = [r["ar"] for r in all_results]
-    cost   = [r["cost"] for r in all_results]
-
+    all_r  = baseline_results + hrl_results
+    names  = [r["name"] for r in all_r]
+    ar     = [r["ar"]   for r in all_r]
+    cost   = [r["cost"] for r in all_r]
     x      = np.arange(len(names))
-    width  = 0.55
+    w      = 0.55
     n_base = len(baseline_results)
-    colors = (["#5b8dd9"] * n_base) + (["#e05c5c"] * len(hrl_results))
+    colors = ["#5b8dd9"] * n_base + ["#e05c5c"] * len(hrl_results)
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
     fig.suptitle("HRL-VGAE vs Baselines", fontsize=14, fontweight="bold")
@@ -174,36 +175,29 @@ def _plot_eval_vs_baselines(hrl_results: list, baseline_results: list, out_path:
         (axes[0], ar,   "Acceptance Ratio", "Ratio"),
         (axes[1], cost, "Total Cost",       "Cost"),
     ]:
-        bars = ax.bar(x, vals, width, color=colors, edgecolor="white", linewidth=0.8)
+        bars = ax.bar(x, vals, w, color=colors, edgecolor="white", linewidth=0.8)
         ax.set_title(title)
         ax.set_ylabel(ylabel)
         ax.set_xticks(x)
         ax.set_xticklabels(names, rotation=30, ha="right", fontsize=9)
         ax.yaxis.grid(True, linestyle="--", alpha=0.5)
         ax.set_axisbelow(True)
+        mx  = max(vals) if max(vals) > 0 else 1
+        fmt = ".3f" if title == "Acceptance Ratio" else ".1f"
         for bar, v in zip(bars, vals):
             ax.text(bar.get_x() + bar.get_width() / 2,
-                    bar.get_height() + max(vals) * 0.01,
-                    f"{v:.3f}" if title == "Acceptance Ratio" else f"{v:.1f}",
-                    ha="center", va="bottom", fontsize=8)
+                    bar.get_height() + mx * 0.01,
+                    f"{v:{fmt}}", ha="center", va="bottom", fontsize=8)
 
-    import matplotlib.patches as mpatches
     axes[0].legend(handles=[
         mpatches.Patch(color="#5b8dd9", label="Baseline"),
         mpatches.Patch(color="#e05c5c", label="HRL-VGAE"),
     ], loc="lower right", fontsize=9)
 
     plt.tight_layout()
-    if out_path:
-        plt.savefig(out_path, dpi=150, bbox_inches="tight")
-        print(f"[Plot] Saved → {out_path}")
-    else:
-        try:
-            plt.show()
-        except Exception:
-            save_fallback = "hrl_vs_baselines.png"
-            plt.savefig(save_fallback, dpi=150, bbox_inches="tight")
-            print(f"[Plot] Saved → {save_fallback}")
+    save_to = out_path or os.path.join(ROOT_DIR, "hrl_vs_baselines.png")
+    plt.savefig(save_to, dpi=150, bbox_inches="tight")
+    print(f"[Plot] Saved → {save_to}")
     plt.close()
 
 
@@ -214,61 +208,64 @@ def run_pipeline(args):
 
     print("\n[1/4] Generating data ...")
     for diff, offset in [("easy", 0), ("hard", args.num_train_files)]:
-        subprocess.run([sys.executable, "data/generate.py",
-            "--topology", args.topology, "--distribution", args.distribution,
-            "--difficulty", diff, "--scale", str(args.scale),
-            "--num-files", str(args.num_train_files),
-            "--requests", str(args.requests),
-            "--seed-offset", str(offset), "--output", TRAIN_DIR])
-
-    subprocess.run([sys.executable, "data/generate.py",
-        "--topology", args.topology, "--distribution", args.distribution,
-        "--difficulty", args.difficulty, "--scale", str(args.scale),
-        "--num-files", str(args.num_test_files),
-        "--requests", str(args.requests), "--output", TEST_DIR])
+        _generate_data(args.topology, args.distribution, diff,
+                       args.scale, args.requests, args.num_train_files,
+                       TRAIN_DIR, seed_offset=offset)
+    _generate_data(args.topology, args.distribution, args.difficulty,
+                   args.scale, args.requests, args.num_test_files, TEST_DIR)
     print(f"  train={len(get_data_files(TRAIN_DIR))}  test={len(get_data_files(TEST_DIR))}")
 
     print("\n[2/4] Pre-training VGAE + LL-DQN ...")
-    subprocess.run([sys.executable, "models/pretrain.py",
-        "--phase", "both", "--train-dir", TRAIN_DIR,
+    _run_subprocess([
+        sys.executable, PRETRAIN_SCRIPT,
+        "--phase", "both",
+        "--train-dir",   TRAIN_DIR,
         "--vgae-epochs", str(args.vgae_epochs),
-        "--ll-episodes", str(args.ll_episodes)])
+        "--ll-episodes", str(args.ll_episodes),
+    ])
 
     print("\n[3/4] Training HRL ...")
-    _run_train(args.episodes, "models/ll_pretrained/ll_dqn_weights.weights.h5",
-               "models/hrl_final", TRAIN_DIR)
+    ll_path = os.path.join(ROOT_DIR, "models/ll_pretrained/ll_dqn_weights.weights.h5")
+    _run_train(args.episodes, ll_path if os.path.exists(ll_path) else None,
+               os.path.join(ROOT_DIR, "models/hrl_final"), TRAIN_DIR)
 
     print("\n[4/4] Evaluating ...")
-    _run_eval("models/hrl_final", TEST_DIR)
+    _run_eval(os.path.join(ROOT_DIR, "models/hrl_final"), TEST_DIR)
 
     print("\n" + "="*60 + "\nPIPELINE COMPLETE\n" + "="*60)
 
 
 def run_generate(args):
     print("\n=== DATA GENERATION ===")
-    for dest, n_files in [(TRAIN_DIR, args.num_train_files), (TEST_DIR, args.num_test_files)]:
+    out_train = getattr(args, "train_dir", TRAIN_DIR)
+    out_test  = getattr(args, "test_dir",  None) or TEST_DIR
+    for dest, n_files in [(out_train, args.num_train_files), (out_test, args.num_test_files)]:
         if n_files <= 0:
             continue
-        subprocess.run([sys.executable, "data/generate.py",
-            "--topology", args.topology, "--distribution", args.distribution,
-            "--difficulty", args.difficulty, "--scale", str(args.scale),
-            "--num-files", str(n_files), "--requests", str(args.requests),
-            "--output", dest])
-    print(f"train={len(get_data_files(TRAIN_DIR))}  test={len(get_data_files(TEST_DIR))}")
+        os.makedirs(dest, exist_ok=True)
+        _generate_data(args.topology, args.distribution, args.difficulty,
+                       args.scale, args.requests, n_files, dest)
+    print(f"train={len(get_data_files(out_train))}  test={len(get_data_files(out_test))}")
 
 
 def run_pretrain(args):
-    subprocess.run([sys.executable, "models/pretrain.py",
-        "--phase", "both",
-        "--train-dir", getattr(args, "train_dir", TRAIN_DIR),
+    train_dir = os.path.abspath(getattr(args, "train_dir", TRAIN_DIR))
+    if not get_data_files(train_dir):
+        print(f"[ERROR] No JSON files in {train_dir}. Run --mode generate first.")
+        return
+    _run_subprocess([
+        sys.executable, PRETRAIN_SCRIPT,
+        "--phase",       "both",
+        "--train-dir",   train_dir,
         "--vgae-epochs", str(getattr(args, "vgae_epochs", 200)),
-        "--ll-episodes", str(getattr(args, "ll_episodes", 200))])
+        "--ll-episodes", str(getattr(args, "ll_episodes", 200)),
+    ])
 
 
 def _run_train(episodes, ll_pretrained, save_dir, train_dir):
     files = get_data_files(train_dir)
     if not files:
-        print(f"No training files in {train_dir}")
+        print(f"[ERROR] No training files in {train_dir}.")
         return None
 
     strategy = None
@@ -297,38 +294,37 @@ def _run_train(episodes, ll_pretrained, save_dir, train_dir):
 def run_train(args):
     print("\n=== TRAINING ===")
     ll_path = getattr(args, "ll_pretrained", None)
-    if ll_path is None:
-        candidate = "models/ll_pretrained/ll_dqn_weights.weights.h5"
-        if os.path.exists(candidate):
-            ll_path = candidate
+    if not ll_path:
+        candidate = os.path.join(ROOT_DIR, "models/ll_pretrained/ll_dqn_weights.weights.h5")
+        ll_path   = candidate if os.path.exists(candidate) else None
     _run_train(args.episodes, ll_path,
-               getattr(args, "model_dir", "models/hrl_final"),
-               getattr(args, "train_dir", TRAIN_DIR))
+               os.path.abspath(getattr(args, "model_dir", "models/hrl_final")),
+               os.path.abspath(getattr(args, "train_dir", TRAIN_DIR)))
 
 
 def _run_eval(model_dir, test_dir, test_files=None):
     files = test_files or get_data_files(test_dir)
     if not files:
-        print("No test files found.")
+        print("[ERROR] No test files found.")
         return []
 
     results = []
     for fp in files:
         print(f"\n--- {os.path.basename(fp)} ---")
-        env = load_env_from_json(fp)
+        env      = load_env_from_json(fp)
         strategy = HRL_VGAE_Strategy(env, is_training=False, episodes=1)
-        if model_dir:
+        if model_dir and os.path.isdir(model_dir):
             strategy.load_model(model_dir)
         env.set_strategy(strategy)
         stats = strategy.run_simulation_eval()
         env.print_statistics()
         results.append({
-            "name": "HRL-VGAE",
-            "file": os.path.basename(fp),
-            "ar":   stats.get("acceptance_ratio", 0),
-            "acc":  stats.get("accepted_requests", 0),
-            "rej":  stats.get("rejected_requests", 0),
-            "cost": stats.get("total_cost", 0),
+            "name":  "HRL-VGAE",
+            "file":  os.path.basename(fp),
+            "ar":    stats.get("acceptance_ratio", 0),
+            "acc":   stats.get("accepted_requests", 0),
+            "rej":   stats.get("rejected_requests", 0),
+            "cost":  stats.get("total_cost", 0),
             "delay": stats.get("total_delay", 0),
         })
 
@@ -338,26 +334,25 @@ def _run_eval(model_dir, test_dir, test_files=None):
     for r in results:
         print(f"{r['file']:<35} {r['ar']:>9.3f} {r['acc']:>6} {r['rej']:>6} {r['cost']:>10.1f}")
     if results:
-        avg_ar = sum(r["ar"] for r in results) / len(results)
-        print(f"\nAverage acceptance ratio: {avg_ar:.3f}")
+        print(f"\nAverage acceptance ratio: {sum(r['ar'] for r in results)/len(results):.3f}")
     return results
 
 
 def run_eval(args):
     print("\n=== EVALUATION ===")
-    _run_eval(getattr(args, "model_dir", None),
-              getattr(args, "test_dir", None) or TEST_DIR,
+    _run_eval(os.path.abspath(getattr(args, "model_dir", "models/hrl_final")),
+              os.path.abspath(getattr(args, "test_dir", None) or TEST_DIR),
               getattr(args, "test_files", None))
 
 
 def run_baselines(args=None):
     baselines_to_run = getattr(args, "baselines", None) or list(BASELINE_REGISTRY.keys())
     plot_out         = getattr(args, "plot_out", None)
-    test_dir         = getattr(args, "test_dir", None) or TEST_DIR
+    test_dir         = os.path.abspath(getattr(args, "test_dir", None) or TEST_DIR)
 
-    files = get_data_files(test_dir) or get_data_files("data")
+    files = get_data_files(test_dir) or get_data_files(os.path.join(ROOT_DIR, "data"))
     if not files:
-        print("No test files found.")
+        print("[ERROR] No test files found. Run --mode generate first.")
         return
 
     fp = files[0]
@@ -371,8 +366,7 @@ def run_baselines(args=None):
         label, cls = BASELINE_REGISTRY[key]
         print(f"\n[{label}]")
         env = load_env_from_json(fp)
-        strategy = cls(env)
-        env.set_strategy(strategy)
+        env.set_strategy(cls(env))
         env.run_simulation()
         env.print_statistics()
         s = env.stats
@@ -388,32 +382,33 @@ def run_baselines(args=None):
     if len(results) > 1:
         print("\n=== BASELINE SUMMARY ===")
         print(f"{'Algorithm':<25} {'AccRatio':>9} {'Acc':>6} {'Rej':>6} {'Cost':>10} {'Delay':>10}")
-        print("-"*70)
+        print("-"*75)
         for r in results:
             print(f"{r['name']:<25} {r['ar']:>9.3f} {r['acc']:>6} {r['rej']:>6} "
                   f"{r['cost']:>10.1f} {r['delay']:>10.1f}")
         _plot_baseline_results(results, out_path=plot_out)
 
-    model_dir = getattr(args, "model_dir", "models/hrl_final")
+    model_dir = os.path.abspath(getattr(args, "model_dir", "models/hrl_final"))
+    hrl_weights = ["hl_pmdrl_weights.weights.h5", "ll_dqn_weights.weights.h5"]
     if os.path.isdir(model_dir) and any(
-        os.path.exists(os.path.join(model_dir, w))
-        for w in ["hl_pmdrl_weights.weights.h5", "ll_dqn_weights.weights.h5"]
+        os.path.exists(os.path.join(model_dir, w)) for w in hrl_weights
     ):
-        print(f"\n[HRL-VGAE] Evaluating trained model from {model_dir} ...")
-        env = load_env_from_json(fp)
+        print(f"\n[HRL-VGAE] Evaluating from {model_dir} ...")
+        env      = load_env_from_json(fp)
         strategy = HRL_VGAE_Strategy(env, is_training=False, episodes=1)
         strategy.load_model(model_dir)
         env.set_strategy(strategy)
         hrl_stats = strategy.run_simulation_eval()
         env.print_statistics()
-        hrl_result = [{
+        hrl_r = [{
             "name":  "HRL-VGAE",
             "ar":    hrl_stats.get("acceptance_ratio", 0.0),
             "cost":  hrl_stats.get("total_cost", 0.0),
             "delay": hrl_stats.get("total_delay", 0.0),
         }]
-        cmp_out = plot_out.replace(".png", "_vs_hrl.png") if plot_out else None
-        _plot_eval_vs_baselines(hrl_result, results, out_path=cmp_out)
+        cmp_out = (plot_out.replace(".png", "_vs_hrl.png") if plot_out
+                   else os.path.join(ROOT_DIR, "hrl_vs_baselines.png"))
+        _plot_eval_vs_baselines(hrl_r, results, out_path=cmp_out)
 
 
 def main():
@@ -443,19 +438,17 @@ def main():
     p.add_argument("--ll-episodes",     type=int, default=200)
 
     p.add_argument("--baselines",       nargs="+", default=None,
-                   choices=list(BASELINE_REGISTRY.keys()),
-                   help="Baselines to run (default: all)")
-    p.add_argument("--plot-out",        type=str, default=None,
-                   help="Save plot to file instead of showing")
+                   choices=list(BASELINE_REGISTRY.keys()))
+    p.add_argument("--plot-out",        type=str, default=None)
 
     args = p.parse_args()
 
-    if args.mode == "pipeline":   run_pipeline(args)
-    elif args.mode == "generate": run_generate(args)
-    elif args.mode == "pretrain": run_pretrain(args)
-    elif args.mode == "train":    run_train(args)
-    elif args.mode == "eval":     run_eval(args)
-    elif args.mode == "baseline": run_baselines(args)
+    if   args.mode == "pipeline":  run_pipeline(args)
+    elif args.mode == "generate":  run_generate(args)
+    elif args.mode == "pretrain":  run_pretrain(args)
+    elif args.mode == "train":     run_train(args)
+    elif args.mode == "eval":      run_eval(args)
+    elif args.mode == "baseline":  run_baselines(args)
 
 
 if __name__ == "__main__":
