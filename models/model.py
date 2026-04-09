@@ -40,7 +40,7 @@ class GCNLayer(layers.Layer):
 
 
 class VGAENetwork:
-    def __init__(self, node_feat_dim: int = 3, hidden_dim: int = 32,
+    def __init__(self, node_feat_dim: int = 3, hidden_dim: int = 16,
                  latent_dim: int = 8, lr: float = 1e-3, beta: float = 1e-3):
         self.latent_dim = latent_dim
         self.beta       = beta
@@ -188,7 +188,7 @@ class LowLevelAgent:
         w     = tf.sigmoid(self.weight_net(state, training=False)).numpy()[0]
         return float(w[0]) * 2.0, float(w[1]) * 1.0
 
-    def train(self, buffer: ReplayBuffer, batch_size: int = 32):
+    def train(self, buffer: ReplayBuffer, batch_size: int = 16):
         if len(buffer) < batch_size:
             return
         batch = buffer.sample(batch_size)
@@ -322,7 +322,7 @@ class HighLevelAgent:
         front    = self._nondominated_sort(q_pareto)
         return max(front, key=lambda i: q_mat[i, 0])
 
-    def train(self, buffer: ReplayBuffer, batch_size: int = 32):
+    def train(self, buffer: ReplayBuffer, batch_size: int = 16):
         if len(buffer) < batch_size:
             return
         batch = buffer.sample(batch_size)

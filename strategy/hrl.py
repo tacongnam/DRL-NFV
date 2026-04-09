@@ -13,7 +13,7 @@ from models.model import ReplayBuffer, VGAENetwork, HighLevelAgent, LowLevelAgen
 BASE_AR_REWARD  = 1.0
 PENALTY_DROP    = 0.5
 R_BASE_LL       = 0.1
-BATCH_SIZE      = 32
+BATCH_SIZE      = 16
 TARGET_SYNC     = 200
 VGAE_TRAIN_FREQ = 50
 LATENT_DIM      = 8

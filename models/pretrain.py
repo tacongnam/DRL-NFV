@@ -141,7 +141,7 @@ def pretrain_vgae(train_dir: str, epochs: int = 200, batch: int = 16):
 
 
 def pretrain_ll(train_dir: str, vgae: VGAENetwork,
-                episodes: int = 200, batch: int = 32):
+                episodes: int = 200, batch: int = 16):
     files = sorted([os.path.join(train_dir, f)
                     for f in os.listdir(train_dir) if f.endswith(".json")])
     if not files:
