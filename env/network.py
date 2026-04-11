@@ -57,12 +57,16 @@ class Node:
         return min_res
 
     def use(self, resource: dict, start_T: int, end_T: int):
-        # Khi T không có trong used, lấy giá trị từ key liền trước thay vì T-1 (T-1 có thể cũng không tồn tại)
+        # Phase 1: Populate missing timeslots with their base values BEFORE modification.
+        # This prevents double-counting when the previous timeslot was already
+        # modified in this same call.
         for T in range(start_T, end_T):
             if T not in self.used:
                 prev_t = max((t for t in self.used if t < T), default=None)
                 prev = self.used[prev_t] if prev_t is not None else {k: 0.0 for k in config.RESOURCE_TYPE}
                 self.used[T] = {k: prev[k] for k in config.RESOURCE_TYPE}
+        # Phase 2: Add resource to all timeslots in the range.
+        for T in range(start_T, end_T):
             for k in config.RESOURCE_TYPE:
                 self.used[T][k] += resource[k]
 
@@ -118,10 +122,13 @@ class Link:
         return used_T + bandwidth > self.cap
 
     def use(self, bandwidth: float, start_T: int, end_T: int):
+        # Phase 1: Populate missing timeslots with base values BEFORE modification.
         for T in range(start_T, end_T):
             if T not in self.used:
                 prev_t = max((t for t in self.used if t < T), default=None)
                 self.used[T] = self.used[prev_t] if prev_t is not None else 0.0
+        # Phase 2: Add bandwidth to all timeslots in the range.
+        for T in range(start_T, end_T):
             self.used[T] += bandwidth
 
     def get_available_bandwidth(self, start_T: int, end_T: int) -> float:

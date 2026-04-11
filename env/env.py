@@ -40,7 +40,8 @@ class Strategy(ABC):
         plan = {'nodes': {}, 'links': {}, 'bw': sfc.request.bw}
 
         for i, (dc, (T1, T2)) in enumerate(zip(node_placements, vnf_timeslots)):
-            plan['nodes'][str(i)] = {'dc': dc, 'T1': T1, 'T2': T2}
+            vnf_key = str(sfc.request.vnfs[i].name)
+            plan['nodes'][vnf_key] = {'dc': dc, 'T1': T1, 'T2': T2}
 
         for i, (path, (T1, T2)) in enumerate(zip(link_paths, link_timeslots)):
             plan['links'][str(i)] = {'path': path, 'T1': T1, 'T2': T2}
