@@ -8,16 +8,16 @@ SPEED_OF_LIGHT = 300000.0  # km/s
 # IMPORTANT Reduced specs
 TRAIN_UPDATES = 40             # U: Total updates
 EPISODES_PER_UPDATE = 10       # E: Episodes per update
-ACTIONS_PER_TIME_STEP = 100    # A: Actions per time step
+ACTIONS_PER_TIME_STEP = 30    # A: Actions per time step
 TIME_STEP = 1                  # T: 1ms per step
 TRAFFIC_GEN_INTERVAL = 5       # N: Generate every 5ms
 TRAFFIC_STOP_TIME = 50         # Generate traffic until 50ms
 MAX_SIM_TIME_PER_EPISODE = 150 # Maximum simulation time (increased for processing)
 
 # --- RESOURCES ---
-DC_CPU_CYCLES = 12000  # cycles/sec
-DC_RAM = 256           # GB
-DC_STORAGE = 2048      # GB
+DC_CPU_CYCLES = 120  # cycles/sec
+DC_RAM = 60           # GB
+DC_STORAGE = 70      # GB
 
 # --- VNF & SFC SPECS (Based on Table I & II) ---
 # IMPORTANT Reduced specs
@@ -33,13 +33,15 @@ VNF_TYPES = list(VNF_SPECS.keys())
 NUM_VNF_TYPES = len(VNF_TYPES)
 
 # IMPORTANT Reduced specs
+# --- VNF & SFC SPECS ---
 SFC_SPECS = {
-    'CloudGaming': {'chain': ['NAT', 'FW', 'VOC', 'WO', 'IDPS'], 'bw': 4,   'delay': 80,  'bundle': (40, 55)},
-    'AR':          {'chain': ['NAT', 'FW', 'TM', 'VOC', 'IDPS'], 'bw': 100, 'delay': 10,  'bundle': (1, 4)},
-    'VoIP':        {'chain': ['NAT', 'FW', 'TM', 'FW', 'NAT'],   'bw': 0.064,'delay': 100, 'bundle': (100, 200)},
-    'VideoStream': {'chain': ['NAT', 'FW', 'TM', 'VOC', 'IDPS'], 'bw': 4,   'delay': 100, 'bundle': (50, 100)},
-    'MIoT':        {'chain': ['NAT', 'FW', 'IDPS'],               'bw': 1,   'delay': 5,   'bundle': (10, 15)},
-    'Ind4.0':      {'chain': ['NAT', 'FW'],                       'bw': 70,  'delay': 8,   'bundle': (1, 4)},
+    # Tăng mạnh bundle của AR, MIoT và Ind4.0
+    'CloudGaming': {'chain': ['NAT', 'FW', 'VOC', 'WO', 'IDPS'], 'bw': 4,   'delay': 80,  'bundle': (20, 30)},
+    'AR':          {'chain': ['NAT', 'FW', 'TM', 'VOC', 'IDPS'], 'bw': 100, 'delay': 10,  'bundle': (15, 25)}, # <-- Tăng mạnh
+    'VoIP':        {'chain': ['NAT', 'FW', 'TM', 'FW', 'NAT'],   'bw': 0.064,'delay': 100, 'bundle': (50, 100)},
+    'VideoStream': {'chain': ['NAT', 'FW', 'TM', 'VOC', 'IDPS'], 'bw': 4,   'delay': 100, 'bundle': (30, 50)},
+    'MIoT':        {'chain': ['NAT', 'FW', 'IDPS'],              'bw': 1,   'delay': 5,   'bundle': (30, 50)}, # <-- Tăng mạnh, delay siêu ngắn
+    'Ind4.0':      {'chain': ['NAT', 'FW'],                      'bw': 70,  'delay': 8,   'bundle': (10, 20)}, # <-- Tăng mạnh
 }
 SFC_TYPES = list(SFC_SPECS.keys())
 NUM_SFC_TYPES = len(SFC_TYPES)
