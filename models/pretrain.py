@@ -130,7 +130,7 @@ def pretrain_vgae(train_dir: str, epochs: int = 200, batch: int = 16):
     t0 = time.time()
     for ep in range(1, epochs + 1):
         vgae.train(buf, epochs=1, batch=batch)
-        if ep % 50 == 0 or ep == epochs:
+        if ep % 20 == 0 or ep == epochs:
             print(f"  epoch {ep}/{epochs}  ({time.time()-t0:.1f}s)")
 
     os.makedirs(VGAE_DIR, exist_ok=True)
@@ -205,7 +205,7 @@ def pretrain_ll(train_dir: str, vgae: VGAENetwork,
         if len(buf_LL) >= batch:
             ll_agent.train(buf_LL, batch)
 
-        if ep % 50 == 0 or ep == episodes:
+        if ep % 20 == 0 or ep == episodes:
             print(f"  ep {ep}/{episodes}  buffer={len(buf_LL)}  "
                   f"({time.time()-t0:.1f}s)")
 

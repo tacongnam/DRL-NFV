@@ -13,12 +13,11 @@ from models.model import ReplayBuffer, VGAENetwork, HighLevelAgent, LowLevelAgen
 BASE_AR_REWARD  = 1.0
 PENALTY_DROP    = 0.5
 R_BASE_LL       = 0.1
-BATCH_SIZE      = 16
-TARGET_SYNC     = 200
-VGAE_TRAIN_FREQ = 50
+BATCH_SIZE      = 32
+TARGET_SYNC     = 100
+VGAE_TRAIN_FREQ = 100
 LATENT_DIM      = 8
 MAX_DCS         = 60
-
 
 class HRL_VGAE_Strategy(Strategy):
 
@@ -52,6 +51,9 @@ class HRL_VGAE_Strategy(Strategy):
             self._load_ll(ll_pretrained_path)
 
         self._graph_cache: dict = {}
+        self._nx_graph_cache: dict = {}
+        self._path_cache: dict = {}
+        self._episode_graph_built = False
 
     def save_model(self, directory: str):
         os.makedirs(directory, exist_ok=True)
@@ -107,30 +109,39 @@ class HRL_VGAE_Strategy(Strategy):
             return None
 
     def _bw_pruned_graph(self, t_start: int, t_end: int, bw: float) -> nx.Graph:
+        key = (t_start, t_end, round(bw, 2))
+        if key in self._nx_graph_cache:
+            return self._nx_graph_cache[key]
         G = nx.Graph()
         for nid in self.env.network.nodes:
             G.add_node(nid)
         for link in self.env.network.links:
             if link.get_available_bandwidth(t_start, t_end) >= bw:
                 G.add_edge(link.u.name, link.v.name, delay=link.delay)
+        self._nx_graph_cache[key] = G
         return G
+    
+    def _get_path_lengths(self, t_start: int, t_end: int, bw: float) -> dict:
+        key = (t_start, t_end, round(bw, 2))
+        if key in self._path_cache:
+            return self._path_cache[key]
+        G = self._bw_pruned_graph(t_start, t_end, bw)
+        try:
+            lengths = dict(nx.shortest_path_length(G, weight="delay"))
+        except Exception:
+            lengths = {}
+        self._path_cache[key] = lengths
+        return lengths
 
     def _build_dc_graph(self, t_start: int, t_end: int,
-                         bw_req: float = 0.0) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+                     bw_req: float = 0.0) -> Tuple[np.ndarray, np.ndarray, List[str]]:
         dcs = [nid for nid, n in self.env.network.nodes.items()
-               if n.type == config.NODE_DC]
-        n   = len(dcs)
+            if n.type == config.NODE_DC]
+        n = len(dcs)
         if n == 0:
-            return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 0), dtype=np.float32), []
+            return np.zeros((0, 3), np.float32), np.zeros((0, 0), np.float32), []
 
-        X   = np.zeros((n, 3), dtype=np.float32)
-        A   = np.zeros((n, n), dtype=np.float32)
-        G_p = self._bw_pruned_graph(t_start, t_end, bw_req)
-
-        try:
-            all_paths = dict(nx.shortest_path_length(G_p, weight="delay"))
-        except Exception:
-            all_paths = {}
+        all_paths = self._get_path_lengths(t_start, t_end, bw_req)
 
         max_res = {k: 1.0 for k in config.RESOURCE_TYPE}
         for node in self.env.network.nodes.values():
@@ -138,6 +149,8 @@ class HRL_VGAE_Strategy(Strategy):
                 for k in config.RESOURCE_TYPE:
                     max_res[k] = max(max_res[k], node.cap[k])
 
+        X = np.zeros((n, 3), np.float32)
+        A = np.zeros((n, n), np.float32)
         for i, dc_id in enumerate(dcs):
             node = self.env.network.nodes[dc_id]
             res  = node.get_min_available_resource(t_start, t_end)
@@ -146,10 +159,9 @@ class HRL_VGAE_Strategy(Strategy):
                 if i == j:
                     A[i, j] = 1.0
                 else:
-                    dist = all_paths.get(dc_id, {}).get(dc_j, None)
+                    dist = all_paths.get(dc_id, {}).get(dc_j)
                     if dist is not None and dist > 0:
                         A[i, j] = 1.0 / (dist + 1.0)
-
         return X, A, dcs
 
     def _get_z(self, t_start: int, t_end: int,
@@ -165,8 +177,9 @@ class HRL_VGAE_Strategy(Strategy):
     @staticmethod
     def _snapshot(network) -> dict:
         return {
-            "nodes": {nid: copy.deepcopy(n.used) for nid, n in network.nodes.items()},
-            "links": [copy.deepcopy(l.used) for l in network.links],
+            "nodes": {nid: {t: dict(v) for t, v in n.used.items()}
+                    for nid, n in network.nodes.items()},
+            "links": [{t: bw for t, bw in l.used.items()} for l in network.links],
         }
 
     @staticmethod
@@ -248,28 +261,25 @@ class HRL_VGAE_Strategy(Strategy):
                             Z_t: np.ndarray, vnf_feat: list) -> float:
         if not success:
             return -PENALTY_DROP
-
         alpha, beta = self.ll_agent.get_reward_weights(Z_t, vnf_feat)
         time_rem  = max(0.0, sfc.request.end_time - current_time)
         tMax      = max(sfc.request.delay_max, 1e-6)
-
         raw_cost  = abs(env_rewards[1]) if len(env_rewards) > 1 else 0.0
-        max_cost  = max(1.0, raw_cost)
-        cost_norm = raw_cost / max_cost
-
-        return R_BASE_LL + alpha * (time_rem / tMax) - beta * cost_norm
+        max_cost  = self._estimate_max_cost(sfc)
+        cost_norm = min(1.0, raw_cost / max_cost)
+        return 1.0 + alpha * (time_rem / tMax) - beta * cost_norm
 
     def _greedy_placement(self, sfc: SFC, current_time: float) -> Optional[Dict]:
-        from strategy.fifs import GreedyFIFS
-        return GreedyFIFS(self.env).get_placement(sfc, current_time)
+        from strategy.best_fit import BestFit
+        return BestFit(self.env).get_placement(sfc, current_time)
 
     def _greedy_placement_with_traj(self, sfc, current_time, Z_t, dc_mapping):
         self._ll_traj = []
         t_start = self.env._get_timeslot(current_time)
         t_end   = self.env._get_timeslot(sfc.request.end_time)
 
-        from strategy.fifs import GreedyFIFS
-        greedy = GreedyFIFS(self.env)
+        from strategy.best_fit import BestFit
+        greedy = BestFit(self.env)
         plan   = greedy.get_placement(sfc, current_time)
         if plan is None:
             return None
@@ -325,14 +335,13 @@ class HRL_VGAE_Strategy(Strategy):
 
             for sfc in sfcs:
                 total_steps += 1
-                epsilon     = 0.01 + 0.99 * math.exp(-total_steps * 3.0 / max(1, total_steps_planned))
-                greedy_prob = max(0.0, 1.0 - total_steps / max(1, total_steps_planned * 0.8))
+                epsilon = 0.1 + 0.9 * math.exp(-total_steps / max(1, total_steps_planned * 0.3))
+                greedy_prob = max(0.0, 1.0 - total_steps / max(1, total_steps_planned * 0.5))
 
                 self.env.t = sfc.request.arrival_time
                 t_start    = self.env._get_timeslot(self.env.t)
                 t_end      = self.env._get_timeslot(sfc.request.end_time)
 
-                self._graph_cache.clear()
                 Z_t, dc_mapping = self._get_z(t_start, t_end, sfc.request.bw)
                 cached  = self._graph_cache.get((t_start, round(sfc.request.bw, 2)))
                 X, A    = (cached[2], cached[3]) if cached else (None, None)
@@ -364,6 +373,8 @@ class HRL_VGAE_Strategy(Strategy):
                     R_LL         = R_LL_override if R_LL_override is not None else \
                                    self._compute_ll_reward(True, rewards, sfc, self.env.t, Z_t, vnf_f)
                     self._graph_cache.clear()
+                    self._nx_graph_cache.clear()
+                    self._path_cache.clear()
                 else:
                     ep_rejected += 1
                     self._restore(self.env.network, snap)
@@ -387,9 +398,9 @@ class HRL_VGAE_Strategy(Strategy):
                 if X is not None:
                     self.buf_Graph.push((X, A))
 
-                if len(self.buf_LL) >= BATCH_SIZE:
+                if total_steps % 4 == 0 and len(self.buf_LL) >= BATCH_SIZE:
                     self.ll_agent.train(self.buf_LL, BATCH_SIZE)
-                if len(self.buf_HL) >= BATCH_SIZE:
+                if total_steps % 8 == 0 and len(self.buf_HL) >= BATCH_SIZE:
                     self.hl_agent.train(self.buf_HL, BATCH_SIZE)
                 if total_steps % TARGET_SYNC == 0:
                     self.ll_agent.update_target_network()
