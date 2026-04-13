@@ -6,7 +6,6 @@ from env.request import SFC
 import config
 
 class ShortestPathFirst(Strategy):
-
     def __init__(self, env):
         super().__init__(env)
         self.name = "ShortestPathFirst"

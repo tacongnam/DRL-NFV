@@ -14,7 +14,7 @@ from env.request import Request, ListOfRequests
 from env.network import Network
 from env.env import Env
 from models.model import VGAENetwork, LowLevelAgent, ReplayBuffer
-from strategy.fifs import GreedyFIFS
+from strategy.best_fit import BestFit
 
 LATENT_DIM = 8
 MAX_DCS    = 60
@@ -162,8 +162,8 @@ def pretrain_ll(train_dir: str, vgae: VGAENetwork,
         env = load_env(fp)
         env.reset()
 
-        fifs = GreedyFIFS(env)
-        env.set_strategy(fifs)
+        teacher = BestFit(env)
+        env.set_strategy(teacher)
 
         from env.request import SFC as SFCcls
         for req in sorted(env.requests, key=lambda r: r.arrival_time):
@@ -176,7 +176,7 @@ def pretrain_ll(train_dir: str, vgae: VGAENetwork,
                 continue
             Z = vgae.encode(X, A)
 
-            plan = fifs.get_placement(sfc, req.arrival_time)
+            plan = teacher.get_placement(sfc, req.arrival_time)
             if plan is None:
                 continue
 
@@ -198,18 +198,12 @@ def pretrain_ll(train_dir: str, vgae: VGAENetwork,
                     continue
 
                 buf_LL.push((Z, np.array(vnf_feat, np.float32), act_idx,
-                             2.0, Z, valid, False))
-
-                neg_candidates = [i for i in valid if i != act_idx]
-                for neg_idx in neg_candidates[:3]:
-                    buf_LL.push((Z, np.array(vnf_feat, np.float32), neg_idx,
-                                 -1.0, Z, valid, False))
+                             1.0, Z, valid, False))
 
             env.step(plan)
 
         if len(buf_LL) >= batch:
-            for _ in range(min(20, len(buf_LL) // batch)):
-                ll_agent.train(buf_LL, batch)
+            ll_agent.train(buf_LL, batch)
 
         if ep % 50 == 0 or ep == episodes:
             print(f"  ep {ep}/{episodes}  buffer={len(buf_LL)}  "

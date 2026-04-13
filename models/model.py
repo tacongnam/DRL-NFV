@@ -230,7 +230,8 @@ class LowLevelAgent:
 
         with tf.GradientTape() as tape_w:
             w_pred  = tf.sigmoid(self.weight_net(S, training=True))
-            loss_w  = -tf.reduce_mean(w_pred * tf.expand_dims(R, 1))
+            R_pos = tf.maximum(tf.expand_dims(R, 1), 0.0)
+            loss_w = tf.reduce_mean(tf.square(w_pred - R_pos / (tf.reduce_max(R_pos) + 1e-6)))
         grads_w = tape_w.gradient(loss_w, self.weight_net.trainable_variables)
         self.opt_w.apply_gradients(zip(grads_w, self.weight_net.trainable_variables))
 

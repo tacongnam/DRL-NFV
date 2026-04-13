@@ -7,7 +7,6 @@ import config
 
 
 class DeadlineAwareGreedy(Strategy):
-
     def __init__(self, env):
         super().__init__(env)
         self.name = "DeadlineAwareGreedy"
