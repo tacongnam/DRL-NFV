@@ -58,10 +58,6 @@ def load_env(path: str) -> Env:
 
 def build_dc_graph(env: Env, t_start: int, t_end: int, bw: float,
                    path_cache: dict = None):
-    """
-    Build DC feature matrix X, adjacency A, and dc list.
-    path_cache: optional dict keyed by (t_start, t_end, round(bw,1)) → all_paths
-    """
     import networkx as nx
 
     dcs = [nid for nid, n in env.network.nodes.items() if n.type == config.NODE_DC]
@@ -69,7 +65,6 @@ def build_dc_graph(env: Env, t_start: int, t_end: int, bw: float,
     if n == 0:
         return np.zeros((0, 3), np.float32), np.zeros((0, 0), np.float32), []
 
-    # --- pruned graph (bandwidth-feasible edges) ---
     G = nx.Graph()
     for nid in env.network.nodes:
         G.add_node(nid)
@@ -77,7 +72,6 @@ def build_dc_graph(env: Env, t_start: int, t_end: int, bw: float,
         if lnk.get_available_bandwidth(t_start, t_end) >= bw:
             G.add_edge(lnk.u.name, lnk.v.name, delay=lnk.delay)
 
-    # --- path lengths (cached) ---
     cache_key = (t_start, t_end, round(bw, 1))
     if path_cache is not None and cache_key in path_cache:
         all_len = path_cache[cache_key]
@@ -89,7 +83,6 @@ def build_dc_graph(env: Env, t_start: int, t_end: int, bw: float,
         if path_cache is not None:
             path_cache[cache_key] = all_len
 
-    # --- normalisation ---
     max_r = {k: 1.0 for k in config.RESOURCE_TYPE}
     for nd in env.network.nodes.values():
         if nd.type == config.NODE_DC and nd.cap:
@@ -111,10 +104,6 @@ def build_dc_graph(env: Env, t_start: int, t_end: int, bw: float,
     return X, A, dcs
 
 
-# ---------------------------------------------------------------------------
-# PHASE 1 — VGAE pre-training
-# ---------------------------------------------------------------------------
-
 def pretrain_vgae(train_dir: str, epochs: int = 200, batch: int = 16):
     files = sorted([os.path.join(train_dir, f)
                     for f in os.listdir(train_dir) if f.endswith(".json")])
@@ -128,7 +117,7 @@ def pretrain_vgae(train_dir: str, epochs: int = 200, batch: int = 16):
 
     vgae       = VGAENetwork(latent_dim=LATENT_DIM)
     buf        = ReplayBuffer(capacity=2000)
-    path_cache = {}   # shared across all files in phase 1
+    path_cache = {}
 
     print("Collecting graph snapshots ...")
     for fp in files:
@@ -149,7 +138,7 @@ def pretrain_vgae(train_dir: str, epochs: int = 200, batch: int = 16):
     t0 = time.time()
     for ep in range(1, epochs + 1):
         vgae.train(buf, epochs=1, batch=batch)
-        if ep % 20 == 0 or ep == epochs:
+        if ep % 50 == 0 or ep == epochs:
             print(f"  epoch {ep}/{epochs}  ({time.time()-t0:.1f}s)")
 
     os.makedirs(VGAE_DIR, exist_ok=True)
@@ -158,10 +147,6 @@ def pretrain_vgae(train_dir: str, epochs: int = 200, batch: int = 16):
     print(f"[Pretrain-VGAE] Saved → {out}")
     return vgae
 
-
-# ---------------------------------------------------------------------------
-# PHASE 2 — LL-DQN pre-training (imitation from BestFit)
-# ---------------------------------------------------------------------------
 
 def pretrain_ll(train_dir: str, vgae: VGAENetwork,
                 episodes: int = 200, batch: int = 32):
@@ -177,32 +162,30 @@ def pretrain_ll(train_dir: str, vgae: VGAENetwork,
 
     ll_agent = LowLevelAgent(latent_dim=LATENT_DIM, max_dcs=MAX_DCS,
                               input_dim=LATENT_DIM + 3)
-    buf_LL = ReplayBuffer(capacity=20_000)
 
-    # Import teacher once
+    dummy = np.zeros((1, LATENT_DIM + 3), dtype=np.float32)
+    ll_agent.policy_net(dummy)
+    ll_agent.target_net(dummy)
+
+    buf_LL     = ReplayBuffer(capacity=20_000)
+    path_cache = {}
+    prev_fp    = None
+
     from strategy.best_fit import BestFit
     from env.request import SFC as SFCcls
 
-    t0           = time.time()
-    prev_fp      = None
-    path_cache   = {}   # per-file path cache, cleared on file change
+    t0 = time.time()
 
     for ep in range(1, episodes + 1):
         fp  = files[(ep - 1) % len(files)]
         env = load_env(fp)
         env.reset()
 
-        # Clear path cache when switching to a different file
         if fp != prev_fp:
             path_cache.clear()
             prev_fp = fp
 
-        teacher = BestFit(env)
-
-        # ----------------------------------------------------------------
-        # Collect all transitions for this episode first (data pass),
-        # then train — avoids interleaving Python/TF calls per request.
-        # ----------------------------------------------------------------
+        teacher     = BestFit(env)
         transitions = []
 
         for req in sorted(env.requests, key=lambda r: r.arrival_time):
@@ -210,13 +193,11 @@ def pretrain_ll(train_dir: str, vgae: VGAENetwork,
             t_s = env._get_timeslot(req.arrival_time)
             t_e = env._get_timeslot(req.end_time)
 
-            # Build DC graph with shared path cache (no redundant Dijkstra)
             X, A, dcs = build_dc_graph(env, t_s, t_e, req.bw, path_cache)
             if len(dcs) == 0:
                 continue
 
-            Z = vgae.encode(X, A)
-
+            Z    = vgae.encode(X, A)
             plan = teacher.get_placement(sfc, req.arrival_time)
             if plan is None:
                 continue
@@ -244,29 +225,29 @@ def pretrain_ll(train_dir: str, vgae: VGAENetwork,
 
                 transitions.append((Z, vnf_feat, act_idx, valid))
 
-            # Apply plan to update resource state (so next requests see
-            # correct remaining capacity — same as the real env does)
             env.step(plan)
 
-        # Push all transitions into replay buffer
         for Z, vnf_feat, act_idx, valid in transitions:
             buf_LL.push((Z, vnf_feat, act_idx, 1.0, Z, valid, False))
 
-        # Train: one sweep over buffer, capped to avoid over-fitting per ep
         if len(buf_LL) >= batch:
             n_batches = min(len(buf_LL) // batch, 15)
             for _ in range(n_batches):
                 ll_agent.train(buf_LL, batch)
 
-        if ep % 20 == 0 or ep == episodes:
+        if ep % 5 == 0 or ep == episodes or ep == 1:
             elapsed = time.time() - t0
-            eta     = (episodes - ep) * (elapsed / ep)
+            eta     = (episodes - ep) * (elapsed / ep) if ep > 0 else 0
             eta_str = (f"{eta/3600:.1f}h" if eta > 3600
                        else f"{eta/60:.1f}m" if eta > 60 else f"{eta:.0f}s")
-            print(f"  ep {ep:>3}/{episodes}  buffer={len(buf_LL)}  "
-                  f"elapsed={elapsed:.1f}s  ETA={eta_str}")
+            print(f"  ep {ep:>3}/{episodes}  transitions={len(transitions)}"
+                  f"  buffer={len(buf_LL)}  elapsed={elapsed:.1f}s  ETA={eta_str}")
 
         env.reset()
+
+    dummy = np.zeros((1, LATENT_DIM + 3), dtype=np.float32)
+    ll_agent.policy_net(dummy)
+    ll_agent.target_net(dummy)
 
     os.makedirs(LL_DIR, exist_ok=True)
     out = os.path.join(LL_DIR, "ll_dqn_weights.weights.h5")
