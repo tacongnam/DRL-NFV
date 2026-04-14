@@ -258,7 +258,7 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
         for req in sorted_reqs:
             t_s = env._get_timeslot(req.arrival_time)
             t_e = env._get_timeslot(req.end_time)
-            key = (t_s, round(req.bw, 1))
+            key = (t_s, t_e, round(req.bw, 1))
             if key not in z_cache:
                 X, A, dcs = build_dc_graph(env, t_s, t_e, req.bw, path_cache)
                 Z = vgae.encode(X, A) if len(dcs) >= 2 else np.zeros((0, LATENT_DIM), np.float32)
@@ -267,7 +267,7 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
         for req in sorted_reqs:
             t_s = env._get_timeslot(req.arrival_time)
             t_e = env._get_timeslot(req.end_time)
-            key = (t_s, round(req.bw, 1))
+            key = (t_s, t_e, round(req.bw, 1))
             Z, dcs = z_cache[key]
             total_teacher_seen += 1
 
@@ -276,8 +276,26 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
 
             sfc = SFCcls(req)
             plan = teacher.get_placement(sfc, req.arrival_time)
+
             if plan is None:
+                for vnf in req.vnfs:
+                    vnf_feat = np.array([vnf.resource.get(rk, 0.0) for rk in config.RESOURCE_TYPE], dtype=np.float32)
+                    valid = [
+                        i for i, d in enumerate(dcs)
+                        if i < MAX_DCS and env._check_can_deploy_vnf(env.network.nodes[d], vnf, t_s, t_e)
+                    ]
+                    if not valid:
+                        continue
+                    best_idx = valid[0]
+                    buf_ll.push((Z, vnf_feat, best_idx, -1.0, Z, valid, False))
+                    transitions_count += 1
                 continue
+
+            max_res = {}
+            for node in env.network.nodes.values():
+                if node.type == config.NODE_DC and node.cap:
+                    for k in config.RESOURCE_TYPE:
+                        max_res[k] = max(max_res.get(k, 1.0), node.cap[k])
 
             for k, vnf in enumerate(req.vnfs):
                 node_plan = plan.get("nodes", {}).get(str(k))
@@ -298,7 +316,27 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
                 if not valid:
                     continue
 
-                buf_ll.push((Z, vnf_feat, act_idx, 1.0, Z, valid, False))
+                chosen_node = env.network.nodes[greedy_dc]
+                remaining = chosen_node.get_min_available_resource(t_s, t_e)
+                utilization = sum(
+                    vnf.resource.get(rk, 0.0) / max(max_res.get(rk, 1.0), 1e-6)
+                    for rk in config.RESOURCE_TYPE
+                ) / len(config.RESOURCE_TYPE)
+                waste = sum(
+                    (remaining.get(rk, 0.0) - vnf.resource.get(rk, 0.0)) / max(max_res.get(rk, 1.0), 1e-6)
+                    for rk in config.RESOURCE_TYPE
+                ) / len(config.RESOURCE_TYPE)
+                reward = float(np.clip(1.0 + 0.5 * utilization - 0.3 * waste, 0.1, 2.0))
+
+                next_valid = valid
+                if k + 1 < len(req.vnfs):
+                    next_vnf = req.vnfs[k + 1]
+                    next_valid = [
+                        i for i, d in enumerate(dcs)
+                        if i < MAX_DCS and env._check_can_deploy_vnf(env.network.nodes[d], next_vnf, t_s, t_e)
+                    ] or valid
+
+                buf_ll.push((Z, vnf_feat, act_idx, reward, Z, next_valid, k == len(req.vnfs) - 1))
                 transitions_count += 1
 
             success, _, _ = env.step(plan)

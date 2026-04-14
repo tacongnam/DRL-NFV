@@ -199,20 +199,14 @@ class HRL_VGAE_Strategy(Strategy):
         return X, A, dcs
 
     def _get_z(self, t_start: int, t_end: int,
-                bw_req: float) -> Tuple[np.ndarray, List[str]]:
-        key = (t_start, round(bw_req, 1))
+            bw_req: float) -> Tuple[np.ndarray, List[str]]:
+        key = (t_start, t_end, round(bw_req, 1))
         if key not in self._graph_cache:
             X, A, dcs = self._build_dc_graph(t_start, t_end, bw_req)
             Z = self.vgae_net.encode(X, A)
             self._graph_cache[key] = (Z, dcs, X, A)
         Z, dcs, X, A = self._graph_cache[key]
         return Z, dcs
-
-    def _clear_bw_caches(self):
-        """Xoá chỉ cache phụ thuộc bandwidth — gọi sau mỗi placement thành công."""
-        self._nx_graph_cache.clear()
-        self._path_cache.clear()
-        self._routing_cache.clear()
 
     def _clear_all_caches(self):
         """Xoá hoàn toàn — gọi đầu mỗi episode."""
@@ -381,42 +375,78 @@ class HRL_VGAE_Strategy(Strategy):
         acc_rate    = 0.0
         ep_accepted = 0
         ep_rejected = 0
-        greedy_prob = 1.0
 
         for episode in range(1, self.episodes + 1):
             ep_t0 = time.time()
             self.env.reset()
             self._clear_all_caches()
-            self._best_fit = None   # BestFit gắn với env.reset() — phải tạo lại
+            self._best_fit = None
 
-            sfcs = sorted([SFC(r) for r in self.env.requests],
-                          key=lambda s: s.request.arrival_time)
+            pending = sorted([SFC(r) for r in self.env.requests],
+                            key=lambda s: s.request.arrival_time)
+            queue: List[SFC] = []
             ep_accepted = ep_rejected = 0
+            step_in_ep  = 0
 
-            for sfc_pos, sfc in enumerate(sfcs):
+            t = pending[0].request.arrival_time if pending else 0.0
+
+            while pending or queue:
+                if not queue and pending:
+                    t = pending[0].request.arrival_time
+
+                while pending and pending[0].request.arrival_time <= t:
+                    queue.append(pending.pop(0))
+
+                active  = [s for s in queue if t <= s.request.end_time]
+                expired = len(queue) - len(active)
+                if expired > 0:
+                    ep_rejected += expired
+                queue = active
+
+                if not queue:
+                    if pending:
+                        t = pending[0].request.arrival_time
+                    continue
+
                 total_steps += 1
-                progress    = total_steps / max(1, total_steps_planned)
-                epsilon     = max(0.05, 0.9 - progress * 1.7)
-                greedy_prob = max(0.0, 1.0 - progress * 2.0)
+                step_in_ep  += 1
+                progress     = total_steps / max(1, total_steps_planned)
+                epsilon      = max(0.05, 0.9 - progress * 1.7)
 
-                self.env.t = sfc.request.arrival_time
-                t_start    = self.env._get_timeslot(self.env.t)
-                t_end      = self.env._get_timeslot(sfc.request.end_time)
+                bw_req  = max(s.request.bw for s in queue)
+                t_start = self.env._get_timeslot(t)
+                t_end_rough = t_start + max(
+                    int(max(s.request.delay_max for s in queue) / config.TIMESTEP), 10)
+                Z_t, _ = self._get_z(t_start, t_end_rough, bw_req)
 
-                Z_t, dc_mapping = self._get_z(t_start, t_end, sfc.request.bw)
-                cached = self._graph_cache.get((t_start, round(sfc.request.bw, 1)))
+                sfc_feats_before = self.hl_agent.extract_sfc_features(queue, Z_t, self.ll_agent)
+
+                if np.random.random() < epsilon:
+                    sfc_idx = np.random.randrange(len(queue))
+                else:
+                    sfc_idx = self.hl_agent.act(Z_t, queue, 0.0, self.ll_agent)
+
+                selected_sfc = queue.pop(sfc_idx)
+                self.env.t   = t
+                t_start = self.env._get_timeslot(t)
+                t_end   = self.env._get_timeslot(selected_sfc.request.end_time)
+                Z_t, dc_mapping = self._get_z(t_start, t_end, selected_sfc.request.bw)
+
+                cached = self._graph_cache.get((t_start, t_end, round(selected_sfc.request.bw, 1)))
                 X, A   = (cached[2], cached[3]) if cached else (None, None)
 
-                snap       = self._snapshot(self.env.network)
-                use_greedy = np.random.random() < greedy_prob
+                snap = self._snapshot(self.env.network)
+
+                greedy_prob = max(0.0, 1.0 - progress * 2.0)
+                use_greedy  = np.random.random() < greedy_prob
 
                 if use_greedy:
-                    plan          = self._greedy_placement_with_traj(sfc, self.env.t, Z_t, dc_mapping)
+                    plan          = self._greedy_placement_with_traj(selected_sfc, t, Z_t, dc_mapping)
                     R_LL_override = 1.5
                 else:
-                    plan = self.get_placement(sfc, self.env.t, Z_t, dc_mapping, epsilon)
+                    plan = self.get_placement(selected_sfc, t, Z_t, dc_mapping, epsilon)
                     if plan is None:
-                        plan          = self._greedy_placement_with_traj(sfc, self.env.t, Z_t, dc_mapping)
+                        plan          = self._greedy_placement_with_traj(selected_sfc, t, Z_t, dc_mapping)
                         R_LL_override = 1.0
                     else:
                         R_LL_override = None
@@ -426,14 +456,17 @@ class HRL_VGAE_Strategy(Strategy):
                 if success:
                     ep_accepted += 1
                     raw_cost  = abs(rewards[1]) if len(rewards) > 1 else 0.0
-                    cost_norm = min(1.0, raw_cost / max(self._estimate_max_cost(sfc), 1e-6))
+                    cost_norm = min(1.0, raw_cost / max(self._estimate_max_cost(selected_sfc), 1e-6))
                     R_HL      = [BASE_AR_REWARD, -cost_norm]
-                    vnf_f     = ([sfc.request.vnfs[0].resource.get(k, 0.)
-                                  for k in config.RESOURCE_TYPE]
-                                 if sfc.request.vnfs else [0., 0., 0.])
+                    vnf_f     = ([selected_sfc.request.vnfs[0].resource.get(k, 0.)
+                                for k in config.RESOURCE_TYPE]
+                                if selected_sfc.request.vnfs else [0., 0., 0.])
                     R_LL      = (R_LL_override if R_LL_override is not None
-                                 else self._compute_ll_reward(rewards, sfc, self.env.t, Z_t, vnf_f))
+                                else self._compute_ll_reward(rewards, selected_sfc, t, Z_t, vnf_f))
                     self._clear_bw_caches()
+                    t_next = (min((s.request.arrival_time for s in pending), default=t)
+                            if pending else t)
+                    t = max(t, t_next) if not queue else t
                 else:
                     ep_rejected += 1
                     self._restore(self.env.network, snap)
@@ -441,18 +474,19 @@ class HRL_VGAE_Strategy(Strategy):
                     R_LL = -PENALTY_DROP
 
                 Z_mean    = Z_t.mean(axis=0, keepdims=True)
-                sfc_feats = self.hl_agent.extract_sfc_features([sfc], Z_t, self.ll_agent)
-                next_sfcs      = sfcs[sfc_pos + 1: sfc_pos + 4]
-                sfc_feats_next = (self.hl_agent.extract_sfc_features(next_sfcs, Z_t, self.ll_agent)
-                                  if next_sfcs else sfc_feats)
-                is_done = (sfc_pos == len(sfcs) - 1)
+                is_done   = not pending and not queue
 
-                self.buf_HL.push((Z_mean, sfc_feats, 0, R_HL,
-                                  Z_mean, sfc_feats_next, is_done))
+                next_queue    = queue[:]
+                sfc_feats_next = (self.hl_agent.extract_sfc_features(next_queue, Z_t, self.ll_agent)
+                                if next_queue else sfc_feats_before)
+
+                self.buf_HL.push((Z_mean, sfc_feats_before, sfc_idx, R_HL,
+                                Z_mean, sfc_feats_next, is_done))
+
                 for i, step in enumerate(self._ll_traj):
                     nxt = self._ll_traj[i + 1]["valid_mask"] if i + 1 < len(self._ll_traj) else []
                     self.buf_LL.push((step["Z_t"], list(step["vnf_feat"]),
-                                      step["action_idx"], R_LL, Z_t, nxt, is_done))
+                                    step["action_idx"], R_LL, Z_t, nxt, is_done))
                 if X is not None:
                     self.buf_Graph.push((X, A))
 
@@ -466,20 +500,23 @@ class HRL_VGAE_Strategy(Strategy):
                 if total_steps % VGAE_TRAIN_FREQ == 0 and len(self.buf_Graph) >= 4:
                     self.vgae_net.train(self.buf_Graph, epochs=1)
 
+                if success and not queue and pending:
+                    t = pending[0].request.arrival_time
+
             total_ep      = ep_accepted + ep_rejected
             acc_rate      = ep_accepted / max(1, total_ep)
             best_acc_rate = max(best_acc_rate, acc_rate)
             ep_time       = time.time() - ep_t0
             eta_s         = (self.episodes - episode) * ep_time
             eta_str       = (f"{eta_s/3600:.1f}h" if eta_s > 3600
-                             else f"{eta_s/60:.1f}m" if eta_s > 60
-                             else f"{eta_s:.0f}s")
+                            else f"{eta_s/60:.1f}m" if eta_s > 60
+                            else f"{eta_s:.0f}s")
             bar = "█" * int(25 * episode / self.episodes) + \
-                  "░" * (25 - int(25 * episode / self.episodes))
+                "░" * (25 - int(25 * episode / self.episodes))
             print(f"\r[{bar}] {episode}/{self.episodes}  "
-                  f"acc={acc_rate:.1%}  best={best_acc_rate:.1%}  "
-                  f"ep={ep_time:.1f}s  ETA={eta_str}",
-                  end="", flush=True)
+                f"acc={acc_rate:.1%}  best={best_acc_rate:.1%}  "
+                f"ep={ep_time:.1f}s  ETA={eta_str}",
+                end="", flush=True)
             if episode % 25 == 0:
                 print()
 
@@ -498,11 +535,12 @@ class HRL_VGAE_Strategy(Strategy):
         pending = sorted([SFC(r) for r in self.env.requests], key=lambda s: s.request.arrival_time)
         queue: List[SFC] = []
         accepted = rejected = 0
-        processed = 0
-        total_requests = len(pending)
-        progress_every = max(1, total_requests // 20) if total_requests > 0 else 1
+        total_node_cost = 0.0
         t = pending[0].request.arrival_time if pending else 0.0
         t0 = time.time()
+        total_requests = len(pending)
+        processed = 0
+        progress_every = max(1, total_requests // 20)
 
         while pending or queue:
             if not queue and pending:
@@ -511,11 +549,10 @@ class HRL_VGAE_Strategy(Strategy):
             while pending and pending[0].request.arrival_time <= t:
                 queue.append(pending.pop(0))
 
-            active = [s for s in queue if t <= s.request.end_time]
+            active      = [s for s in queue if t <= s.request.end_time]
             expired_now = len(queue) - len(active)
             if expired_now > 0:
                 rejected += expired_now
-                self.env.stats["rejected_requests"] += expired_now
                 processed += expired_now
             queue = active
 
@@ -524,14 +561,16 @@ class HRL_VGAE_Strategy(Strategy):
                     t = pending[0].request.arrival_time
                 continue
 
-            bw_req = max(s.request.bw for s in queue)
-            t_start = self.env._get_timeslot(t)
-            t_end_rough = t_start + max(int(max(s.request.delay_max for s in queue) / config.TIMESTEP), 10)
+            bw_req      = max(s.request.bw for s in queue)
+            t_start     = self.env._get_timeslot(t)
+            t_end_rough = t_start + max(
+                int(max(s.request.delay_max for s in queue) / config.TIMESTEP), 10)
             Z_t, _ = self._get_z(t_start, t_end_rough, bw_req)
 
-            sfc_idx = self.hl_agent.act(Z_t, queue, 0.0, self.ll_agent)
+            sfc_idx      = self.hl_agent.act(Z_t, queue, 0.0, self.ll_agent)
             selected_sfc = queue.pop(sfc_idx)
-            t_end = self.env._get_timeslot(selected_sfc.request.end_time)
+            t_start = self.env._get_timeslot(t)
+            t_end   = self.env._get_timeslot(selected_sfc.request.end_time)
             Z_t, dc_mapping = self._get_z(t_start, t_end, selected_sfc.request.bw)
 
             snap = self._snapshot(self.env.network)
@@ -545,17 +584,27 @@ class HRL_VGAE_Strategy(Strategy):
 
             if success:
                 accepted += 1
-                self.env.stats["accepted_requests"] += 1
-                self.env.stats["total_cost"] += abs(rewards[1] if len(rewards) > 1 else 0.0)
-                self.env.stats["total_delay"] += selected_sfc.request.end_time - selected_sfc.request.arrival_time
+                node_cost = sum(
+                    self.env.network.nodes[v["dc"]].get_cost(
+                        self.env.vnfs[k]
+                    )
+                    for k, v in plan.get("nodes", {}).items()
+                    if v["dc"] in self.env.network.nodes and k in self.env.vnfs
+                )
+                if node_cost == float("inf") or node_cost < 0:
+                    node_cost = abs(rewards[1]) if len(rewards) > 1 else 0.0
+                total_node_cost += node_cost
+                self.env.stats["total_delay"] += (
+                    selected_sfc.request.end_time - selected_sfc.request.arrival_time)
                 self._clear_bw_caches()
+                if not queue and pending:
+                    t = pending[0].request.arrival_time
             else:
                 rejected += 1
-                self.env.stats["rejected_requests"] += 1
                 self._restore(self.env.network, snap)
 
             if processed % progress_every == 0 or processed == total_requests:
-                elapsed = time.time() - t0
+                elapsed  = time.time() - t0
                 acc_rate = accepted / max(1, accepted + rejected)
                 print(
                     f"[Eval] {processed}/{total_requests}  acc={acc_rate:.1%}"
@@ -564,6 +613,11 @@ class HRL_VGAE_Strategy(Strategy):
                 )
 
         total = accepted + rejected
-        self.env.stats["acceptance_ratio"] = accepted / total if total > 0 else 0.
-        self.env.stats["algorithm_name"]   = self.name
+        self.env.stats["accepted_requests"]  = accepted
+        self.env.stats["rejected_requests"]  = rejected
+        self.env.stats["total_requests"]     = total
+        self.env.stats["total_cost"]         = total_node_cost
+        self.env.stats["acceptance_ratio"]   = accepted / total if total > 0 else 0.
+        self.env.stats["average_cost"]       = total_node_cost / accepted if accepted > 0 else 0.
+        self.env.stats["algorithm_name"]     = self.name
         return self.env.stats
