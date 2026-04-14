@@ -214,62 +214,77 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
     
     import tensorflow as tf
     tf.keras.backend.clear_session()
-    
+
     ll_agent = LowLevelAgent(latent_dim=LATENT_DIM, max_dcs=MAX_DCS, input_dim=LATENT_DIM + 3)
     dummy = np.zeros((1, LATENT_DIM + 3), dtype=np.float32)
     ll_agent.policy_net(dummy)
     ll_agent.target_net(dummy)
     buf_ll = ReplayBuffer(capacity=20_000)
     file_envs = []
+
     for fp in train_files:
         env = load_env(fp, request_pct=request_pct)
         env.reset()
         path_cache = {}
         sorted_reqs = sorted(env.requests, key=lambda r: r.arrival_time)
+
         for req in sorted_reqs:
             t_s = env._get_timeslot(req.arrival_time)
             t_e = env._get_timeslot(req.end_time)
             build_dc_graph(env, t_s, t_e, req.bw, path_cache)
         file_envs.append((os.path.basename(fp), env, path_cache, sorted_reqs))
+
     from strategy.best_fit import BestFit
     from env.request import SFC as SFCcls
+
     for ep in range(1, episodes + 1):
         file_name, env, path_cache, sorted_reqs = file_envs[(ep - 1) % len(file_envs)]
         env.reset()
         teacher = BestFit(env)
         z_cache = {}
+
         for req in sorted_reqs:
             t_s = env._get_timeslot(req.arrival_time)
             t_e = env._get_timeslot(req.end_time)
             key = (t_s, t_e, round(req.bw, 1))
+
             if key not in z_cache:
                 X, A, dcs = build_dc_graph(env, t_s, t_e, req.bw, path_cache)
                 Z = vgae.encode(X, A) if len(dcs) >= 2 else np.zeros((0, LATENT_DIM), np.float32)
                 z_cache[key] = (Z, dcs)
+
         for req in sorted_reqs:
             t_s = env._get_timeslot(req.arrival_time)
             t_e = env._get_timeslot(req.end_time)
             key = (t_s, t_e, round(req.bw, 1))
             Z, dcs = z_cache[key]
+
             if len(dcs) == 0:
                 continue
+
             sfc = SFCcls(req)
             plan = teacher.get_placement(sfc, req.arrival_time)
+
             if plan is None:
                 for vnf in req.vnfs:
                     vnf_feat = np.array([vnf.resource.get(rk, 0.0) for rk in config.RESOURCE_TYPE], dtype=np.float32)
                     valid = [i for i, d in enumerate(dcs) if i < MAX_DCS and env._check_can_deploy_vnf(env.network.nodes[d], vnf, t_s, t_e)]
+
                     if not valid:
                         continue
+
                     best_idx = valid[0]
                     buf_ll.push((Z, vnf_feat, best_idx, -1.0, Z, valid, False))
                 continue
+
             max_cost = 0.0
+
             for v in req.vnfs:
                 costs = [n.get_cost(v) for n in env.network.nodes.values() if n.type == config.NODE_DC and n.cost is not None]
                 finite = [c for c in costs if c < float('inf')]
                 if finite:
                     max_cost += max(finite)
+
             max_cost = max(1.0, max_cost)
             for k, vnf in enumerate(req.vnfs):
                 node_plan = plan.get("nodes", {}).get(str(k))
@@ -285,25 +300,33 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
                 valid = [i for i, d in enumerate(dcs) if i < MAX_DCS and env._check_can_deploy_vnf(env.network.nodes[d], vnf, t_s, t_e)]
                 if not valid:
                     continue
+
                 chosen_node = env.network.nodes[greedy_dc]
                 alpha, beta = ll_agent.get_reward_weights(Z, vnf_feat)
                 time_rem = max(0.0, req.end_time - req.arrival_time)
                 tMax = max(req.delay_max, 1e-6)
                 raw_cost = chosen_node.get_cost(vnf) if chosen_node.cost is not None else 0.0
+
                 if raw_cost == float('inf'):
                     raw_cost = max_cost
                 cost_norm = min(1.0, raw_cost / max_cost)
                 reward = float(1.0 + alpha * (time_rem / tMax) - beta * cost_norm)
                 next_valid = valid
+                
                 if k + 1 < len(req.vnfs):
                     next_vnf = req.vnfs[k + 1]
                     next_valid = [i for i, d in enumerate(dcs) if i < MAX_DCS and env._check_can_deploy_vnf(env.network.nodes[d], next_vnf, t_s, t_e)] or valid
                 buf_ll.push((Z, vnf_feat, act_idx, reward, Z, next_valid, k == len(req.vnfs) - 1))
             env.step(plan)
+
         if len(buf_ll) >= batch:
             n_batches = min(len(buf_ll) // batch, 10)
             for _ in range(n_batches):
                 ll_agent.train(buf_ll, batch)
+
+        if ep == 1 or ep % 10 == 0 or ep == episodes:
+            print(f"  [LL] episode {ep}/{episodes}  buf={len(buf_ll)}", flush=True)
+
     ll_agent.policy_net(dummy)
     ll_agent.target_net(dummy)
     os.makedirs(LL_DIR, exist_ok=True)
