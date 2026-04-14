@@ -19,6 +19,8 @@ LATENT_DIM = 8
 MAX_DCS    = 60
 VGAE_DIR   = "models/vgae_pretrained"
 LL_DIR     = "models/ll_pretrained"
+VGAE_WEIGHTS_FILE = "vgae_weights.npy"
+LL_WEIGHTS_FILE   = "ll_dqn_weights.npy"
 
 
 def load_env(path: str) -> Env:
@@ -58,6 +60,10 @@ def load_env(path: str) -> Env:
 
 def build_dc_graph(env: Env, t_start: int, t_end: int, bw: float,
                    path_cache: dict = None):
+    """
+    Xây dựng (X, A, dcs) cho VGAE.
+    path_cache: dict dùng chung giữa các lần gọi để tránh tính lại shortest-path.
+    """
     import networkx as nx
 
     dcs = [nid for nid, n in env.network.nodes.items() if n.type == config.NODE_DC]
@@ -65,17 +71,16 @@ def build_dc_graph(env: Env, t_start: int, t_end: int, bw: float,
     if n == 0:
         return np.zeros((0, 3), np.float32), np.zeros((0, 0), np.float32), []
 
-    G = nx.Graph()
-    for nid in env.network.nodes:
-        G.add_node(nid)
-    for lnk in env.network.links:
-        if lnk.get_available_bandwidth(t_start, t_end) >= bw:
-            G.add_edge(lnk.u.name, lnk.v.name, delay=lnk.delay)
-
     cache_key = (t_start, t_end, round(bw, 1))
     if path_cache is not None and cache_key in path_cache:
         all_len = path_cache[cache_key]
     else:
+        G = nx.Graph()
+        for nid in env.network.nodes:
+            G.add_node(nid)
+        for lnk in env.network.links:
+            if lnk.get_available_bandwidth(t_start, t_end) >= bw:
+                G.add_edge(lnk.u.name, lnk.v.name, delay=lnk.delay)
         try:
             all_len = dict(nx.shortest_path_length(G, weight="delay"))
         except Exception:
@@ -102,7 +107,6 @@ def build_dc_graph(env: Env, t_start: int, t_end: int, bw: float,
                 if d is not None and d > 0:
                     A[i, j] = 1.0 / (d + 1.0)
     return X, A, dcs
-
 
 def pretrain_vgae(train_dir: str, epochs: int = 200, batch: int = 16):
     files = sorted([os.path.join(train_dir, f)
@@ -142,11 +146,10 @@ def pretrain_vgae(train_dir: str, epochs: int = 200, batch: int = 16):
             print(f"  epoch {ep}/{epochs}  ({time.time()-t0:.1f}s)")
 
     os.makedirs(VGAE_DIR, exist_ok=True)
-    out = os.path.join(VGAE_DIR, "vgae_weights.npy")
+    out = os.path.join(VGAE_DIR, VGAE_WEIGHTS_FILE)
     vgae.save_weights(out)
     print(f"[Pretrain-VGAE] Saved → {out}")
     return vgae
-
 
 def pretrain_ll(train_dir: str, vgae: VGAENetwork,
                 episodes: int = 200, batch: int = 32):
@@ -167,9 +170,21 @@ def pretrain_ll(train_dir: str, vgae: VGAENetwork,
     ll_agent.policy_net(dummy)
     ll_agent.target_net(dummy)
 
-    buf_LL     = ReplayBuffer(capacity=20_000)
-    path_cache = {}
-    prev_fp    = None
+    buf_LL = ReplayBuffer(capacity=20_000)
+
+    print("Pre-building graph caches ...")
+    file_envs   = []
+    for fp in files:
+        env        = load_env(fp)
+        env.reset()
+        path_cache = {}
+        sorted_reqs = sorted(env.requests, key=lambda r: r.arrival_time)
+        for req in sorted_reqs:
+            t_s = env._get_timeslot(req.arrival_time)
+            t_e = env._get_timeslot(req.end_time)
+            build_dc_graph(env, t_s, t_e, req.bw, path_cache)
+        file_envs.append((env, path_cache, sorted_reqs, fp))
+    print(f"  Done. {len(file_envs)} file(s) cached.")
 
     from strategy.best_fit import BestFit
     from env.request import SFC as SFCcls
@@ -177,27 +192,32 @@ def pretrain_ll(train_dir: str, vgae: VGAENetwork,
     t0 = time.time()
 
     for ep in range(1, episodes + 1):
-        fp  = files[(ep - 1) % len(files)]
-        env = load_env(fp)
+        env, path_cache, sorted_reqs, fp = file_envs[(ep - 1) % len(file_envs)]
         env.reset()
 
-        if fp != prev_fp:
-            path_cache.clear()
-            prev_fp = fp
+        teacher    = BestFit(env)
+        transitions_count = 0
 
-        teacher     = BestFit(env)
-        transitions = []
-
-        for req in sorted(env.requests, key=lambda r: r.arrival_time):
-            sfc = SFCcls(req)
+        z_cache: dict = {}
+        for req in sorted_reqs:
             t_s = env._get_timeslot(req.arrival_time)
             t_e = env._get_timeslot(req.end_time)
+            key = (t_s, round(req.bw, 1))
+            if key not in z_cache:
+                X, A, dcs = build_dc_graph(env, t_s, t_e, req.bw, path_cache)
+                Z = vgae.encode(X, A) if len(dcs) >= 2 else np.zeros((0, LATENT_DIM), np.float32)
+                z_cache[key] = (Z, dcs)
 
-            X, A, dcs = build_dc_graph(env, t_s, t_e, req.bw, path_cache)
+        for req in sorted_reqs:
+            t_s = env._get_timeslot(req.arrival_time)
+            t_e = env._get_timeslot(req.end_time)
+            key = (t_s, round(req.bw, 1))
+            Z, dcs = z_cache[key]
+
             if len(dcs) == 0:
                 continue
 
-            Z    = vgae.encode(X, A)
+            sfc  = SFCcls(req)
             plan = teacher.get_placement(sfc, req.arrival_time)
             if plan is None:
                 continue
@@ -223,34 +243,30 @@ def pretrain_ll(train_dir: str, vgae: VGAENetwork,
                 if not valid:
                     continue
 
-                transitions.append((Z, vnf_feat, act_idx, valid))
+                buf_LL.push((Z, vnf_feat, act_idx, 1.0, Z, valid, False))
+                transitions_count += 1
 
             env.step(plan)
 
-        for Z, vnf_feat, act_idx, valid in transitions:
-            buf_LL.push((Z, vnf_feat, act_idx, 1.0, Z, valid, False))
-
         if len(buf_LL) >= batch:
-            n_batches = min(len(buf_LL) // batch, 15)
+            n_batches = min(len(buf_LL) // batch, 10)
             for _ in range(n_batches):
                 ll_agent.train(buf_LL, batch)
 
-        if ep % 5 == 0 or ep == episodes or ep == 1:
+        if ep % 10 == 0 or ep == episodes or ep == 1:
             elapsed = time.time() - t0
             eta     = (episodes - ep) * (elapsed / ep) if ep > 0 else 0
             eta_str = (f"{eta/3600:.1f}h" if eta > 3600
                        else f"{eta/60:.1f}m" if eta > 60 else f"{eta:.0f}s")
-            print(f"  ep {ep:>3}/{episodes}  transitions={len(transitions)}"
-                  f"  buffer={len(buf_LL)}  elapsed={elapsed:.1f}s  ETA={eta_str}")
-
-        env.reset()
+            print(f"  ep {ep:>3}/{episodes}  trans={transitions_count}"
+                  f"  buf={len(buf_LL)}  elapsed={elapsed:.1f}s  ETA={eta_str}")
 
     dummy = np.zeros((1, LATENT_DIM + 3), dtype=np.float32)
     ll_agent.policy_net(dummy)
     ll_agent.target_net(dummy)
 
     os.makedirs(LL_DIR, exist_ok=True)
-    out = os.path.join(LL_DIR, "ll_dqn_weights.npy")
+    out = os.path.join(LL_DIR, LL_WEIGHTS_FILE)
     np.save(out, np.array(ll_agent.policy_net.get_weights(), dtype=object), allow_pickle=True)
     print(f"[Pretrain-LL] Saved → {out}")
     return ll_agent

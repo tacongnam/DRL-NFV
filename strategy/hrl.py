@@ -19,6 +19,10 @@ VGAE_TRAIN_FREQ = 100
 LATENT_DIM      = 8
 MAX_DCS         = 60
 
+_LL_WEIGHTS_FILE   = "ll_dqn_weights.npy"
+_HL_WEIGHTS_FILE   = "hl_pmdrl_weights.npy"
+_VGAE_WEIGHTS_FILE = "vgae_weights.npy"
+
 
 class HRL_VGAE_Strategy(Strategy):
 
@@ -73,57 +77,78 @@ class HRL_VGAE_Strategy(Strategy):
     def save_model(self, directory: str):
         os.makedirs(directory, exist_ok=True)
         try:
-            np.save(os.path.join(directory, "ll_dqn_weights.npy"),
-                    np.array(self.ll_agent.policy_net.get_weights(), dtype=object), allow_pickle=True)
-            np.save(os.path.join(directory, "hl_pmdrl_weights.npy"),
-                    np.array(self.hl_agent.policy_net.get_weights(), dtype=object), allow_pickle=True)
-            self.vgae_net.save_weights(os.path.join(directory, "vgae_weights.npy"))
+            np.save(os.path.join(directory, _LL_WEIGHTS_FILE),
+                    np.array(self.ll_agent.policy_net.get_weights(), dtype=object),
+                    allow_pickle=True)
+            np.save(os.path.join(directory, _HL_WEIGHTS_FILE),
+                    np.array(self.hl_agent.policy_net.get_weights(), dtype=object),
+                    allow_pickle=True)
+            self.vgae_net.save_weights(os.path.join(directory, _VGAE_WEIGHTS_FILE))
             print(f"[HRL] Models saved → {directory}")
         except Exception as e:
             print(f"[HRL] Save warning: {e}")
 
     def load_model(self, directory: str):
-        self._load_ll(os.path.join(directory, "ll_dqn_weights.npy"))
-        hl_path = os.path.join(directory, "hl_pmdrl_weights.npy")
-        if os.path.exists(hl_path):
-            try:
-                dummy_hl = np.zeros((1, LATENT_DIM + HighLevelAgent.FEAT_PER_SFC), dtype=np.float32)
-                self.hl_agent.policy_net(dummy_hl)
-                weights = np.load(hl_path, allow_pickle=True)
-                self.hl_agent.policy_net.set_weights(list(weights))
-                print(f"[HRL] HL model loaded from {hl_path}")
-            except Exception as e:
-                print(f"[HRL] HL load warning: {e}")
-        vgae_path = os.path.join(directory, "vgae_weights.npy")
+        self._load_ll(os.path.join(directory, _LL_WEIGHTS_FILE))
+        self._load_hl(os.path.join(directory, _HL_WEIGHTS_FILE))
+        vgae_path = os.path.join(directory, _VGAE_WEIGHTS_FILE)
         if os.path.exists(vgae_path):
             self.vgae_net.load_weights(vgae_path)
 
     def _load_ll(self, path: str):
+        """
+        Load LL weights từ file .npy.
+        Nếu được truyền vào đường dẫn thư mục → tự ghép tên file chuẩn.
+        Nếu được truyền đường dẫn .weights.h5 (cũ) → đổi sang .npy.
+        """
         if not path:
             return
-        if os.path.isdir(path):
-            path = os.path.join(path, "ll_dqn_weights.npy")
-        npy_path = path.replace(".weights.h5", ".npy") if path.endswith(".weights.h5") else path
-        if not npy_path.endswith(".npy"):
-            npy_path = npy_path + ".npy" if not os.path.exists(npy_path) else npy_path
 
-        if os.path.exists(npy_path):
-            try:
-                dummy = np.zeros((1, LATENT_DIM + 3), dtype=np.float32)
-                self.ll_agent.policy_net(dummy)
-                weights = np.load(npy_path, allow_pickle=True)
-                self.ll_agent.policy_net.set_weights(list(weights))
-                print(f"[HRL] LL model loaded from {npy_path}")
-            except Exception as e:
-                print(f"[HRL] LL load warning: {e}")
-        elif os.path.exists(path):
-            try:
-                dummy = np.zeros((1, LATENT_DIM + 3), dtype=np.float32)
-                self.ll_agent.policy_net(dummy)
-                self.ll_agent.policy_net.load_weights(path)
-                print(f"[HRL] LL model loaded from {path}")
-            except Exception as e:
-                print(f"[HRL] LL load warning: {e}")
+        path = self._resolve_npy_path(path, _LL_WEIGHTS_FILE)
+        if not os.path.exists(path):
+            print(f"[HRL] LL weights not found: {path}")
+            return
+        try:
+            dummy = np.zeros((1, LATENT_DIM + 3), dtype=np.float32)
+            self.ll_agent.policy_net(dummy)
+            weights = np.load(path, allow_pickle=True)
+            self.ll_agent.policy_net.set_weights(list(weights))
+            print(f"[HRL] LL loaded ← {path}")
+        except Exception as e:
+            print(f"[HRL] LL load warning: {e}")
+
+    def _load_hl(self, path: str):
+        """Load HL weights từ file .npy."""
+        if not path:
+            return
+
+        path = self._resolve_npy_path(path, _HL_WEIGHTS_FILE)
+        if not os.path.exists(path):
+            return
+        try:
+            dummy = np.zeros((1, LATENT_DIM + HighLevelAgent.FEAT_PER_SFC), dtype=np.float32)
+            self.hl_agent.policy_net(dummy)
+            weights = np.load(path, allow_pickle=True)
+            self.hl_agent.policy_net.set_weights(list(weights))
+            print(f"[HRL] HL loaded ← {path}")
+        except Exception as e:
+            print(f"[HRL] HL load warning: {e}")
+
+    @staticmethod
+    def _resolve_npy_path(path: str, default_filename: str) -> str:
+        """
+        Chuẩn hoá path về .npy:
+          - Nếu là thư mục  → ghép default_filename
+          - Nếu là .weights.h5 → đổi sang .npy
+          - Nếu không có extension → thêm .npy
+        """
+        if os.path.isdir(path):
+            return os.path.join(path, default_filename)
+        if path.endswith(".weights.h5"):
+            return path[: -len(".weights.h5")] + ".npy"
+        if not path.endswith(".npy"):
+            return path + ".npy"
+        return path
 
     def get_routing(self, u: str, v: str,
                     t_start: int, t_end: int, bw: float) -> Optional[List[str]]:
@@ -358,6 +383,7 @@ class HRL_VGAE_Strategy(Strategy):
         for episode in range(1, self.episodes + 1):
             ep_t0 = time.time()
             self.env.reset()
+
             self._graph_cache.clear()
             self._nx_graph_cache.clear()
             self._path_cache.clear()
@@ -368,8 +394,9 @@ class HRL_VGAE_Strategy(Strategy):
 
             for sfc in sfcs:
                 total_steps += 1
-                epsilon     = 0.1 + 0.9 * math.exp(-total_steps / max(1, total_steps_planned * 0.3))
-                greedy_prob = max(0.0, 1.0 - total_steps / max(1, total_steps_planned * 0.5))
+                progress     = total_steps / max(1, total_steps_planned)
+                epsilon      = max(0.05, 0.9 * (1.0 - progress * 3.0))
+                greedy_prob  = max(0.0, 1.0 - progress * 2.0)
 
                 self.env.t = sfc.request.arrival_time
                 t_start    = self.env._get_timeslot(self.env.t)
@@ -405,7 +432,7 @@ class HRL_VGAE_Strategy(Strategy):
                                  if sfc.request.vnfs else [0., 0., 0.])
                     R_LL      = R_LL_override if R_LL_override is not None else \
                                 self._compute_ll_reward(True, rewards, sfc, self.env.t, Z_t, vnf_f)
-                    self._graph_cache.clear()
+
                     self._nx_graph_cache.clear()
                     self._path_cache.clear()
                 else:
@@ -416,7 +443,9 @@ class HRL_VGAE_Strategy(Strategy):
 
                 Z_mean    = Z_t.mean(axis=0, keepdims=True)
                 sfc_feats = self.hl_agent.extract_sfc_features([sfc], Z_t, self.ll_agent)
-                next_sfcs = [s for s in sfcs[sfcs.index(sfc)+1:sfcs.index(sfc)+4]]
+
+                sfc_pos   = sfcs.index(sfc)
+                next_sfcs = sfcs[sfc_pos + 1: sfc_pos + 4]
                 sfc_feats_next = (self.hl_agent.extract_sfc_features(next_sfcs, Z_t, self.ll_agent)
                                   if next_sfcs else sfc_feats)
                 is_done   = (sfc is sfcs[-1])
@@ -446,7 +475,7 @@ class HRL_VGAE_Strategy(Strategy):
             eta_s         = (self.episodes - episode) * ep_time
             eta_str       = (f"{eta_s/3600:.1f}h" if eta_s > 3600
                              else f"{eta_s/60:.1f}m" if eta_s > 60 else f"{eta_s:.0f}s")
-            cur_eps       = 0.1 + 0.9 * math.exp(-total_steps / max(1, total_steps_planned * 0.3))
+            cur_eps       = max(0.05, 0.9 * (1.0 - (total_steps / max(1, total_steps_planned)) * 3.0))
             bar = "█"*int(25*episode/self.episodes) + "░"*(25-int(25*episode/self.episodes))
             print(f"\r[{bar}] {episode}/{self.episodes} acc={acc_rate:.1%} best={best_acc_rate:.1%} "
                   f"ε={cur_eps:.3f} gr={greedy_prob:.2f} ETA={eta_str}", end="", flush=True)
@@ -516,7 +545,6 @@ class HRL_VGAE_Strategy(Strategy):
                 accepted += 1
                 self.env.stats["accepted_requests"] += 1
                 self.env.stats["total_cost"] += abs(rewards[1] if len(rewards) > 1 else 0.)
-                self._graph_cache.clear()
                 self._nx_graph_cache.clear()
                 self._path_cache.clear()
                 if not queue and pending:
