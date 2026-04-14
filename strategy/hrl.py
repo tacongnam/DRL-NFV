@@ -495,73 +495,73 @@ class HRL_VGAE_Strategy(Strategy):
         self._clear_all_caches()
         self._best_fit = None
 
-        pending = sorted([SFC(r) for r in self.env.requests],
-                         key=lambda s: s.request.arrival_time)
-        queue:   List[SFC] = []
+        pending = sorted([SFC(r) for r in self.env.requests], key=lambda s: s.request.arrival_time)
+        queue: List[SFC] = []
         accepted = rejected = 0
-        t = 0.0
+        processed = 0
+        total_requests = len(pending)
+        progress_every = max(1, total_requests // 20) if total_requests > 0 else 1
+        t = pending[0].request.arrival_time if pending else 0.0
+        t0 = time.time()
 
         while pending or queue:
-            if not queue:
-                if not pending:
-                    break
+            if not queue and pending:
                 t = pending[0].request.arrival_time
 
             while pending and pending[0].request.arrival_time <= t:
                 queue.append(pending.pop(0))
 
-            expired = [s for s in queue if t > s.request.end_time]
-            for s in expired:
-                rejected += 1
-                self.env.stats["rejected_requests"] += 1
-            queue = [s for s in queue if t <= s.request.end_time]
+            active = [s for s in queue if t <= s.request.end_time]
+            expired_now = len(queue) - len(active)
+            if expired_now > 0:
+                rejected += expired_now
+                self.env.stats["rejected_requests"] += expired_now
+                processed += expired_now
+            queue = active
 
             if not queue:
                 if pending:
                     t = pending[0].request.arrival_time
                 continue
 
-            bw_req      = max(s.request.bw for s in queue)
-            t_start     = self.env._get_timeslot(t)
-            t_end_rough = t_start + max(
-                int(max(s.request.delay_max for s in queue) / config.TIMESTEP), 10)
-            Z_t, dc_mapping = self._get_z(t_start, t_end_rough, bw_req)
+            bw_req = max(s.request.bw for s in queue)
+            t_start = self.env._get_timeslot(t)
+            t_end_rough = t_start + max(int(max(s.request.delay_max for s in queue) / config.TIMESTEP), 10)
+            Z_t, _ = self._get_z(t_start, t_end_rough, bw_req)
 
-            sfc_idx      = self.hl_agent.act(Z_t, queue, 0.0, self.ll_agent)
+            sfc_idx = self.hl_agent.act(Z_t, queue, 0.0, self.ll_agent)
             selected_sfc = queue.pop(sfc_idx)
-
-            t_end        = self.env._get_timeslot(selected_sfc.request.end_time)
+            t_end = self.env._get_timeslot(selected_sfc.request.end_time)
             Z_t, dc_mapping = self._get_z(t_start, t_end, selected_sfc.request.bw)
 
-            snap       = self._snapshot(self.env.network)
+            snap = self._snapshot(self.env.network)
             self.env.t = t
             plan = self.get_placement(selected_sfc, t, Z_t, dc_mapping, 0.0)
             if plan is None:
                 plan = self._greedy_placement(selected_sfc, t)
 
             success, rewards, _ = self.env.step(plan) if plan else (False, [-1., 0.], -1.)
+            processed += 1
 
             if success:
                 accepted += 1
                 self.env.stats["accepted_requests"] += 1
-                self.env.stats["total_cost"] += abs(rewards[1] if len(rewards) > 1 else 0.)
+                self.env.stats["total_cost"] += abs(rewards[1] if len(rewards) > 1 else 0.0)
+                self.env.stats["total_delay"] += selected_sfc.request.end_time - selected_sfc.request.arrival_time
                 self._clear_bw_caches()
-                if not queue and pending:
-                    t = pending[0].request.arrival_time
             else:
+                rejected += 1
+                self.env.stats["rejected_requests"] += 1
                 self._restore(self.env.network, snap)
-                if t < selected_sfc.request.end_time:
-                    queue.append(selected_sfc)
-                    next_events = (
-                        [s.request.arrival_time for s in pending if s.request.arrival_time > t] +
-                        [s.request.end_time     for s in queue   if s.request.end_time     > t]
-                    )
-                    t = min(next_events) if next_events else selected_sfc.request.end_time
-                else:
-                    rejected += 1
-                    self.env.stats["rejected_requests"] += 1
-                    if not queue and pending:
-                        t = pending[0].request.arrival_time
+
+            if processed % progress_every == 0 or processed == total_requests:
+                elapsed = time.time() - t0
+                acc_rate = accepted / max(1, accepted + rejected)
+                print(
+                    f"[Eval] {processed}/{total_requests}  acc={acc_rate:.1%}"
+                    f"  queue={len(queue)}  t={t:.1f}  elapsed={elapsed:.1f}s",
+                    flush=True,
+                )
 
         total = accepted + rejected
         self.env.stats["acceptance_ratio"] = accepted / total if total > 0 else 0.

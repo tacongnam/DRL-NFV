@@ -21,15 +21,15 @@ VGAE_DIR = "models/vgae_pretrained"
 LL_DIR = "models/ll_pretrained"
 VGAE_WEIGHTS_FILE = "vgae_weights.npy"
 LL_WEIGHTS_FILE = "ll_dqn_weights.npy"
-DEFAULT_PROFILE = "fast"
-DEFAULT_MAX_FILES = 3
-DEFAULT_MAX_REQUESTS = 160
+DEFAULT_PROFILE = "full"
+DEFAULT_MAX_FILES = 0
+DEFAULT_MAX_REQUESTS = 0
 DEFAULT_VGAE_EPOCHS = 60
 DEFAULT_LL_EPISODES = 60
 DEFAULT_MIN_SERVERS = 3
 DEFAULT_MIN_SERVER_RATIO = 0.12
 DEFAULT_SAMPLE_MODE = "uniform"
-DEFAULT_REQUEST_PCT = 15
+DEFAULT_REQUEST_PCT = 0
 
 
 def sample_requests(req_rows: list, max_requests: int = None,

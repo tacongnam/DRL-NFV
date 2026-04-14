@@ -27,18 +27,9 @@ from strategy.hrl            import HRL_VGAE_Strategy
 TRAIN_DIR        = os.path.join(ROOT_DIR, "data/train")
 TEST_DIR         = os.path.join(ROOT_DIR, "data/test")
 GENERATE_SCRIPT  = os.path.join(ROOT_DIR, "data/generate.py")
-PRETRAIN_SCRIPT  = os.path.join(ROOT_DIR, "models/pretrain.py")
 DEFAULT_EPISODES = 60
-DEFAULT_TRAIN_PROFILE = "fast"
-DEFAULT_MAX_TRAIN_FILES = 3
-DEFAULT_MAX_PRETRAIN_FILES = 3
-DEFAULT_MAX_TRAIN_REQUESTS = 120
-DEFAULT_MAX_PRETRAIN_REQUESTS = 160
-DEFAULT_MIN_SERVERS = 3
-DEFAULT_MIN_SERVER_RATIO = 0.12
-DEFAULT_REQUEST_SAMPLE_MODE = "uniform"
-DEFAULT_TRAIN_REQUEST_PCT = 10
-DEFAULT_PRETRAIN_REQUEST_PCT = 15
+DEFAULT_TRAIN_REQUEST_PCT = 0
+DEFAULT_PRETRAIN_REQUEST_PCT = 0
 
 BASELINE_REGISTRY = {
     "fifs":     ("GreedyFIFS",          GreedyFIFS),
@@ -50,29 +41,21 @@ BASELINE_REGISTRY = {
 }
 
 
-def _sample_requests(req_rows: list, max_requests: int = None,
-                     sample_mode: str = DEFAULT_REQUEST_SAMPLE_MODE) -> list:
-    if max_requests is None or max_requests <= 0 or len(req_rows) <= max_requests:
+def _sample_requests(req_rows: list, request_pct: int = 0) -> list:
+    req_limit = _resolve_request_limit(len(req_rows), request_pct=request_pct)
+    if req_limit is None or req_limit <= 0 or len(req_rows) <= req_limit:
         return req_rows
-    if sample_mode == "head":
-        return req_rows[:max_requests]
-    idxs = np.linspace(0, len(req_rows) - 1, num=max_requests, dtype=int)
+    idxs = np.linspace(0, len(req_rows) - 1, num=req_limit, dtype=int)
     return [req_rows[i] for i in idxs]
 
 
-def _resolve_request_limit(total_requests: int, max_requests: int = None,
-                           request_pct: int = None) -> int | None:
-    limits = []
-    if max_requests is not None and max_requests > 0:
-        limits.append(max_requests)
-    if request_pct is not None and request_pct > 0:
-        limits.append(max(1, math.ceil(total_requests * request_pct / 100.0)))
-    return min(limits) if limits else None
+def _resolve_request_limit(total_requests: int, request_pct: int = 0) -> int | None:
+    if request_pct is None or request_pct <= 0:
+        return None
+    return max(1, math.ceil(total_requests * request_pct / 100.0))
 
 
-def load_env_from_json(filepath: str, max_requests: int = None,
-                       sample_mode: str = DEFAULT_REQUEST_SAMPLE_MODE,
-                       request_pct: int = None) -> Env:
+def load_env_from_json(filepath: str, request_pct: int = 0) -> Env:
     with open(filepath) as f:
         data = json.load(f)
     network  = Network()
@@ -98,8 +81,7 @@ def load_env_from_json(filepath: str, max_requests: int = None,
                          d_f={k: v for k, v in vd.get("d_f", {}).items()}))
 
     req_rows = sorted(data.get("R", []), key=lambda r: r.get("T", 0))
-    req_limit = _resolve_request_limit(len(req_rows), max_requests=max_requests, request_pct=request_pct)
-    req_rows = _sample_requests(req_rows, max_requests=req_limit, sample_mode=sample_mode)
+    req_rows = _sample_requests(req_rows, request_pct=request_pct)
 
     for idx, rd in enumerate(req_rows):
         requests.add_request(Request(
@@ -117,78 +99,15 @@ def get_data_files(d: str):
     return []
 
 
-def _read_dataset_meta(filepath: str) -> dict:
-    with open(filepath) as f:
-        data = json.load(f)
-    requests = data.get("R", [])
-    total_requests = len(requests)
-    server_count = sum(1 for node in data.get("V", {}).values() if node.get("server", False))
-    node_count = len(data.get("V", {}))
-    avg_bw = (sum(r.get("b_r", 0.0) for r in requests) / total_requests) if total_requests else 0.0
-    avg_delay = (sum(r.get("d_max", 0.0) for r in requests) / total_requests) if total_requests else 0.0
-    parts = os.path.basename(filepath).replace(".json", "").split("_")
-    topology = parts[0] if parts else "unknown"
-    distribution = parts[1] if len(parts) > 1 else "unknown"
-    difficulty = parts[2] if len(parts) > 2 else "unknown"
-    return {
-        "path": filepath,
-        "name": os.path.basename(filepath),
-        "topology": topology,
-        "distribution": distribution,
-        "difficulty": difficulty,
-        "nodes": node_count,
-        "servers": server_count,
-        "server_ratio": (server_count / node_count) if node_count else 0.0,
-        "requests": total_requests,
-        "avg_bw": avg_bw,
-        "avg_delay": avg_delay,
-    }
-
-
-def _select_dataset_files(files: list, profile: str = DEFAULT_TRAIN_PROFILE,
-                          max_files: int = None,
-                          min_servers: int = DEFAULT_MIN_SERVERS,
-                          min_server_ratio: float = DEFAULT_MIN_SERVER_RATIO) -> list:
-    if profile == "full":
-        selected = [_read_dataset_meta(fp) for fp in files]
-    else:
-        metas = [_read_dataset_meta(fp) for fp in files]
-        filtered = [
-            m for m in metas
-            if m["difficulty"] == "easy"
-            and m["servers"] >= min_servers
-            and m["server_ratio"] >= min_server_ratio
-        ]
-        if not filtered:
-            filtered = metas
-        selected = sorted(
-            filtered,
-            key=lambda m: (
-                m["nodes"],
-                -m["server_ratio"],
-                m["avg_bw"],
-                -m["avg_delay"],
-                m["name"],
-            ),
-        )
-        if profile == "balanced":
-            selected = selected[: max_files or len(selected)]
-    if max_files and max_files > 0:
-        selected = selected[:max_files]
-    return selected
-
-
-def _print_selected_files(label: str, selected: list, max_requests: int = None,
-                          request_pct: int = None):
-    print(f"\n[{label}] Selected {len(selected)} file(s)")
-    for meta in selected:
-        req_limit = _resolve_request_limit(meta["requests"], max_requests=max_requests, request_pct=request_pct)
-        req_label = meta["requests"] if req_limit is None else min(meta["requests"], req_limit)
-        print(
-            f"  - {meta['name']}: nodes={meta['nodes']} servers={meta['servers']}"
-            f" req={req_label}/{meta['requests']} bw={meta['avg_bw']:.2f}"
-            f" delay={meta['avg_delay']:.2f}"
-        )
+def _print_selected_files(label: str, files: list, request_pct: int = 0):
+    print(f"\n[{label}] Selected {len(files)} file(s)")
+    for fp in files:
+        with open(fp) as f:
+            data = json.load(f)
+        total_requests = len(data.get("R", []))
+        req_limit = _resolve_request_limit(total_requests, request_pct=request_pct)
+        req_label = total_requests if req_limit is None else min(total_requests, req_limit)
+        print(f"  - {os.path.basename(fp)}: req={req_label}/{total_requests}")
 
 
 def _add_shared_args(parser: argparse.ArgumentParser):
@@ -216,18 +135,8 @@ def _add_training_budget_args(parser: argparse.ArgumentParser):
     parser.add_argument("--episodes", type=int, default=DEFAULT_EPISODES)
     parser.add_argument("--vgae-epochs", type=int, default=60)
     parser.add_argument("--ll-episodes", type=int, default=60)
-    parser.add_argument("--train-profile", type=str, default=DEFAULT_TRAIN_PROFILE,
-                        choices=["fast", "balanced", "full"])
-    parser.add_argument("--max-train-files", type=int, default=DEFAULT_MAX_TRAIN_FILES)
-    parser.add_argument("--max-pretrain-files", type=int, default=DEFAULT_MAX_PRETRAIN_FILES)
-    parser.add_argument("--max-train-requests", type=int, default=DEFAULT_MAX_TRAIN_REQUESTS)
-    parser.add_argument("--max-pretrain-requests", type=int, default=DEFAULT_MAX_PRETRAIN_REQUESTS)
     parser.add_argument("--train-request-pct", type=int, default=DEFAULT_TRAIN_REQUEST_PCT)
     parser.add_argument("--pretrain-request-pct", type=int, default=DEFAULT_PRETRAIN_REQUEST_PCT)
-    parser.add_argument("--request-sample-mode", type=str, default=DEFAULT_REQUEST_SAMPLE_MODE,
-                        choices=["uniform", "head"])
-    parser.add_argument("--min-servers", type=int, default=DEFAULT_MIN_SERVERS)
-    parser.add_argument("--min-server-ratio", type=float, default=DEFAULT_MIN_SERVER_RATIO)
 
 
 def _run_subprocess(cmd):
@@ -434,13 +343,7 @@ def run_pipeline(args):
         ll_path if os.path.exists(ll_path) else None,
         os.path.join(ROOT_DIR, "models/hrl_final"),
         TRAIN_DIR,
-        train_profile=getattr(args, "train_profile", DEFAULT_TRAIN_PROFILE),
-        max_train_files=getattr(args, "max_train_files", DEFAULT_MAX_TRAIN_FILES),
-        max_train_requests=getattr(args, "max_train_requests", DEFAULT_MAX_TRAIN_REQUESTS),
         train_request_pct=getattr(args, "train_request_pct", DEFAULT_TRAIN_REQUEST_PCT),
-        request_sample_mode=getattr(args, "request_sample_mode", DEFAULT_REQUEST_SAMPLE_MODE),
-        min_servers=getattr(args, "min_servers", DEFAULT_MIN_SERVERS),
-        min_server_ratio=getattr(args, "min_server_ratio", DEFAULT_MIN_SERVER_RATIO),
     )
 
     print("\n[4/4] Evaluating ...")
@@ -472,49 +375,26 @@ def run_pretrain(args):
 
 
 def _run_train(episodes, ll_pretrained, save_dir, train_dir,
-               train_profile=DEFAULT_TRAIN_PROFILE,
-               max_train_files=DEFAULT_MAX_TRAIN_FILES,
-               max_train_requests=DEFAULT_MAX_TRAIN_REQUESTS,
-               train_request_pct=DEFAULT_TRAIN_REQUEST_PCT,
-               request_sample_mode=DEFAULT_REQUEST_SAMPLE_MODE,
-               min_servers=DEFAULT_MIN_SERVERS,
-               min_server_ratio=DEFAULT_MIN_SERVER_RATIO):
+               train_request_pct=DEFAULT_TRAIN_REQUEST_PCT):
     files = get_data_files(train_dir)
     if not files:
         print(f"[ERROR] No training files in {train_dir}.")
         return None
 
-    selected = _select_dataset_files(
-        files,
-        profile=train_profile,
-        max_files=max_train_files,
-        min_servers=min_servers,
-        min_server_ratio=min_server_ratio,
-    )
-    if not selected:
-        print("[ERROR] No suitable training files selected.")
-        return None
-
-    _print_selected_files("TRAIN", selected, max_requests=max_train_requests, request_pct=train_request_pct)
+    _print_selected_files("TRAIN", files, request_pct=train_request_pct)
 
     strategy = None
-    n_files = len(selected)
+    n_files = len(files)
     base_episodes = episodes // n_files
     extra = episodes % n_files
 
-    for i, meta in enumerate(selected):
+    for i, fp in enumerate(files):
         ep_for_file = base_episodes + (1 if i < extra else 0)
         if ep_for_file <= 0:
             continue
 
-        fp = meta["path"]
-        print(f"\n--- File {i+1}/{n_files}: {meta['name']} ({ep_for_file} ep) ---")
-        env = load_env_from_json(
-            fp,
-            max_requests=max_train_requests,
-            sample_mode=request_sample_mode,
-            request_pct=train_request_pct,
-        )
+        print(f"\n--- File {i+1}/{n_files}: {os.path.basename(fp)} ({ep_for_file} ep) ---")
+        env = load_env_from_json(fp, request_pct=train_request_pct)
         strategy = HRL_VGAE_Strategy(
             env, is_training=True, episodes=ep_for_file,
             use_ll_score=True,
@@ -543,13 +423,7 @@ def run_train(args):
     _run_train(args.episodes, ll_path,
                os.path.abspath(getattr(args, "model_dir", "models/hrl_final")),
                os.path.abspath(getattr(args, "train_dir", TRAIN_DIR)),
-               train_profile=getattr(args, "train_profile", DEFAULT_TRAIN_PROFILE),
-               max_train_files=getattr(args, "max_train_files", DEFAULT_MAX_TRAIN_FILES),
-               max_train_requests=getattr(args, "max_train_requests", DEFAULT_MAX_TRAIN_REQUESTS),
-               train_request_pct=getattr(args, "train_request_pct", DEFAULT_TRAIN_REQUEST_PCT),
-               request_sample_mode=getattr(args, "request_sample_mode", DEFAULT_REQUEST_SAMPLE_MODE),
-               min_servers=getattr(args, "min_servers", DEFAULT_MIN_SERVERS),
-               min_server_ratio=getattr(args, "min_server_ratio", DEFAULT_MIN_SERVER_RATIO))
+               train_request_pct=getattr(args, "train_request_pct", DEFAULT_TRAIN_REQUEST_PCT))
 
 
 def _run_eval(model_dir, test_dir, test_files=None):
