@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os, sys, json, argparse, time
+import os, sys, json, argparse, time, math
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,6 +29,7 @@ DEFAULT_LL_EPISODES = 60
 DEFAULT_MIN_SERVERS = 3
 DEFAULT_MIN_SERVER_RATIO = 0.12
 DEFAULT_SAMPLE_MODE = "uniform"
+DEFAULT_REQUEST_PCT = 15
 
 
 def sample_requests(req_rows: list, max_requests: int = None,
@@ -41,8 +42,19 @@ def sample_requests(req_rows: list, max_requests: int = None,
     return [req_rows[i] for i in idxs]
 
 
+def resolve_request_limit(total_requests: int, max_requests: int = None,
+                          request_pct: int = None) -> int | None:
+    limits = []
+    if max_requests is not None and max_requests > 0:
+        limits.append(max_requests)
+    if request_pct is not None and request_pct > 0:
+        limits.append(max(1, math.ceil(total_requests * request_pct / 100.0)))
+    return min(limits) if limits else None
+
+
 def load_env(path: str, max_requests: int = None,
-             sample_mode: str = DEFAULT_SAMPLE_MODE) -> Env:
+             sample_mode: str = DEFAULT_SAMPLE_MODE,
+             request_pct: int = None) -> Env:
     with open(path) as f:
         data = json.load(f)
     network = Network()
@@ -75,7 +87,8 @@ def load_env(path: str, max_requests: int = None,
         )
 
     req_rows = sorted(data.get("R", []), key=lambda r: r.get("T", 0))
-    req_rows = sample_requests(req_rows, max_requests=max_requests, sample_mode=sample_mode)
+    req_limit = resolve_request_limit(len(req_rows), max_requests=max_requests, request_pct=request_pct)
+    req_rows = sample_requests(req_rows, max_requests=req_limit, sample_mode=sample_mode)
 
     for idx, rd in enumerate(req_rows):
         requests.add_request(
@@ -144,10 +157,11 @@ def select_train_files(train_dir: str, profile: str = DEFAULT_PROFILE,
     return selected
 
 
-def print_selected_files(selected: list, max_requests: int):
+def print_selected_files(selected: list, max_requests: int = None, request_pct: int = None):
     print(f"[Pretrain] Selected {len(selected)} file(s)", flush=True)
     for meta in selected:
-        req_label = meta["requests"] if not max_requests else min(meta["requests"], max_requests)
+        req_limit = resolve_request_limit(meta["requests"], max_requests=max_requests, request_pct=request_pct)
+        req_label = meta["requests"] if req_limit is None else min(meta["requests"], req_limit)
         print(
             f"  - {meta['name']}: nodes={meta['nodes']} servers={meta['servers']}"
             f" req={req_label}/{meta['requests']} bw={meta['avg_bw']:.2f}"
@@ -162,6 +176,7 @@ def _add_pretrain_args(parser: argparse.ArgumentParser):
     parser.add_argument("--profile", type=str, default=DEFAULT_PROFILE, choices=["fast", "balanced", "full"])
     parser.add_argument("--max-files", type=int, default=DEFAULT_MAX_FILES)
     parser.add_argument("--max-requests", type=int, default=DEFAULT_MAX_REQUESTS)
+    parser.add_argument("--request-pct", type=int, default=DEFAULT_REQUEST_PCT)
     parser.add_argument("--sample-mode", type=str, default=DEFAULT_SAMPLE_MODE, choices=["uniform", "head"])
     parser.add_argument("--min-servers", type=int, default=DEFAULT_MIN_SERVERS)
     parser.add_argument("--min-server-ratio", type=float, default=DEFAULT_MIN_SERVER_RATIO)
@@ -217,7 +232,8 @@ def build_dc_graph(env: Env, t_start: int, t_end: int, bw: float, path_cache: di
 
 def pretrain_vgae(train_files: list, epochs: int = 200, batch: int = 16,
                   max_requests: int = DEFAULT_MAX_REQUESTS,
-                  sample_mode: str = DEFAULT_SAMPLE_MODE):
+                  sample_mode: str = DEFAULT_SAMPLE_MODE,
+                  request_pct: int = None):
     if not train_files:
         print("[Pretrain-VGAE] No JSON files selected", flush=True)
         return None
@@ -233,7 +249,7 @@ def pretrain_vgae(train_files: list, epochs: int = 200, batch: int = 16,
 
     print("Collecting graph snapshots ...", flush=True)
     for meta in train_files:
-        env = load_env(meta["path"], max_requests=max_requests, sample_mode=sample_mode)
+        env = load_env(meta["path"], max_requests=max_requests, sample_mode=sample_mode, request_pct=request_pct)
         env.reset()
         local_count = 0
         for req in env.requests:
@@ -267,7 +283,8 @@ def pretrain_vgae(train_files: list, epochs: int = 200, batch: int = 16,
 
 def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch: int = 32,
                 max_requests: int = DEFAULT_MAX_REQUESTS,
-                sample_mode: str = DEFAULT_SAMPLE_MODE):
+                sample_mode: str = DEFAULT_SAMPLE_MODE,
+                request_pct: int = None):
     if not train_files:
         print("[Pretrain-LL] No JSON files selected", flush=True)
         return None
@@ -286,7 +303,7 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
     print("Pre-building graph caches ...", flush=True)
     file_envs = []
     for meta in train_files:
-        env = load_env(meta["path"], max_requests=max_requests, sample_mode=sample_mode)
+        env = load_env(meta["path"], max_requests=max_requests, sample_mode=sample_mode, request_pct=request_pct)
         env.reset()
         path_cache = {}
         sorted_reqs = sorted(env.requests, key=lambda r: r.arrival_time)
@@ -417,12 +434,13 @@ def main():
         print("[Pretrain] No training files selected.", flush=True)
         return
 
-    print_selected_files(selected, args.max_requests)
+    print_selected_files(selected, args.max_requests, args.request_pct)
 
     vgae = None
     if args.phase in ("vgae", "both"):
         vgae = pretrain_vgae(selected, epochs=args.vgae_epochs,
-                             max_requests=args.max_requests, sample_mode=args.sample_mode)
+                             max_requests=args.max_requests, sample_mode=args.sample_mode,
+                             request_pct=args.request_pct)
 
     if args.phase in ("ll", "both"):
         if vgae is None:
@@ -434,7 +452,8 @@ def main():
                 print(f"[Pretrain-LL] VGAE weights not found: {vgae_path}", flush=True)
                 return
         pretrain_ll(selected, vgae, episodes=args.ll_episodes,
-                    max_requests=args.max_requests, sample_mode=args.sample_mode)
+                    max_requests=args.max_requests, sample_mode=args.sample_mode,
+                    request_pct=args.request_pct)
 
     print("[Pretrain] Finished all requested phases.", flush=True)
 
