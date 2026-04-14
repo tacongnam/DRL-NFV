@@ -27,7 +27,14 @@ TRAIN_DIR        = os.path.join(ROOT_DIR, "data/train")
 TEST_DIR         = os.path.join(ROOT_DIR, "data/test")
 GENERATE_SCRIPT  = os.path.join(ROOT_DIR, "data/generate.py")
 PRETRAIN_SCRIPT  = os.path.join(ROOT_DIR, "models/pretrain.py")
-DEFAULT_EPISODES = 300
+DEFAULT_EPISODES = 100
+DEFAULT_TRAIN_PROFILE = "fast"
+DEFAULT_MAX_TRAIN_FILES = 4
+DEFAULT_MAX_PRETRAIN_FILES = 4
+DEFAULT_MAX_TRAIN_REQUESTS = 300
+DEFAULT_MAX_PRETRAIN_REQUESTS = 400
+DEFAULT_MIN_SERVERS = 3
+DEFAULT_MIN_SERVER_RATIO = 0.12
 
 BASELINE_REGISTRY = {
     "fifs":     ("GreedyFIFS",          GreedyFIFS),
@@ -39,7 +46,7 @@ BASELINE_REGISTRY = {
 }
 
 
-def load_env_from_json(filepath: str) -> Env:
+def load_env_from_json(filepath: str, max_requests: int = None) -> Env:
     with open(filepath) as f:
         data = json.load(f)
     network  = Network()
@@ -64,7 +71,11 @@ def load_env_from_json(filepath: str) -> Env:
                          h_f=vd.get("h_f", 1.), c_f=vd.get("c_f", 1.), r_f=vd.get("r_f", 1.),
                          d_f={k: v for k, v in vd.get("d_f", {}).items()}))
 
-    for idx, rd in enumerate(data.get("R", [])):
+    req_rows = sorted(data.get("R", []), key=lambda r: r.get("T", 0))
+    if max_requests is not None and max_requests > 0:
+        req_rows = req_rows[:max_requests]
+
+    for idx, rd in enumerate(req_rows):
         requests.add_request(Request(
             name=idx, arrival_time=rd.get("T", 0),
             delay_max=rd.get("d_max", 100.),
@@ -78,6 +89,78 @@ def get_data_files(d: str):
     if os.path.isdir(d):
         return sorted(os.path.join(d, f) for f in os.listdir(d) if f.endswith(".json"))
     return []
+
+
+def _read_dataset_meta(filepath: str) -> dict:
+    with open(filepath) as f:
+        data = json.load(f)
+    requests = data.get("R", [])
+    total_requests = len(requests)
+    server_count = sum(1 for node in data.get("V", {}).values() if node.get("server", False))
+    node_count = len(data.get("V", {}))
+    avg_bw = (sum(r.get("b_r", 0.0) for r in requests) / total_requests) if total_requests else 0.0
+    avg_delay = (sum(r.get("d_max", 0.0) for r in requests) / total_requests) if total_requests else 0.0
+    parts = os.path.basename(filepath).replace(".json", "").split("_")
+    topology = parts[0] if parts else "unknown"
+    distribution = parts[1] if len(parts) > 1 else "unknown"
+    difficulty = parts[2] if len(parts) > 2 else "unknown"
+    return {
+        "path": filepath,
+        "name": os.path.basename(filepath),
+        "topology": topology,
+        "distribution": distribution,
+        "difficulty": difficulty,
+        "nodes": node_count,
+        "servers": server_count,
+        "server_ratio": (server_count / node_count) if node_count else 0.0,
+        "requests": total_requests,
+        "avg_bw": avg_bw,
+        "avg_delay": avg_delay,
+    }
+
+
+def _select_dataset_files(files: list, profile: str = DEFAULT_TRAIN_PROFILE,
+                          max_files: int = None,
+                          min_servers: int = DEFAULT_MIN_SERVERS,
+                          min_server_ratio: float = DEFAULT_MIN_SERVER_RATIO) -> list:
+    if profile == "full":
+        selected = [_read_dataset_meta(fp) for fp in files]
+    else:
+        metas = [_read_dataset_meta(fp) for fp in files]
+        filtered = [
+            m for m in metas
+            if m["difficulty"] == "easy"
+            and m["servers"] >= min_servers
+            and m["server_ratio"] >= min_server_ratio
+        ]
+        if not filtered:
+            filtered = metas
+        selected = sorted(
+            filtered,
+            key=lambda m: (
+                m["nodes"],
+                -m["server_ratio"],
+                m["avg_bw"],
+                -m["avg_delay"],
+                m["name"],
+            ),
+        )
+        if profile == "balanced":
+            selected = selected[: max_files or len(selected)]
+    if max_files and max_files > 0:
+        selected = selected[:max_files]
+    return selected
+
+
+def _print_selected_files(label: str, selected: list, max_requests: int = None):
+    print(f"\n[{label}] Selected {len(selected)} file(s)")
+    for meta in selected:
+        req_label = meta["requests"] if not max_requests else min(meta["requests"], max_requests)
+        print(
+            f"  - {meta['name']}: nodes={meta['nodes']} servers={meta['servers']}"
+            f" req={req_label}/{meta['requests']} bw={meta['avg_bw']:.2f}"
+            f" delay={meta['avg_delay']:.2f}"
+        )
 
 
 def _run_subprocess(cmd):
@@ -226,8 +309,17 @@ def run_pipeline(args):
 
     print("\n[3/4] Training HRL ...")
     ll_path = os.path.join(ROOT_DIR, "models/ll_pretrained/ll_dqn_weights.weights.h5")
-    _run_train(args.episodes, ll_path if os.path.exists(ll_path) else None,
-               os.path.join(ROOT_DIR, "models/hrl_final"), TRAIN_DIR)
+    _run_train(
+        args.episodes,
+        ll_path if os.path.exists(ll_path) else None,
+        os.path.join(ROOT_DIR, "models/hrl_final"),
+        TRAIN_DIR,
+        train_profile=getattr(args, "train_profile", DEFAULT_TRAIN_PROFILE),
+        max_train_files=getattr(args, "max_train_files", DEFAULT_MAX_TRAIN_FILES),
+        max_train_requests=getattr(args, "max_train_requests", DEFAULT_MAX_TRAIN_REQUESTS),
+        min_servers=getattr(args, "min_servers", DEFAULT_MIN_SERVERS),
+        min_server_ratio=getattr(args, "min_server_ratio", DEFAULT_MIN_SERVER_RATIO),
+    )
 
     print("\n[4/4] Evaluating ...")
     _run_eval(os.path.join(ROOT_DIR, "models/hrl_final"), TEST_DIR)
@@ -257,23 +349,55 @@ def run_pretrain(args):
         sys.executable, PRETRAIN_SCRIPT,
         "--phase",       "both",
         "--train-dir",   train_dir,
+        "--profile",     getattr(args, "train_profile", DEFAULT_TRAIN_PROFILE),
+        "--max-files",   str(getattr(args, "max_pretrain_files", DEFAULT_MAX_PRETRAIN_FILES)),
+        "--max-requests", str(getattr(args, "max_pretrain_requests", DEFAULT_MAX_PRETRAIN_REQUESTS)),
+        "--min-servers", str(getattr(args, "min_servers", DEFAULT_MIN_SERVERS)),
+        "--min-server-ratio", str(getattr(args, "min_server_ratio", DEFAULT_MIN_SERVER_RATIO)),
         "--vgae-epochs", str(getattr(args, "vgae_epochs", 200)),
         "--ll-episodes", str(getattr(args, "ll_episodes", 200)),
     ])
 
 
-def _run_train(episodes, ll_pretrained, save_dir, train_dir):
+def _run_train(episodes, ll_pretrained, save_dir, train_dir,
+               train_profile=DEFAULT_TRAIN_PROFILE,
+               max_train_files=DEFAULT_MAX_TRAIN_FILES,
+               max_train_requests=DEFAULT_MAX_TRAIN_REQUESTS,
+               min_servers=DEFAULT_MIN_SERVERS,
+               min_server_ratio=DEFAULT_MIN_SERVER_RATIO):
     files = get_data_files(train_dir)
     if not files:
         print(f"[ERROR] No training files in {train_dir}.")
         return None
 
+    selected = _select_dataset_files(
+        files,
+        profile=train_profile,
+        max_files=max_train_files,
+        min_servers=min_servers,
+        min_server_ratio=min_server_ratio,
+    )
+    if not selected:
+        print("[ERROR] No suitable training files selected.")
+        return None
+
+    _print_selected_files("TRAIN", selected, max_requests=max_train_requests)
+
     strategy = None
-    for i, fp in enumerate(files):
-        print(f"\n--- File {i+1}/{len(files)}: {os.path.basename(fp)} ---")
-        env = load_env_from_json(fp)
+    n_files = len(selected)
+    base_episodes = episodes // n_files
+    extra = episodes % n_files
+
+    for i, meta in enumerate(selected):
+        ep_for_file = base_episodes + (1 if i < extra else 0)
+        if ep_for_file <= 0:
+            continue
+
+        fp = meta["path"]
+        print(f"\n--- File {i+1}/{n_files}: {meta['name']} ({ep_for_file} ep) ---")
+        env = load_env_from_json(fp, max_requests=max_train_requests)
         strategy = HRL_VGAE_Strategy(
-            env, is_training=True, episodes=episodes,
+            env, is_training=True, episodes=ep_for_file,
             use_ll_score=True,
             ll_pretrained_path=ll_pretrained if i == 0 else None)
 
@@ -299,7 +423,12 @@ def run_train(args):
         ll_path   = candidate if os.path.exists(candidate) else None
     _run_train(args.episodes, ll_path,
                os.path.abspath(getattr(args, "model_dir", "models/hrl_final")),
-               os.path.abspath(getattr(args, "train_dir", TRAIN_DIR)))
+               os.path.abspath(getattr(args, "train_dir", TRAIN_DIR)),
+               train_profile=getattr(args, "train_profile", DEFAULT_TRAIN_PROFILE),
+               max_train_files=getattr(args, "max_train_files", DEFAULT_MAX_TRAIN_FILES),
+               max_train_requests=getattr(args, "max_train_requests", DEFAULT_MAX_TRAIN_REQUESTS),
+               min_servers=getattr(args, "min_servers", DEFAULT_MIN_SERVERS),
+               min_server_ratio=getattr(args, "min_server_ratio", DEFAULT_MIN_SERVER_RATIO))
 
 
 def _run_eval(model_dir, test_dir, test_files=None):
@@ -434,8 +563,16 @@ def main():
     p.add_argument("--test-dir",        default=None)
     p.add_argument("--test-files",      nargs="+", default=None)
 
-    p.add_argument("--vgae-epochs",     type=int, default=200)
-    p.add_argument("--ll-episodes",     type=int, default=200)
+    p.add_argument("--vgae-epochs",     type=int, default=80)
+    p.add_argument("--ll-episodes",     type=int, default=80)
+    p.add_argument("--train-profile",   type=str, default=DEFAULT_TRAIN_PROFILE,
+                   choices=["fast", "balanced", "full"])
+    p.add_argument("--max-train-files", type=int, default=DEFAULT_MAX_TRAIN_FILES)
+    p.add_argument("--max-pretrain-files", type=int, default=DEFAULT_MAX_PRETRAIN_FILES)
+    p.add_argument("--max-train-requests", type=int, default=DEFAULT_MAX_TRAIN_REQUESTS)
+    p.add_argument("--max-pretrain-requests", type=int, default=DEFAULT_MAX_PRETRAIN_REQUESTS)
+    p.add_argument("--min-servers",     type=int, default=DEFAULT_MIN_SERVERS)
+    p.add_argument("--min-server-ratio", type=float, default=DEFAULT_MIN_SERVER_RATIO)
 
     p.add_argument("--baselines",       nargs="+", default=None,
                    choices=list(BASELINE_REGISTRY.keys()))

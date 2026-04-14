@@ -1,6 +1,4 @@
-import matplotlib.pyplot as plt
 import networkx as nx
-import pandas as pd
 import config
 from env.vnf import VNF
 
@@ -209,6 +207,8 @@ class Network:
 
     def visualize(self, pos_path=None, info=False, topo=False,
                   out_path=None, path_p=None):
+        import matplotlib.pyplot as plt
+        import pandas as pd
         G = self.to_graph()
         if pos_path is None:
             pos = nx.spring_layout(G)
@@ -247,6 +247,7 @@ class Network:
         plt.show()
 
     def visualize_dynamic(self, timeslots, pause_time=1.0):
+        import matplotlib.pyplot as plt
         G   = self.to_graph()
         pos = nx.spring_layout(G)
         plt.ion()
