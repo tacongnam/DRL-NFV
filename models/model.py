@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
 import tensorflow as tf
 from tensorflow import keras

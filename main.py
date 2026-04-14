@@ -1,7 +1,7 @@
 import os, sys, json, argparse, subprocess
 
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -27,14 +27,15 @@ TRAIN_DIR        = os.path.join(ROOT_DIR, "data/train")
 TEST_DIR         = os.path.join(ROOT_DIR, "data/test")
 GENERATE_SCRIPT  = os.path.join(ROOT_DIR, "data/generate.py")
 PRETRAIN_SCRIPT  = os.path.join(ROOT_DIR, "models/pretrain.py")
-DEFAULT_EPISODES = 100
+DEFAULT_EPISODES = 60
 DEFAULT_TRAIN_PROFILE = "fast"
-DEFAULT_MAX_TRAIN_FILES = 4
-DEFAULT_MAX_PRETRAIN_FILES = 4
-DEFAULT_MAX_TRAIN_REQUESTS = 300
-DEFAULT_MAX_PRETRAIN_REQUESTS = 400
+DEFAULT_MAX_TRAIN_FILES = 3
+DEFAULT_MAX_PRETRAIN_FILES = 3
+DEFAULT_MAX_TRAIN_REQUESTS = 120
+DEFAULT_MAX_PRETRAIN_REQUESTS = 160
 DEFAULT_MIN_SERVERS = 3
 DEFAULT_MIN_SERVER_RATIO = 0.12
+DEFAULT_REQUEST_SAMPLE_MODE = "uniform"
 
 BASELINE_REGISTRY = {
     "fifs":     ("GreedyFIFS",          GreedyFIFS),
@@ -46,7 +47,18 @@ BASELINE_REGISTRY = {
 }
 
 
-def load_env_from_json(filepath: str, max_requests: int = None) -> Env:
+def _sample_requests(req_rows: list, max_requests: int = None,
+                     sample_mode: str = DEFAULT_REQUEST_SAMPLE_MODE) -> list:
+    if max_requests is None or max_requests <= 0 or len(req_rows) <= max_requests:
+        return req_rows
+    if sample_mode == "head":
+        return req_rows[:max_requests]
+    idxs = np.linspace(0, len(req_rows) - 1, num=max_requests, dtype=int)
+    return [req_rows[i] for i in idxs]
+
+
+def load_env_from_json(filepath: str, max_requests: int = None,
+                       sample_mode: str = DEFAULT_REQUEST_SAMPLE_MODE) -> Env:
     with open(filepath) as f:
         data = json.load(f)
     network  = Network()
@@ -72,8 +84,7 @@ def load_env_from_json(filepath: str, max_requests: int = None) -> Env:
                          d_f={k: v for k, v in vd.get("d_f", {}).items()}))
 
     req_rows = sorted(data.get("R", []), key=lambda r: r.get("T", 0))
-    if max_requests is not None and max_requests > 0:
-        req_rows = req_rows[:max_requests]
+    req_rows = _sample_requests(req_rows, max_requests=max_requests, sample_mode=sample_mode)
 
     for idx, rd in enumerate(req_rows):
         requests.add_request(Request(
@@ -163,17 +174,60 @@ def _print_selected_files(label: str, selected: list, max_requests: int = None):
         )
 
 
+def _add_shared_args(parser: argparse.ArgumentParser):
+    parser.add_argument("--train-dir", default=TRAIN_DIR)
+    parser.add_argument("--model-dir", default="models/hrl_final")
+    parser.add_argument("--test-dir", default=None)
+    parser.add_argument("--test-files", nargs="+", default=None)
+    parser.add_argument("--ll-pretrained", type=str, default=None)
+
+
+def _add_data_generation_args(parser: argparse.ArgumentParser):
+    for name, default, choices in [
+        ("--topology", "nsf", ["nsf", "conus", "cogent"]),
+        ("--distribution", "rural", ["uniform", "rural", "urban", "centers"]),
+        ("--difficulty", "easy", ["easy", "hard"]),
+    ]:
+        parser.add_argument(name, default=default, choices=choices)
+    parser.add_argument("--scale", type=int, default=50)
+    parser.add_argument("--requests", type=int, default=50)
+    parser.add_argument("--num-train-files", type=int, default=5)
+    parser.add_argument("--num-test-files", type=int, default=3)
+
+
+def _add_training_budget_args(parser: argparse.ArgumentParser):
+    parser.add_argument("--episodes", type=int, default=DEFAULT_EPISODES)
+    parser.add_argument("--vgae-epochs", type=int, default=60)
+    parser.add_argument("--ll-episodes", type=int, default=60)
+    parser.add_argument("--train-profile", type=str, default=DEFAULT_TRAIN_PROFILE,
+                        choices=["fast", "balanced", "full"])
+    parser.add_argument("--max-train-files", type=int, default=DEFAULT_MAX_TRAIN_FILES)
+    parser.add_argument("--max-pretrain-files", type=int, default=DEFAULT_MAX_PRETRAIN_FILES)
+    parser.add_argument("--max-train-requests", type=int, default=DEFAULT_MAX_TRAIN_REQUESTS)
+    parser.add_argument("--max-pretrain-requests", type=int, default=DEFAULT_MAX_PRETRAIN_REQUESTS)
+    parser.add_argument("--request-sample-mode", type=str, default=DEFAULT_REQUEST_SAMPLE_MODE,
+                        choices=["uniform", "head"])
+    parser.add_argument("--min-servers", type=int, default=DEFAULT_MIN_SERVERS)
+    parser.add_argument("--min-server-ratio", type=float, default=DEFAULT_MIN_SERVER_RATIO)
+
+
 def _run_subprocess(cmd):
-    result = subprocess.run(cmd, cwd=ROOT_DIR)
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    result = subprocess.run(cmd, cwd=ROOT_DIR, env=env)
     if result.returncode != 0:
-        print(f"[WARN] Command failed: {' '.join(str(c) for c in cmd)}")
+        print(f"[WARN] Command failed: {' '.join(str(c) for c in cmd)}", flush=True)
     return result.returncode == 0
+
+
+def _python_cmd(script_path: str, *args: str):
+    return [sys.executable, "-u", script_path, *args]
 
 
 def _generate_data(topology, distribution, difficulty, scale, requests,
                    num_files, output_dir, seed_offset=0):
-    return _run_subprocess([
-        sys.executable, GENERATE_SCRIPT,
+    return _run_subprocess(_python_cmd(
+        GENERATE_SCRIPT,
         "--topology",    topology,
         "--distribution", distribution,
         "--difficulty",  difficulty,
@@ -182,7 +236,7 @@ def _generate_data(topology, distribution, difficulty, scale, requests,
         "--requests",    str(requests),
         "--seed-offset", str(seed_offset),
         "--output",      output_dir,
-    ])
+    ))
 
 
 def _plot_baseline_results(results: list, out_path: str = None):
@@ -299,13 +353,14 @@ def run_pipeline(args):
     print(f"  train={len(get_data_files(TRAIN_DIR))}  test={len(get_data_files(TEST_DIR))}")
 
     print("\n[2/4] Pre-training VGAE + LL-DQN ...")
-    _run_subprocess([
-        sys.executable, PRETRAIN_SCRIPT,
+    ok = _run_subprocess(_python_cmd(
+        PRETRAIN_SCRIPT,
         "--phase", "both",
         "--train-dir",   TRAIN_DIR,
         "--vgae-epochs", str(args.vgae_epochs),
         "--ll-episodes", str(args.ll_episodes),
-    ])
+    ))
+    print("[2/4] Pre-training complete." if ok else "[2/4] Pre-training failed.", flush=True)
 
     print("\n[3/4] Training HRL ...")
     ll_path = os.path.join(ROOT_DIR, "models/ll_pretrained/ll_dqn_weights.weights.h5")
@@ -317,6 +372,7 @@ def run_pipeline(args):
         train_profile=getattr(args, "train_profile", DEFAULT_TRAIN_PROFILE),
         max_train_files=getattr(args, "max_train_files", DEFAULT_MAX_TRAIN_FILES),
         max_train_requests=getattr(args, "max_train_requests", DEFAULT_MAX_TRAIN_REQUESTS),
+        request_sample_mode=getattr(args, "request_sample_mode", DEFAULT_REQUEST_SAMPLE_MODE),
         min_servers=getattr(args, "min_servers", DEFAULT_MIN_SERVERS),
         min_server_ratio=getattr(args, "min_server_ratio", DEFAULT_MIN_SERVER_RATIO),
     )
@@ -345,24 +401,28 @@ def run_pretrain(args):
     if not get_data_files(train_dir):
         print(f"[ERROR] No JSON files in {train_dir}. Run --mode generate first.")
         return
-    _run_subprocess([
-        sys.executable, PRETRAIN_SCRIPT,
+    print(f"[Pretrain] Launching subprocess for {train_dir}", flush=True)
+    ok = _run_subprocess(_python_cmd(
+        PRETRAIN_SCRIPT,
         "--phase",       "both",
         "--train-dir",   train_dir,
         "--profile",     getattr(args, "train_profile", DEFAULT_TRAIN_PROFILE),
         "--max-files",   str(getattr(args, "max_pretrain_files", DEFAULT_MAX_PRETRAIN_FILES)),
         "--max-requests", str(getattr(args, "max_pretrain_requests", DEFAULT_MAX_PRETRAIN_REQUESTS)),
+        "--sample-mode", getattr(args, "request_sample_mode", DEFAULT_REQUEST_SAMPLE_MODE),
         "--min-servers", str(getattr(args, "min_servers", DEFAULT_MIN_SERVERS)),
         "--min-server-ratio", str(getattr(args, "min_server_ratio", DEFAULT_MIN_SERVER_RATIO)),
         "--vgae-epochs", str(getattr(args, "vgae_epochs", 200)),
         "--ll-episodes", str(getattr(args, "ll_episodes", 200)),
-    ])
+    ))
+    print("[Pretrain] Subprocess complete." if ok else "[Pretrain] Subprocess failed.", flush=True)
 
 
 def _run_train(episodes, ll_pretrained, save_dir, train_dir,
                train_profile=DEFAULT_TRAIN_PROFILE,
                max_train_files=DEFAULT_MAX_TRAIN_FILES,
                max_train_requests=DEFAULT_MAX_TRAIN_REQUESTS,
+               request_sample_mode=DEFAULT_REQUEST_SAMPLE_MODE,
                min_servers=DEFAULT_MIN_SERVERS,
                min_server_ratio=DEFAULT_MIN_SERVER_RATIO):
     files = get_data_files(train_dir)
@@ -395,7 +455,7 @@ def _run_train(episodes, ll_pretrained, save_dir, train_dir,
 
         fp = meta["path"]
         print(f"\n--- File {i+1}/{n_files}: {meta['name']} ({ep_for_file} ep) ---")
-        env = load_env_from_json(fp, max_requests=max_train_requests)
+        env = load_env_from_json(fp, max_requests=max_train_requests, sample_mode=request_sample_mode)
         strategy = HRL_VGAE_Strategy(
             env, is_training=True, episodes=ep_for_file,
             use_ll_score=True,
@@ -427,6 +487,7 @@ def run_train(args):
                train_profile=getattr(args, "train_profile", DEFAULT_TRAIN_PROFILE),
                max_train_files=getattr(args, "max_train_files", DEFAULT_MAX_TRAIN_FILES),
                max_train_requests=getattr(args, "max_train_requests", DEFAULT_MAX_TRAIN_REQUESTS),
+               request_sample_mode=getattr(args, "request_sample_mode", DEFAULT_REQUEST_SAMPLE_MODE),
                min_servers=getattr(args, "min_servers", DEFAULT_MIN_SERVERS),
                min_server_ratio=getattr(args, "min_server_ratio", DEFAULT_MIN_SERVER_RATIO))
 
@@ -545,34 +606,9 @@ def main():
     p.add_argument("--mode", default="baseline",
                    choices=["pipeline", "generate", "pretrain", "train", "eval", "baseline"])
 
-    p.add_argument("--topology",        default="nsf",
-                   choices=["nsf", "conus", "cogent"])
-    p.add_argument("--distribution",    default="rural",
-                   choices=["uniform", "rural", "urban", "centers"])
-    p.add_argument("--difficulty",      default="easy",
-                   choices=["easy", "hard"])
-    p.add_argument("--scale",           type=int, default=50)
-    p.add_argument("--requests",        type=int, default=50)
-    p.add_argument("--num-train-files", type=int, default=5)
-    p.add_argument("--num-test-files",  type=int, default=3)
-
-    p.add_argument("--episodes",        type=int, default=DEFAULT_EPISODES)
-    p.add_argument("--ll-pretrained",   type=str, default=None)
-    p.add_argument("--model-dir",       default="models/hrl_final")
-    p.add_argument("--train-dir",       default=TRAIN_DIR)
-    p.add_argument("--test-dir",        default=None)
-    p.add_argument("--test-files",      nargs="+", default=None)
-
-    p.add_argument("--vgae-epochs",     type=int, default=80)
-    p.add_argument("--ll-episodes",     type=int, default=80)
-    p.add_argument("--train-profile",   type=str, default=DEFAULT_TRAIN_PROFILE,
-                   choices=["fast", "balanced", "full"])
-    p.add_argument("--max-train-files", type=int, default=DEFAULT_MAX_TRAIN_FILES)
-    p.add_argument("--max-pretrain-files", type=int, default=DEFAULT_MAX_PRETRAIN_FILES)
-    p.add_argument("--max-train-requests", type=int, default=DEFAULT_MAX_TRAIN_REQUESTS)
-    p.add_argument("--max-pretrain-requests", type=int, default=DEFAULT_MAX_PRETRAIN_REQUESTS)
-    p.add_argument("--min-servers",     type=int, default=DEFAULT_MIN_SERVERS)
-    p.add_argument("--min-server-ratio", type=float, default=DEFAULT_MIN_SERVER_RATIO)
+    _add_data_generation_args(p)
+    _add_shared_args(p)
+    _add_training_budget_args(p)
 
     p.add_argument("--baselines",       nargs="+", default=None,
                    choices=list(BASELINE_REGISTRY.keys()))

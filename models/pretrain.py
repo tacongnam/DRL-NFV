@@ -6,7 +6,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
 import config
 from env.vnf import VNF, ListOfVnfs
@@ -22,15 +22,27 @@ LL_DIR = "models/ll_pretrained"
 VGAE_WEIGHTS_FILE = "vgae_weights.npy"
 LL_WEIGHTS_FILE = "ll_dqn_weights.npy"
 DEFAULT_PROFILE = "fast"
-DEFAULT_MAX_FILES = 4
-DEFAULT_MAX_REQUESTS = 400
-DEFAULT_VGAE_EPOCHS = 80
-DEFAULT_LL_EPISODES = 80
+DEFAULT_MAX_FILES = 3
+DEFAULT_MAX_REQUESTS = 160
+DEFAULT_VGAE_EPOCHS = 60
+DEFAULT_LL_EPISODES = 60
 DEFAULT_MIN_SERVERS = 3
 DEFAULT_MIN_SERVER_RATIO = 0.12
+DEFAULT_SAMPLE_MODE = "uniform"
 
 
-def load_env(path: str, max_requests: int = None) -> Env:
+def sample_requests(req_rows: list, max_requests: int = None,
+                    sample_mode: str = DEFAULT_SAMPLE_MODE) -> list:
+    if max_requests is None or max_requests <= 0 or len(req_rows) <= max_requests:
+        return req_rows
+    if sample_mode == "head":
+        return req_rows[:max_requests]
+    idxs = np.linspace(0, len(req_rows) - 1, num=max_requests, dtype=int)
+    return [req_rows[i] for i in idxs]
+
+
+def load_env(path: str, max_requests: int = None,
+             sample_mode: str = DEFAULT_SAMPLE_MODE) -> Env:
     with open(path) as f:
         data = json.load(f)
     network = Network()
@@ -63,8 +75,7 @@ def load_env(path: str, max_requests: int = None) -> Env:
         )
 
     req_rows = sorted(data.get("R", []), key=lambda r: r.get("T", 0))
-    if max_requests is not None and max_requests > 0:
-        req_rows = req_rows[:max_requests]
+    req_rows = sample_requests(req_rows, max_requests=max_requests, sample_mode=sample_mode)
 
     for idx, rd in enumerate(req_rows):
         requests.add_request(
@@ -134,14 +145,28 @@ def select_train_files(train_dir: str, profile: str = DEFAULT_PROFILE,
 
 
 def print_selected_files(selected: list, max_requests: int):
-    print(f"[Pretrain] Selected {len(selected)} file(s)")
+    print(f"[Pretrain] Selected {len(selected)} file(s)", flush=True)
     for meta in selected:
         req_label = meta["requests"] if not max_requests else min(meta["requests"], max_requests)
         print(
             f"  - {meta['name']}: nodes={meta['nodes']} servers={meta['servers']}"
             f" req={req_label}/{meta['requests']} bw={meta['avg_bw']:.2f}"
-            f" delay={meta['avg_delay']:.2f}"
+            f" delay={meta['avg_delay']:.2f}",
+            flush=True,
         )
+
+
+def _add_pretrain_args(parser: argparse.ArgumentParser):
+    parser.add_argument("--phase", type=str, default="both", choices=["vgae", "ll", "both"])
+    parser.add_argument("--train-dir", type=str, default="data/train")
+    parser.add_argument("--profile", type=str, default=DEFAULT_PROFILE, choices=["fast", "balanced", "full"])
+    parser.add_argument("--max-files", type=int, default=DEFAULT_MAX_FILES)
+    parser.add_argument("--max-requests", type=int, default=DEFAULT_MAX_REQUESTS)
+    parser.add_argument("--sample-mode", type=str, default=DEFAULT_SAMPLE_MODE, choices=["uniform", "head"])
+    parser.add_argument("--min-servers", type=int, default=DEFAULT_MIN_SERVERS)
+    parser.add_argument("--min-server-ratio", type=float, default=DEFAULT_MIN_SERVER_RATIO)
+    parser.add_argument("--vgae-epochs", type=int, default=DEFAULT_VGAE_EPOCHS)
+    parser.add_argument("--ll-episodes", type=int, default=DEFAULT_LL_EPISODES)
 
 
 def build_dc_graph(env: Env, t_start: int, t_end: int, bw: float, path_cache: dict = None):
@@ -191,23 +216,24 @@ def build_dc_graph(env: Env, t_start: int, t_end: int, bw: float, path_cache: di
 
 
 def pretrain_vgae(train_files: list, epochs: int = 200, batch: int = 16,
-                  max_requests: int = DEFAULT_MAX_REQUESTS):
+                  max_requests: int = DEFAULT_MAX_REQUESTS,
+                  sample_mode: str = DEFAULT_SAMPLE_MODE):
     if not train_files:
-        print("[Pretrain-VGAE] No JSON files selected")
+        print("[Pretrain-VGAE] No JSON files selected", flush=True)
         return None
 
-    print(f"\n{'=' * 50}")
-    print(f"PHASE 1: VGAE Pre-training  ({len(train_files)} files, {epochs} epochs)")
-    print(f"{'=' * 50}")
+    print(f"\n{'=' * 50}", flush=True)
+    print(f"PHASE 1: VGAE Pre-training  ({len(train_files)} files, {epochs} epochs)", flush=True)
+    print(f"{'=' * 50}", flush=True)
 
     vgae = VGAENetwork(latent_dim=LATENT_DIM)
     buf = ReplayBuffer(capacity=2000)
     path_cache = {}
     per_file_snapshots = {}
 
-    print("Collecting graph snapshots ...")
+    print("Collecting graph snapshots ...", flush=True)
     for meta in train_files:
-        env = load_env(meta["path"], max_requests=max_requests)
+        env = load_env(meta["path"], max_requests=max_requests, sample_mode=sample_mode)
         env.reset()
         local_count = 0
         for req in env.requests:
@@ -218,36 +244,37 @@ def pretrain_vgae(train_files: list, epochs: int = 200, batch: int = 16,
                 buf.push((X, A))
                 local_count += 1
         per_file_snapshots[meta["name"]] = local_count
-    print(f"  Collected {len(buf)} graph snapshots")
+    print(f"  Collected {len(buf)} graph snapshots", flush=True)
     for name, count in per_file_snapshots.items():
-        print(f"    {name}: {count}")
+        print(f"    {name}: {count}", flush=True)
 
     if len(buf) < 4:
-        print("[Pretrain-VGAE] Too few snapshots, skipping")
+        print("[Pretrain-VGAE] Too few snapshots, skipping", flush=True)
         return None
 
     t0 = time.time()
     for ep in range(1, epochs + 1):
         vgae.train(buf, epochs=1, batch=batch)
         if ep % 50 == 0 or ep == epochs:
-            print(f"  epoch {ep}/{epochs}  ({time.time() - t0:.1f}s)")
+            print(f"  epoch {ep}/{epochs}  ({time.time() - t0:.1f}s)", flush=True)
 
     os.makedirs(VGAE_DIR, exist_ok=True)
     out = os.path.join(VGAE_DIR, VGAE_WEIGHTS_FILE)
     vgae.save_weights(out)
-    print(f"[Pretrain-VGAE] Saved -> {out}")
+    print(f"[Pretrain-VGAE] Saved -> {out}", flush=True)
     return vgae
 
 
 def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch: int = 32,
-                max_requests: int = DEFAULT_MAX_REQUESTS):
+                max_requests: int = DEFAULT_MAX_REQUESTS,
+                sample_mode: str = DEFAULT_SAMPLE_MODE):
     if not train_files:
-        print("[Pretrain-LL] No JSON files selected")
+        print("[Pretrain-LL] No JSON files selected", flush=True)
         return None
 
-    print(f"\n{'=' * 50}")
-    print(f"PHASE 2: LL-DQN Pre-training (imitation)  ({episodes} ep)")
-    print(f"{'=' * 50}")
+    print(f"\n{'=' * 50}", flush=True)
+    print(f"PHASE 2: LL-DQN Pre-training (imitation)  ({episodes} ep)", flush=True)
+    print(f"{'=' * 50}", flush=True)
 
     ll_agent = LowLevelAgent(latent_dim=LATENT_DIM, max_dcs=MAX_DCS, input_dim=LATENT_DIM + 3)
     dummy = np.zeros((1, LATENT_DIM + 3), dtype=np.float32)
@@ -256,10 +283,10 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
 
     buf_ll = ReplayBuffer(capacity=20_000)
 
-    print("Pre-building graph caches ...")
+    print("Pre-building graph caches ...", flush=True)
     file_envs = []
     for meta in train_files:
-        env = load_env(meta["path"], max_requests=max_requests)
+        env = load_env(meta["path"], max_requests=max_requests, sample_mode=sample_mode)
         env.reset()
         path_cache = {}
         sorted_reqs = sorted(env.requests, key=lambda r: r.arrival_time)
@@ -268,7 +295,7 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
             t_e = env._get_timeslot(req.end_time)
             build_dc_graph(env, t_s, t_e, req.bw, path_cache)
         file_envs.append((meta["name"], env, path_cache, sorted_reqs))
-    print(f"  Done. {len(file_envs)} file(s) cached.")
+    print(f"  Done. {len(file_envs)} file(s) cached.", flush=True)
 
     from strategy.best_fit import BestFit
     from env.request import SFC as SFCcls
@@ -351,7 +378,8 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
             print(
                 f"  ep {ep:>3}/{episodes}  file={file_name}"
                 f"  trans={transitions_count}  teacher_acc={teacher_ar:.1%}"
-                f"  buf={len(buf_ll)}  elapsed={elapsed:.1f}s  ETA={eta_str}"
+                f"  buf={len(buf_ll)}  elapsed={elapsed:.1f}s  ETA={eta_str}",
+                flush=True,
             )
 
     ll_agent.policy_net(dummy)
@@ -361,29 +389,21 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
     out = os.path.join(LL_DIR, LL_WEIGHTS_FILE)
     np.save(out, np.array(ll_agent.policy_net.get_weights(), dtype=object), allow_pickle=True)
     if total_teacher_seen > 0:
-        print(f"[Pretrain-LL] Teacher acceptance={total_teacher_success / total_teacher_seen:.1%}  transitions={total_transitions}")
+        print(f"[Pretrain-LL] Teacher acceptance={total_teacher_success / total_teacher_seen:.1%}  transitions={total_transitions}", flush=True)
         if total_transitions < max(1_000, episodes * 50):
-            print("[Pretrain-LL] Warning: transition count is low; increase --max-requests or --ll-episodes.")
-    print(f"[Pretrain-LL] Saved -> {out}")
+            print("[Pretrain-LL] Warning: transition count is low; increase --max-requests or --ll-episodes.", flush=True)
+    print(f"[Pretrain-LL] Saved -> {out}", flush=True)
     return ll_agent
 
 
 def main():
     parser = argparse.ArgumentParser(description="Pre-train VGAE and LL-DQN for HRL-VGAE")
-    parser.add_argument("--phase", type=str, default="both", choices=["vgae", "ll", "both"])
-    parser.add_argument("--train-dir", type=str, default="data/train")
-    parser.add_argument("--profile", type=str, default=DEFAULT_PROFILE, choices=["fast", "balanced", "full"])
-    parser.add_argument("--max-files", type=int, default=DEFAULT_MAX_FILES)
-    parser.add_argument("--max-requests", type=int, default=DEFAULT_MAX_REQUESTS)
-    parser.add_argument("--min-servers", type=int, default=DEFAULT_MIN_SERVERS)
-    parser.add_argument("--min-server-ratio", type=float, default=DEFAULT_MIN_SERVER_RATIO)
-    parser.add_argument("--vgae-epochs", type=int, default=DEFAULT_VGAE_EPOCHS)
-    parser.add_argument("--ll-episodes", type=int, default=DEFAULT_LL_EPISODES)
+    _add_pretrain_args(parser)
     args = parser.parse_args()
 
     train_dir = os.path.abspath(args.train_dir)
     if not os.path.isdir(train_dir):
-        print(f"[Pretrain] Train dir not found: {train_dir}")
+        print(f"[Pretrain] Train dir not found: {train_dir}", flush=True)
         return
 
     selected = select_train_files(
@@ -394,14 +414,15 @@ def main():
         min_server_ratio=args.min_server_ratio,
     )
     if not selected:
-        print("[Pretrain] No training files selected.")
+        print("[Pretrain] No training files selected.", flush=True)
         return
 
     print_selected_files(selected, args.max_requests)
 
     vgae = None
     if args.phase in ("vgae", "both"):
-        vgae = pretrain_vgae(selected, epochs=args.vgae_epochs, max_requests=args.max_requests)
+        vgae = pretrain_vgae(selected, epochs=args.vgae_epochs,
+                             max_requests=args.max_requests, sample_mode=args.sample_mode)
 
     if args.phase in ("ll", "both"):
         if vgae is None:
@@ -410,9 +431,12 @@ def main():
             if os.path.exists(vgae_path):
                 vgae.load_weights(vgae_path)
             else:
-                print(f"[Pretrain-LL] VGAE weights not found: {vgae_path}")
+                print(f"[Pretrain-LL] VGAE weights not found: {vgae_path}", flush=True)
                 return
-        pretrain_ll(selected, vgae, episodes=args.ll_episodes, max_requests=args.max_requests)
+        pretrain_ll(selected, vgae, episodes=args.ll_episodes,
+                    max_requests=args.max_requests, sample_mode=args.sample_mode)
+
+    print("[Pretrain] Finished all requested phases.", flush=True)
 
 
 if __name__ == "__main__":
