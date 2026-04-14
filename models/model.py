@@ -167,21 +167,16 @@ class LowLevelAgent:
         return flat[:self.latent_dim]
 
     def _make_state(self, Z_t: np.ndarray, vnf_feat) -> np.ndarray:
-        """Single-sample: trả về shape (1, feat_dim)."""
         z_mean = self._safe_z_mean(Z_t)
         f_arr  = np.asarray(vnf_feat, dtype=np.float32).ravel()
         return np.concatenate([z_mean, f_arr])[None]
 
     def _make_states_batch(self, Z_list: list, vnf_feat_list: list) -> np.ndarray:
-        """
-        Vectorized: Z_list[i] shape (n_dcs, latent) hoặc (latent,)
-        Trả về (batch, feat_dim) — không có vòng for Python sau bước này.
-        """
         rows = []
         for Z, f in zip(Z_list, vnf_feat_list):
             z_mean = self._safe_z_mean(Z)
             rows.append(np.concatenate([z_mean, np.asarray(f, np.float32).ravel()]))
-        return np.array(rows, dtype=np.float32)  # (B, feat_dim)
+        return np.array(rows, dtype=np.float32)
 
     def act(self, Z_t: np.ndarray, vnf_feat: list,
             valid_indices: List[int], epsilon: float = 0.0) -> int:
@@ -203,36 +198,11 @@ class LowLevelAgent:
         w     = tf.sigmoid(self.weight_net(state, training=False)).numpy()[0]
         return float(w[0]) * 2.0, float(w[1]) * 1.0
 
-    def train(self, buffer: ReplayBuffer, batch_size: int = 16):
-        if len(buffer) < batch_size:
-            return
-        batch = buffer.sample(batch_size)
-
-        Z_list, vnf_f_list, actions, rewards, Z_next_list, next_masks, dones = zip(*batch)
-        S  = tf.constant(self._make_states_batch(Z_list,      vnf_f_list), dtype=tf.float32)
-        Sn = tf.constant(self._make_states_batch(Z_next_list, vnf_f_list), dtype=tf.float32)
-
-        R = tf.constant(
-            np.array([float(r[0]) if hasattr(r, '__len__') else float(r) for r in rewards],
-                     dtype=np.float32))
-        D = tf.constant(np.array(dones, dtype=np.float32))
-        A = np.array([int(a) for a in actions], dtype=np.int32)
-
-        Q_next_np = self.target_net(Sn, training=False).numpy()  # (B, max_dcs)
-        for i, mask in enumerate(next_masks):
-            valid_clip = [m for m in mask if isinstance(m, int) and m < self.max_dcs]
-            if valid_clip:
-                row = np.full(self.max_dcs, -1e9, dtype=np.float32)
-                row[valid_clip] = Q_next_np[i, valid_clip]
-                Q_next_np[i]   = row
-            else:
-                Q_next_np[i]   = -1e9
-
-        Q_next_max = tf.constant(Q_next_np.max(axis=1), dtype=tf.float32)
-        target     = R + self.gamma * Q_next_max * (1.0 - D)
-
-        idx = tf.stack([tf.range(len(A), dtype=tf.int32),
-                        tf.constant(A, dtype=tf.int32)], axis=1)
+    @tf.function
+    def _tf_train_step(self, S, R, D, A, Q_next_max):
+        target = R + self.gamma * Q_next_max * (1.0 - D)
+        idx = tf.stack([tf.range(tf.shape(A)[0]), A], axis=1)
+        
         with tf.GradientTape() as tape:
             Q_pred = self.policy_net(S, training=True)
             loss   = tf.reduce_mean(tf.square(target - tf.gather_nd(Q_pred, idx)))
@@ -248,6 +218,35 @@ class LowLevelAgent:
         self.opt_w.apply_gradients(
             zip(tape_w.gradient(loss_w, self.weight_net.trainable_variables),
                 self.weight_net.trainable_variables))
+
+    def train(self, buffer: ReplayBuffer, batch_size: int = 16):
+        if len(buffer) < batch_size:
+            return
+        batch = buffer.sample(batch_size)
+
+        Z_list, vnf_f_list, actions, rewards, Z_next_list, next_masks, dones = zip(*batch)
+        S  = tf.constant(self._make_states_batch(Z_list, vnf_f_list), dtype=tf.float32)
+        Sn = tf.constant(self._make_states_batch(Z_next_list, vnf_f_list), dtype=tf.float32)
+
+        R = tf.constant(
+            np.array([float(r[0]) if hasattr(r, '__len__') else float(r) for r in rewards],
+                     dtype=np.float32))
+        D = tf.constant(np.array(dones, dtype=np.float32))
+        A = np.array([int(a) for a in actions], dtype=np.int32)
+
+        Q_next_np = self.target_net(Sn, training=False).numpy()
+        for i, mask in enumerate(next_masks):
+            valid_clip = [m for m in mask if isinstance(m, int) and m < self.max_dcs]
+            if valid_clip:
+                row = np.full(self.max_dcs, -1e9, dtype=np.float32)
+                row[valid_clip] = Q_next_np[i, valid_clip]
+                Q_next_np[i]   = row
+            else:
+                Q_next_np[i]   = -1e9
+
+        Q_next_max = tf.constant(Q_next_np.max(axis=1), dtype=tf.float32)
+        
+        self._tf_train_step(S, R, D, tf.constant(A, dtype=tf.int32), Q_next_max)
 
 class HighLevelAgent:
     FEAT_PER_SFC = 4

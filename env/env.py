@@ -133,7 +133,10 @@ class Env(gym.Env):
         if plan is None:
             return False, [-1.0, 0.0], -1.0
 
-        backup = copy.deepcopy(self.network)
+        snapshot_nodes = {nid: {t: dict(used) for t, used in node.used.items()} 
+                          for nid, node in self.network.nodes.items()}
+        snapshot_links = {i: dict(link.used) for i, link in enumerate(self.network.links)}
+
         cost   = 0.0
 
         try:
@@ -145,8 +148,7 @@ class Env(gym.Env):
                 vnf = self.vnfs[vnf_name]
 
                 if not self._check_can_deploy_vnf(dc, vnf, T1, T2):
-                    self.network = backup
-                    return False, [-1.0, 0.0], -1.0
+                    raise ValueError("Node constraints violated")
 
                 dc.use(vnf.resource, T1, T2 + 1)
                 cost += dc.get_cost(vnf)
@@ -163,13 +165,8 @@ class Env(gym.Env):
                         if {l.u.name, l.v.name} == {u, v}),
                         None
                     )
-                    if target is None:
-                        self.network = backup
-                        return False, [-1.0, 0.0], -1.0
-
-                    if target.get_available_bandwidth(T1, T2 + 1) < sfc_bw:
-                        self.network = backup
-                        return False, [-1.0, 0.0], -1.0
+                    if target is None or target.get_available_bandwidth(T1, T2 + 1) < sfc_bw:
+                        raise ValueError("Node constraints violated")
 
                     target.use(sfc_bw, T1, T2 + 1)
 
@@ -177,9 +174,12 @@ class Env(gym.Env):
             score       = 1.0 + 0.1 * reward_cost
             return True, [1.0, reward_cost], score
 
-        except Exception as e:
-            print(f"[Env.step] Error: {e}")
-            self.network = backup
+        except ValueError:
+            for nid, node in self.network.nodes.items():
+                node.used = snapshot_nodes[nid]
+            for i, link in enumerate(self.network.links):
+                link.used = snapshot_links[i]
+                
             return False, [-1.0, 0.0], -1.0
 
     def process_request(self, sfc: SFC) -> Tuple[bool, List[float], float]:
