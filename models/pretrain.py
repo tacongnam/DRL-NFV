@@ -250,7 +250,7 @@ def pretrain_ll(train_dir: str, vgae: VGAENetwork,
     ll_agent.target_net(dummy)
 
     os.makedirs(LL_DIR, exist_ok=True)
-    out = os.path.join(LL_DIR, "ll_dqn_weights.weights.h5")
-    ll_agent.policy_net.save_weights(out)
+    out = os.path.join(LL_DIR, "ll_dqn_weights.npy")
+    np.save(out, np.array(ll_agent.policy_net.get_weights(), dtype=object), allow_pickle=True)
     print(f"[Pretrain-LL] Saved → {out}")
     return ll_agent

@@ -72,23 +72,25 @@ class HRL_VGAE_Strategy(Strategy):
 
     def save_model(self, directory: str):
         os.makedirs(directory, exist_ok=True)
-        ll_path   = os.path.join(directory, "ll_dqn_weights.weights.h5")
-        hl_path   = os.path.join(directory, "hl_pmdrl_weights.weights.h5")
-        vgae_path = os.path.join(directory, "vgae_weights.npy")
         try:
-            self.ll_agent.policy_net.save_weights(ll_path)
-            self.hl_agent.policy_net.save_weights(hl_path)
-            self.vgae_net.save_weights(vgae_path)
+            np.save(os.path.join(directory, "ll_dqn_weights.npy"),
+                    np.array(self.ll_agent.policy_net.get_weights(), dtype=object), allow_pickle=True)
+            np.save(os.path.join(directory, "hl_pmdrl_weights.npy"),
+                    np.array(self.hl_agent.policy_net.get_weights(), dtype=object), allow_pickle=True)
+            self.vgae_net.save_weights(os.path.join(directory, "vgae_weights.npy"))
             print(f"[HRL] Models saved → {directory}")
         except Exception as e:
             print(f"[HRL] Save warning: {e}")
 
     def load_model(self, directory: str):
-        self._load_ll(os.path.join(directory, "ll_dqn_weights.weights.h5"))
-        hl_path = os.path.join(directory, "hl_pmdrl_weights.weights.h5")
+        self._load_ll(os.path.join(directory, "ll_dqn_weights.npy"))
+        hl_path = os.path.join(directory, "hl_pmdrl_weights.npy")
         if os.path.exists(hl_path):
             try:
-                self.hl_agent.policy_net.load_weights(hl_path)
+                dummy_hl = np.zeros((1, LATENT_DIM + HighLevelAgent.FEAT_PER_SFC), dtype=np.float32)
+                self.hl_agent.policy_net(dummy_hl)
+                weights = np.load(hl_path, allow_pickle=True)
+                self.hl_agent.policy_net.set_weights(list(weights))
                 print(f"[HRL] HL model loaded from {hl_path}")
             except Exception as e:
                 print(f"[HRL] HL load warning: {e}")
@@ -100,14 +102,24 @@ class HRL_VGAE_Strategy(Strategy):
         if not path:
             return
         if os.path.isdir(path):
-            path = os.path.join(path, "ll_dqn_weights.weights.h5")
-        if not path.endswith(".weights.h5") and not os.path.exists(path):
-            path = path + ".weights.h5"
-        if os.path.exists(path):
+            path = os.path.join(path, "ll_dqn_weights.npy")
+        npy_path = path.replace(".weights.h5", ".npy") if path.endswith(".weights.h5") else path
+        if not npy_path.endswith(".npy"):
+            npy_path = npy_path + ".npy" if not os.path.exists(npy_path) else npy_path
+
+        if os.path.exists(npy_path):
             try:
                 dummy = np.zeros((1, LATENT_DIM + 3), dtype=np.float32)
                 self.ll_agent.policy_net(dummy)
-                self.ll_agent.target_net(dummy)
+                weights = np.load(npy_path, allow_pickle=True)
+                self.ll_agent.policy_net.set_weights(list(weights))
+                print(f"[HRL] LL model loaded from {npy_path}")
+            except Exception as e:
+                print(f"[HRL] LL load warning: {e}")
+        elif os.path.exists(path):
+            try:
+                dummy = np.zeros((1, LATENT_DIM + 3), dtype=np.float32)
+                self.ll_agent.policy_net(dummy)
                 self.ll_agent.policy_net.load_weights(path)
                 print(f"[HRL] LL model loaded from {path}")
             except Exception as e:
