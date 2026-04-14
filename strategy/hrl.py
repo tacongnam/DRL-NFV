@@ -53,7 +53,18 @@ class HRL_VGAE_Strategy(Strategy):
         self._graph_cache: dict = {}
         self._nx_graph_cache: dict = {}
         self._path_cache: dict = {}
+        self._max_cost_cache: dict = {} 
         self._episode_graph_built = False
+
+        self._dc_list: List[str] = [
+            nid for nid, n in env.network.nodes.items()
+            if n.type == config.NODE_DC
+        ]
+        self._max_res: dict = {k: 1.0 for k in config.RESOURCE_TYPE}
+        for node in env.network.nodes.values():
+            if node.type == config.NODE_DC and node.cap:
+                for k in config.RESOURCE_TYPE:
+                    self._max_res[k] = max(self._max_res[k], node.cap[k])
 
     def save_model(self, directory: str):
         os.makedirs(directory, exist_ok=True)
@@ -109,7 +120,7 @@ class HRL_VGAE_Strategy(Strategy):
             return None
 
     def _bw_pruned_graph(self, t_start: int, t_end: int, bw: float) -> nx.Graph:
-        key = (t_start, t_end, round(bw, 2))
+        key = (t_start, t_end, round(bw, 1))
         if key in self._nx_graph_cache:
             return self._nx_graph_cache[key]
         G = nx.Graph()
@@ -122,7 +133,7 @@ class HRL_VGAE_Strategy(Strategy):
         return G
     
     def _get_path_lengths(self, t_start: int, t_end: int, bw: float) -> dict:
-        key = (t_start, t_end, round(bw, 2))
+        key = (t_start, t_end, round(bw, 1))
         if key in self._path_cache:
             return self._path_cache[key]
         G = self._bw_pruned_graph(t_start, t_end, bw)
@@ -135,8 +146,7 @@ class HRL_VGAE_Strategy(Strategy):
 
     def _build_dc_graph(self, t_start: int, t_end: int,
                      bw_req: float = 0.0) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-        dcs = [nid for nid, n in self.env.network.nodes.items()
-            if n.type == config.NODE_DC]
+        dcs = self._dc_list
         n = len(dcs)
         if n == 0:
             return np.zeros((0, 3), np.float32), np.zeros((0, 0), np.float32), []
@@ -308,15 +318,18 @@ class HRL_VGAE_Strategy(Strategy):
         return plan
 
     def _estimate_max_cost(self, sfc: SFC) -> float:
+        key = tuple(v.name for v in sfc.request.vnfs)
+        if key in self._max_cost_cache:
+            return self._max_cost_cache[key]
         max_cost = 0.0
         for vnf in sfc.request.vnfs:
-            node_costs = [
-                n.get_cost(vnf) for n in self.env.network.nodes.values()
-                if n.type == config.NODE_DC and n.cost is not None
-            ]
-            if node_costs:
-                max_cost += max(c for c in node_costs if c < float('inf'))
-        return max(1.0, max_cost)
+            costs = [n.get_cost(vnf) for n in self.env.network.nodes.values()
+                    if n.type == config.NODE_DC and n.cost is not None]
+            if costs:
+                max_cost += max(c for c in costs if c < float('inf'))
+        result = max(1.0, max_cost)
+        self._max_cost_cache[key] = result
+        return result
 
     def train(self) -> dict:
         total_steps         = 0
@@ -386,8 +399,9 @@ class HRL_VGAE_Strategy(Strategy):
                 Z_mean    = Z_t.mean(axis=0, keepdims=True)
                 sfc_feats = self.hl_agent.extract_sfc_features([sfc], Z_t, self.ll_agent)
                 sfc_feats_next = (self.hl_agent.extract_sfc_features(
-                                      remaining_sfcs[:self.hl_agent.max_queue], Z_t, self.ll_agent)
-                                  if remaining_sfcs else sfc_feats)
+                        remaining_sfcs[:3],
+                        Z_t, self.ll_agent)
+                    if remaining_sfcs else sfc_feats)
                 is_done   = (sfc is sfcs[-1])
 
                 self.buf_HL.push((Z_mean, sfc_feats, 0, R_HL, Z_mean, sfc_feats_next, is_done))
