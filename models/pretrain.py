@@ -211,6 +211,10 @@ def pretrain_vgae(train_files: list, epochs: int = 200, batch: int = 16,
 def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch: int = 32, request_pct: int = 0):
     if not train_files:
         return None
+    
+    import tensorflow as tf
+    tf.keras.backend.clear_session()
+    
     ll_agent = LowLevelAgent(latent_dim=LATENT_DIM, max_dcs=MAX_DCS, input_dim=LATENT_DIM + 3)
     dummy = np.zeros((1, LATENT_DIM + 3), dtype=np.float32)
     ll_agent.policy_net(dummy)

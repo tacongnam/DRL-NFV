@@ -137,7 +137,7 @@ class HRL_VGAE_Strategy(Strategy):
             print(f"[HRL] HL load warning: {e}")
 
     def _bw_pruned_graph(self, t_start: int, t_end: int, bw: float) -> nx.Graph:
-        key = (t_start, t_end, round(bw, 1))
+        key = (round(bw, 1))
         if key in self._nx_graph_cache:
             return self._nx_graph_cache[key]
         G = nx.Graph()
@@ -200,7 +200,7 @@ class HRL_VGAE_Strategy(Strategy):
 
     def _get_z(self, t_start: int, t_end: int,
             bw_req: float) -> Tuple[np.ndarray, List[str]]:
-        key = (t_start, t_end, round(bw_req, 1))
+        key = (round(bw_req, 1))
         if key not in self._graph_cache:
             X, A, dcs = self._build_dc_graph(t_start, t_end, bw_req)
             Z = self.vgae_net.encode(X, A)
