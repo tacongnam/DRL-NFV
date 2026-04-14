@@ -208,24 +208,14 @@ def pretrain_vgae(train_files: list, epochs: int = 200, batch: int = 16,
     return vgae
 
 
-def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch: int = 32,
-                request_pct: int = 0):
+def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch: int = 32, request_pct: int = 0):
     if not train_files:
-        print("[Pretrain-LL] No JSON files selected", flush=True)
         return None
-
-    print(f"\n{'=' * 50}", flush=True)
-    print(f"PHASE 2: LL-DQN Pre-training (imitation)  ({episodes} ep)", flush=True)
-    print(f"{'=' * 50}", flush=True)
-
     ll_agent = LowLevelAgent(latent_dim=LATENT_DIM, max_dcs=MAX_DCS, input_dim=LATENT_DIM + 3)
     dummy = np.zeros((1, LATENT_DIM + 3), dtype=np.float32)
     ll_agent.policy_net(dummy)
     ll_agent.target_net(dummy)
-
     buf_ll = ReplayBuffer(capacity=20_000)
-
-    print("Pre-building graph caches ...", flush=True)
     file_envs = []
     for fp in train_files:
         env = load_env(fp, request_pct=request_pct)
@@ -237,23 +227,12 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
             t_e = env._get_timeslot(req.end_time)
             build_dc_graph(env, t_s, t_e, req.bw, path_cache)
         file_envs.append((os.path.basename(fp), env, path_cache, sorted_reqs))
-    print(f"  Done. {len(file_envs)} file(s) cached.", flush=True)
-
     from strategy.best_fit import BestFit
     from env.request import SFC as SFCcls
-
-    t0 = time.time()
-    total_teacher_success = 0
-    total_teacher_seen = 0
-    total_transitions = 0
-
     for ep in range(1, episodes + 1):
         file_name, env, path_cache, sorted_reqs = file_envs[(ep - 1) % len(file_envs)]
         env.reset()
         teacher = BestFit(env)
-        transitions_count = 0
-        teacher_success = 0
-
         z_cache = {}
         for req in sorted_reqs:
             t_s = env._get_timeslot(req.arrival_time)
@@ -263,40 +242,31 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
                 X, A, dcs = build_dc_graph(env, t_s, t_e, req.bw, path_cache)
                 Z = vgae.encode(X, A) if len(dcs) >= 2 else np.zeros((0, LATENT_DIM), np.float32)
                 z_cache[key] = (Z, dcs)
-
         for req in sorted_reqs:
             t_s = env._get_timeslot(req.arrival_time)
             t_e = env._get_timeslot(req.end_time)
             key = (t_s, t_e, round(req.bw, 1))
             Z, dcs = z_cache[key]
-            total_teacher_seen += 1
-
             if len(dcs) == 0:
                 continue
-
             sfc = SFCcls(req)
             plan = teacher.get_placement(sfc, req.arrival_time)
-
             if plan is None:
                 for vnf in req.vnfs:
                     vnf_feat = np.array([vnf.resource.get(rk, 0.0) for rk in config.RESOURCE_TYPE], dtype=np.float32)
-                    valid = [
-                        i for i, d in enumerate(dcs)
-                        if i < MAX_DCS and env._check_can_deploy_vnf(env.network.nodes[d], vnf, t_s, t_e)
-                    ]
+                    valid = [i for i, d in enumerate(dcs) if i < MAX_DCS and env._check_can_deploy_vnf(env.network.nodes[d], vnf, t_s, t_e)]
                     if not valid:
                         continue
                     best_idx = valid[0]
                     buf_ll.push((Z, vnf_feat, best_idx, -1.0, Z, valid, False))
-                    transitions_count += 1
                 continue
-
-            max_res = {}
-            for node in env.network.nodes.values():
-                if node.type == config.NODE_DC and node.cap:
-                    for k in config.RESOURCE_TYPE:
-                        max_res[k] = max(max_res.get(k, 1.0), node.cap[k])
-
+            max_cost = 0.0
+            for v in req.vnfs:
+                costs = [n.get_cost(v) for n in env.network.nodes.values() if n.type == config.NODE_DC and n.cost is not None]
+                finite = [c for c in costs if c < float('inf')]
+                if finite:
+                    max_cost += max(finite)
+            max_cost = max(1.0, max_cost)
             for k, vnf in enumerate(req.vnfs):
                 node_plan = plan.get("nodes", {}).get(str(k))
                 if node_plan is None:
@@ -307,74 +277,35 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
                 act_idx = dcs.index(greedy_dc)
                 if act_idx >= MAX_DCS:
                     continue
-
                 vnf_feat = np.array([vnf.resource.get(rk, 0.0) for rk in config.RESOURCE_TYPE], dtype=np.float32)
-                valid = [
-                    i for i, d in enumerate(dcs)
-                    if i < MAX_DCS and env._check_can_deploy_vnf(env.network.nodes[d], vnf, t_s, t_e)
-                ]
+                valid = [i for i, d in enumerate(dcs) if i < MAX_DCS and env._check_can_deploy_vnf(env.network.nodes[d], vnf, t_s, t_e)]
                 if not valid:
                     continue
-
                 chosen_node = env.network.nodes[greedy_dc]
-                remaining = chosen_node.get_min_available_resource(t_s, t_e)
-                utilization = sum(
-                    vnf.resource.get(rk, 0.0) / max(max_res.get(rk, 1.0), 1e-6)
-                    for rk in config.RESOURCE_TYPE
-                ) / len(config.RESOURCE_TYPE)
-                waste = sum(
-                    (remaining.get(rk, 0.0) - vnf.resource.get(rk, 0.0)) / max(max_res.get(rk, 1.0), 1e-6)
-                    for rk in config.RESOURCE_TYPE
-                ) / len(config.RESOURCE_TYPE)
-                reward = float(np.clip(1.0 + 0.5 * utilization - 0.3 * waste, 0.1, 2.0))
-
+                alpha, beta = ll_agent.get_reward_weights(Z, vnf_feat)
+                time_rem = max(0.0, req.end_time - req.arrival_time)
+                tMax = max(req.delay_max, 1e-6)
+                raw_cost = chosen_node.get_cost(vnf) if chosen_node.cost is not None else 0.0
+                if raw_cost == float('inf'):
+                    raw_cost = max_cost
+                cost_norm = min(1.0, raw_cost / max_cost)
+                reward = float(1.0 + alpha * (time_rem / tMax) - beta * cost_norm)
                 next_valid = valid
                 if k + 1 < len(req.vnfs):
                     next_vnf = req.vnfs[k + 1]
-                    next_valid = [
-                        i for i, d in enumerate(dcs)
-                        if i < MAX_DCS and env._check_can_deploy_vnf(env.network.nodes[d], next_vnf, t_s, t_e)
-                    ] or valid
-
+                    next_valid = [i for i, d in enumerate(dcs) if i < MAX_DCS and env._check_can_deploy_vnf(env.network.nodes[d], next_vnf, t_s, t_e)] or valid
                 buf_ll.push((Z, vnf_feat, act_idx, reward, Z, next_valid, k == len(req.vnfs) - 1))
-                transitions_count += 1
-
-            success, _, _ = env.step(plan)
-            if success:
-                teacher_success += 1
-                total_teacher_success += 1
-
+            env.step(plan)
         if len(buf_ll) >= batch:
             n_batches = min(len(buf_ll) // batch, 10)
             for _ in range(n_batches):
                 ll_agent.train(buf_ll, batch)
-
-        total_transitions += transitions_count
-        if ep % 10 == 0 or ep == episodes or ep == 1:
-            elapsed = time.time() - t0
-            eta = (episodes - ep) * (elapsed / ep) if ep > 0 else 0
-            eta_str = f"{eta / 3600:.1f}h" if eta > 3600 else (f"{eta / 60:.1f}m" if eta > 60 else f"{eta:.0f}s")
-            teacher_ar = teacher_success / max(1, len(sorted_reqs))
-            print(
-                f"  ep {ep:>3}/{episodes}  file={file_name}"
-                f"  trans={transitions_count}  teacher_acc={teacher_ar:.1%}"
-                f"  buf={len(buf_ll)}  elapsed={elapsed:.1f}s  ETA={eta_str}",
-                flush=True,
-            )
-
     ll_agent.policy_net(dummy)
     ll_agent.target_net(dummy)
-
     os.makedirs(LL_DIR, exist_ok=True)
     out = os.path.join(LL_DIR, LL_WEIGHTS_FILE)
     np.save(out, np.array(ll_agent.policy_net.get_weights(), dtype=object), allow_pickle=True)
-    if total_teacher_seen > 0:
-        print(f"[Pretrain-LL] Teacher acceptance={total_teacher_success / total_teacher_seen:.1%}  transitions={total_transitions}", flush=True)
-        if total_transitions < max(1_000, episodes * 50):
-            print("[Pretrain-LL] Warning: transition count is low; increase request_pct or ll_episodes.", flush=True)
-    print(f"[Pretrain-LL] Saved -> {out}", flush=True)
     return ll_agent
-
 
 def main():
     parser = argparse.ArgumentParser(description="Pre-train VGAE and LL-DQN for HRL-VGAE")
