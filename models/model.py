@@ -149,10 +149,26 @@ class LowLevelAgent:
     def update_target_network(self):
         self._sync_target()
 
+    def _safe_z_mean(self, Z_t: np.ndarray) -> np.ndarray:
+        z_arr = np.asarray(Z_t, dtype=np.float32)
+        if z_arr.size == 0:
+            return np.zeros(self.latent_dim, dtype=np.float32)
+        if z_arr.ndim == 2:
+            if z_arr.shape[0] == 0:
+                return np.zeros(self.latent_dim, dtype=np.float32)
+            return z_arr.mean(axis=0)
+        flat = z_arr.ravel()
+        if flat.size == 0:
+            return np.zeros(self.latent_dim, dtype=np.float32)
+        if flat.size < self.latent_dim:
+            out = np.zeros(self.latent_dim, dtype=np.float32)
+            out[:flat.size] = flat
+            return out
+        return flat[:self.latent_dim]
+
     def _make_state(self, Z_t: np.ndarray, vnf_feat) -> np.ndarray:
         """Single-sample: trả về shape (1, feat_dim)."""
-        z_arr  = np.asarray(Z_t, dtype=np.float32)
-        z_mean = z_arr.mean(axis=0) if z_arr.ndim == 2 else z_arr.ravel()
+        z_mean = self._safe_z_mean(Z_t)
         f_arr  = np.asarray(vnf_feat, dtype=np.float32).ravel()
         return np.concatenate([z_mean, f_arr])[None]
 
@@ -163,8 +179,7 @@ class LowLevelAgent:
         """
         rows = []
         for Z, f in zip(Z_list, vnf_feat_list):
-            z = np.asarray(Z, dtype=np.float32)
-            z_mean = z.mean(axis=0) if z.ndim == 2 else z.ravel()
+            z_mean = self._safe_z_mean(Z)
             rows.append(np.concatenate([z_mean, np.asarray(f, np.float32).ravel()]))
         return np.array(rows, dtype=np.float32)  # (B, feat_dim)
 
@@ -258,6 +273,23 @@ class HighLevelAgent:
     def update_target_network(self):
         self._sync_target()
 
+    def _safe_z_mean(self, Z_t: np.ndarray) -> np.ndarray:
+        z_arr = np.asarray(Z_t, dtype=np.float32)
+        if z_arr.size == 0:
+            return np.zeros(self.latent_dim, dtype=np.float32)
+        if z_arr.ndim == 2:
+            if z_arr.shape[0] == 0:
+                return np.zeros(self.latent_dim, dtype=np.float32)
+            return z_arr.mean(axis=0)
+        flat = z_arr.ravel()
+        if flat.size == 0:
+            return np.zeros(self.latent_dim, dtype=np.float32)
+        if flat.size < self.latent_dim:
+            out = np.zeros(self.latent_dim, dtype=np.float32)
+            out[:flat.size] = flat
+            return out
+        return flat[:self.latent_dim]
+
     def extract_sfc_features(self, queue: list, Z_t: Optional[np.ndarray] = None,
                               ll_agent: Optional[LowLevelAgent] = None) -> np.ndarray:
         if not queue:
@@ -298,8 +330,7 @@ class HighLevelAgent:
         return feats
 
     def _state_for(self, Z_t: np.ndarray, sfc_feat) -> np.ndarray:
-        z = np.asarray(Z_t, dtype=np.float32)
-        z_mean = z.mean(axis=0) if z.ndim == 2 else z.ravel()
+        z_mean = self._safe_z_mean(Z_t)
         return np.concatenate([z_mean, np.asarray(sfc_feat, np.float32).ravel()])[None]
 
     def _states_batch(self, Z_mean: np.ndarray, sfc_feats: np.ndarray) -> np.ndarray:
@@ -335,8 +366,7 @@ class HighLevelAgent:
             return random.randrange(len(queue))
 
         sfc_feats = self.extract_sfc_features(queue, Z_t, ll_agent)
-        z         = np.asarray(Z_t, dtype=np.float32)
-        z_mean    = z.mean(axis=0) if z.ndim == 2 else z.ravel()
+        z_mean    = self._safe_z_mean(Z_t)
         S_batch = tf.constant(self._states_batch(z_mean, sfc_feats))
         q_mat   = self.policy_net(S_batch, training=False).numpy()  # (N, 2)
 

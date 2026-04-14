@@ -208,6 +208,11 @@ class HRL_VGAE_Strategy(Strategy):
         Z, dcs, X, A = self._graph_cache[key]
         return Z, dcs
 
+    def _clear_bw_caches(self):
+        self._nx_graph_cache.clear()
+        self._path_cache.clear()
+        self._routing_cache.clear()
+
     def _clear_all_caches(self):
         """Xoá hoàn toàn — gọi đầu mỗi episode."""
         self._nx_graph_cache.clear()
@@ -301,6 +306,20 @@ class HRL_VGAE_Strategy(Strategy):
 
     def _greedy_placement(self, sfc: SFC, current_time: float) -> Optional[Dict]:
         return self._get_best_fit().get_placement(sfc, current_time)
+
+    def _step_with_fallback(self, sfc: SFC, current_time: float,
+                            plan: Optional[Dict]) -> Tuple[bool, List[float], float, Optional[Dict], bool]:
+        if plan is not None:
+            success, rewards, score = self.env.step(plan)
+            if success:
+                return True, rewards, score, plan, False
+
+        greedy_plan = self._greedy_placement(sfc, current_time)
+        if greedy_plan is None:
+            return False, [-1.0, 0.0], -1.0, None, False
+
+        success, rewards, score = self.env.step(greedy_plan)
+        return success, rewards, score, greedy_plan if success else None, True
 
     def _greedy_placement_with_traj(self, sfc: SFC, current_time: float,
                                      Z_t: np.ndarray,
@@ -451,7 +470,7 @@ class HRL_VGAE_Strategy(Strategy):
                     else:
                         R_LL_override = None
 
-                success, rewards, _ = self.env.step(plan)
+                success, rewards, _, used_plan, used_fallback = self._step_with_fallback(selected_sfc, t, plan)
 
                 if success:
                     ep_accepted += 1
@@ -461,7 +480,7 @@ class HRL_VGAE_Strategy(Strategy):
                     vnf_f     = ([selected_sfc.request.vnfs[0].resource.get(k, 0.)
                                 for k in config.RESOURCE_TYPE]
                                 if selected_sfc.request.vnfs else [0., 0., 0.])
-                    R_LL      = (R_LL_override if R_LL_override is not None
+                    R_LL      = ((1.25 if used_fallback else R_LL_override) if R_LL_override is not None
                                 else self._compute_ll_reward(rewards, selected_sfc, t, Z_t, vnf_f))
                     self._clear_bw_caches()
                     t_next = (min((s.request.arrival_time for s in pending), default=t)
@@ -579,7 +598,7 @@ class HRL_VGAE_Strategy(Strategy):
             if plan is None:
                 plan = self._greedy_placement(selected_sfc, t)
 
-            success, rewards, _ = self.env.step(plan) if plan else (False, [-1., 0.], -1.)
+            success, rewards, _, plan, used_fallback = self._step_with_fallback(selected_sfc, t, plan)
             processed += 1
 
             if success:
