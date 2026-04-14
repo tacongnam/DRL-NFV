@@ -155,28 +155,19 @@ def _python_cmd(script_path: str, *args: str):
 def _run_pretrain_inline(args, train_dir: str):
     from models import pretrain as pretrain_module
 
-    selected = pretrain_module.select_train_files(
-        train_dir,
-        profile=getattr(args, "train_profile", DEFAULT_TRAIN_PROFILE),
-        max_files=getattr(args, "max_pretrain_files", DEFAULT_MAX_PRETRAIN_FILES),
-        min_servers=getattr(args, "min_servers", DEFAULT_MIN_SERVERS),
-        min_server_ratio=getattr(args, "min_server_ratio", DEFAULT_MIN_SERVER_RATIO),
-    )
+    selected = pretrain_module.get_train_files(train_dir)
     if not selected:
         print("[Pretrain] No training files selected.", flush=True)
         return False
 
     req_pct = getattr(args, "pretrain_request_pct", DEFAULT_PRETRAIN_REQUEST_PCT)
-    req_max = getattr(args, "max_pretrain_requests", DEFAULT_MAX_PRETRAIN_REQUESTS)
-    pretrain_module.print_selected_files(selected, req_max, req_pct)
+    pretrain_module.print_selected_files(selected, req_pct)
 
     print(f"[Pretrain] Running inline on {train_dir}", flush=True)
     vgae = None
     vgae = pretrain_module.pretrain_vgae(
         selected,
         epochs=getattr(args, "vgae_epochs", 60),
-        max_requests=req_max,
-        sample_mode=getattr(args, "request_sample_mode", DEFAULT_REQUEST_SAMPLE_MODE),
         request_pct=req_pct,
     )
     if vgae is None and getattr(args, "ll_episodes", 0) > 0:
@@ -190,8 +181,6 @@ def _run_pretrain_inline(args, train_dir: str):
             selected,
             vgae,
             episodes=getattr(args, "ll_episodes", 60),
-            max_requests=req_max,
-            sample_mode=getattr(args, "request_sample_mode", DEFAULT_REQUEST_SAMPLE_MODE),
             request_pct=req_pct,
         )
     else:
@@ -337,7 +326,7 @@ def run_pipeline(args):
     print("[2/4] Pre-training complete." if ok else "[2/4] Pre-training failed.", flush=True)
 
     print("\n[3/4] Training HRL ...")
-    ll_path = os.path.join(ROOT_DIR, "models/ll_pretrained/ll_dqn_weights.weights.h5")
+    ll_path = os.path.join(ROOT_DIR, "models/ll_pretrained/ll_dqn_weights.npy")
     _run_train(
         args.episodes,
         ll_path if os.path.exists(ll_path) else None,
@@ -401,14 +390,16 @@ def _run_train(episodes, ll_pretrained, save_dir, train_dir,
             ll_pretrained_path=ll_pretrained if i == 0 else None)
 
         if i > 0:
-            hl_w = os.path.join(save_dir, "hl_pmdrl_weights.weights.h5")
-            if os.path.exists(hl_w):
+            hl_w = os.path.join(save_dir, "hl_pmdrl_weights.npy")
+            ll_w = os.path.join(save_dir, "ll_dqn_weights.npy")
+            if os.path.exists(hl_w) or os.path.exists(ll_w):
                 strategy.load_model(save_dir)
 
         env.set_strategy(strategy)
         env.run_simulation()
+        os.makedirs(save_dir, exist_ok=True)
+        strategy.save_model(save_dir)
 
-    os.makedirs(save_dir, exist_ok=True)
     if strategy:
         strategy.save_model(save_dir)
     return strategy
@@ -418,7 +409,7 @@ def run_train(args):
     print("\n=== TRAINING ===")
     ll_path = getattr(args, "ll_pretrained", None)
     if not ll_path:
-        candidate = os.path.join(ROOT_DIR, "models/ll_pretrained/ll_dqn_weights.weights.h5")
+        candidate = os.path.join(ROOT_DIR, "models/ll_pretrained/ll_dqn_weights.npy")
         ll_path   = candidate if os.path.exists(candidate) else None
     _run_train(args.episodes, ll_path,
                os.path.abspath(getattr(args, "model_dir", "models/hrl_final")),
@@ -513,7 +504,7 @@ def run_baselines(args=None):
         _plot_baseline_results(results, out_path=plot_out)
 
     model_dir = os.path.abspath(getattr(args, "model_dir", "models/hrl_final"))
-    hrl_weights = ["hl_pmdrl_weights.weights.h5", "ll_dqn_weights.weights.h5"]
+    hrl_weights = ["hl_pmdrl_weights.npy", "ll_dqn_weights.npy", "vgae_weights.npy"]
     if os.path.isdir(model_dir) and any(
         os.path.exists(os.path.join(model_dir, w)) for w in hrl_weights
     ):
