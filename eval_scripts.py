@@ -8,8 +8,8 @@ from strategy.hrl import HRL_VGAE_Strategy
 
 # Cấu hình đường dẫn
 MODEL_DIR = "models/hrl_final"
-TEST_DIR = "data/test"
-OUTPUT_DIR = "results_eval"
+TEST_DIR = "data/shortlist_test"
+OUTPUT_DIR = "/"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def parse_file_info(filename):
@@ -21,49 +21,46 @@ def parse_file_info(filename):
         "Difficulty": parts[2] if len(parts) > 2 else "Unknown"
     }
 
-def run_evaluation():
+def run_evaluation(num_runs=5):
     test_files = [f for f in os.listdir(TEST_DIR) if f.endswith(".json")]
     all_results = []
-
-    # Danh sách thuật toán bao gồm HRL-VGAE và Baselines
     algorithms = list(BASELINE_REGISTRY.keys()) + ["hrl-vgae"]
 
-    print(f"Bắt đầu thực nghiệm trên {len(test_files)} kịch bản...")
+    print(f"Bắt đầu thực nghiệm: {len(test_files)} kịch bản, mỗi kịch bản chạy {num_runs} lần...")
 
     for fname in test_files:
         info = parse_file_info(fname)
         fpath = os.path.join(TEST_DIR, fname)
         
-        for algo_key in algorithms:
-            print(f"Đang chạy {algo_key} trên {fname}...")
-            env = load_env_from_json(fpath)
+        # Vòng lặp số lần chạy (X lần)
+        for run_idx in range(num_runs):
+            print(f"Đang xử lý: {fname} | Lần chạy: {run_idx + 1}/{num_runs}")
             
-            if algo_key == "hrl-vgae":
-                strategy = HRL_VGAE_Strategy(env, is_training=False)
-                if os.path.exists(MODEL_DIR):
-                    strategy.load_model(MODEL_DIR)
-                label = "HRL-VGAE"
-            else:
-                label, cls = BASELINE_REGISTRY[algo_key]
-                strategy = cls(env)
-            
-            env.set_strategy(strategy)
-            
-            # Chạy mô phỏng (Dùng run_simulation_eval cho HRL để đảm bảo ko train)
-            if algo_key == "hrl-vgae":
-                stats = strategy.run_simulation_eval()
-            else:
-                stats = env.run_simulation()
+            for algo_key in algorithms:
+                env = load_env_from_json(fpath)
+                
+                if algo_key == "hrl-vgae":
+                    strategy = HRL_VGAE_Strategy(env, is_training=False)
+                    if os.path.exists(MODEL_DIR):
+                        strategy.load_model(MODEL_DIR)
+                    label = "HRL-VGAE"
+                    stats = strategy.run_simulation_eval()
+                else:
+                    label, cls = BASELINE_REGISTRY[algo_key]
+                    strategy = cls(env)
+                    env.set_strategy(strategy)
+                    stats = env.run_simulation()
 
-            all_results.append({
-                "Algorithm": label,
-                "Topology": info["Topology"],
-                "Distribution": info["Distribution"],
-                "Difficulty": info["Difficulty"],
-                "AR": stats.get("acceptance_ratio", 0),
-                "Cost": stats.get("average_cost", 0),
-                "Delay": stats.get("total_delay", 0) / max(stats.get("accepted_requests", 1), 1)
-            })
+                all_results.append({
+                    "Algorithm": label,
+                    "FileName": fname, # Lưu tên file để dễ group sau này
+                    "Topology": info["Topology"],
+                    "Distribution": info["Distribution"],
+                    "Difficulty": info["Difficulty"],
+                    "AR": stats.get("acceptance_ratio", 0),
+                    "Cost": stats.get("average_cost", 0),
+                    "Delay": stats.get("total_delay", 0) / max(stats.get("accepted_requests", 1), 1)
+                })
 
     return pd.DataFrame(all_results)
 
@@ -104,14 +101,20 @@ def plot_results(df):
     plt.show()
 
 if __name__ == "__main__":
-    results_df = run_evaluation()
+    X_RUNS = 2
+    results_df = run_evaluation(num_runs=X_RUNS)
     
-    # Lưu bảng kết quả
-    summary = results_df.groupby(["Algorithm", "Difficulty", "Topology"]).mean().reset_index()
-    summary.to_csv(os.path.join(OUTPUT_DIR, "final_report.csv"), index=False)
-    
-    print("\n=== BẢNG KẾ QUẢ TỔNG HỢP ===")
-    print(summary)
-    
-    # Vẽ biểu đồ
-    plot_results(results_df)
+    if not results_df.empty:
+        # Gom nhóm theo Thuật toán và File để tính trung bình các lần chạy
+        summary = results_df.groupby(["Algorithm", "FileName", "Difficulty", "Topology"]) \
+                            .mean(numeric_only=True) \
+                            .reset_index()
+        
+        # Lưu file csv kết quả cuối cùng
+        summary.to_csv(os.path.join(OUTPUT_DIR, "final_summary_averaged.csv"), index=False)
+        
+        print("\n=== KẾT QUẢ TỔNG HỢP (ĐÃ CHIA TRUNG BÌNH) ===")
+        print(summary) # Hiển thị 10 dòng đầu
+        
+        # Vẽ biểu đồ (Seaborn sẽ tự động tính khoảng tin cậy/error bars nếu truyền kết quả thô)
+        plot_results(results_df)
