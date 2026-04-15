@@ -333,15 +333,16 @@ class HighLevelAgent:
         return np.concatenate([z_mean, np.asarray(sfc_feat, np.float32).ravel()])[None]
 
     def _states_batch(self, Z_mean: np.ndarray, sfc_feats: np.ndarray) -> np.ndarray:
-        """
-        Z_mean: (latent,)  sfc_feats: (N, FEAT_PER_SFC)
-        Trả về (N, latent + FEAT_PER_SFC) — pure numpy, không loop.
-        """
         z = np.broadcast_to(Z_mean[None], (len(sfc_feats), len(Z_mean)))
         return np.concatenate([z, sfc_feats], axis=1).astype(np.float32)
 
     @staticmethod
     def _nondominated_sort(q_matrix: np.ndarray) -> List[int]:
+        """
+        q_matrix[:, 0] = Q_acceptance (higher better)
+        q_matrix[:, 1] = Q_cost (higher = less cost = better, because R_cost = -cost_norm)
+        Both objectives: higher is better. No negation needed.
+        """
         N         = len(q_matrix)
         dom_count = np.zeros(N, dtype=int)
         for i in range(N):
@@ -368,9 +369,7 @@ class HighLevelAgent:
         z_mean    = self._safe_z_mean(Z_t)
         S_batch = tf.constant(self._states_batch(z_mean, sfc_feats))
         q_mat   = self.policy_net(S_batch, training=False).numpy()  # (N, 2)
-
-        q_pareto = np.column_stack([q_mat[:, 0], -q_mat[:, 1]])
-        front    = self._nondominated_sort(q_pareto)
+        front = self._nondominated_sort(q_mat)
         return max(front, key=lambda i: q_mat[i, 0])
 
     def train(self, buffer: ReplayBuffer, batch_size: int = 16):

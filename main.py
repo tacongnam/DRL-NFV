@@ -1,4 +1,4 @@
-import os, sys, json, argparse, subprocess, math
+import os, sys, json, argparse, subprocess, math, random, csv
 import numpy as np
 
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
@@ -99,6 +99,14 @@ def get_data_files(d: str):
     return []
 
 
+def _sample_files(files: list, n: int | None, seed: int | None = None) -> list:
+    """Randomly sample n files from files list. Returns all if n is None or >= len."""
+    if not files or n is None or n <= 0 or n >= len(files):
+        return files
+    rng = random.Random(seed)
+    return sorted(rng.sample(files, n))
+
+
 def _print_selected_files(label: str, files: list, request_pct: int = 0):
     print(f"\n[{label}] Selected {len(files)} file(s)")
     for fp in files:
@@ -110,12 +118,29 @@ def _print_selected_files(label: str, files: list, request_pct: int = 0):
         print(f"  - {os.path.basename(fp)}: req={req_label}/{total_requests}")
 
 
+def _save_csv(results: list, path: str, fieldnames: list = None):
+    if not results:
+        return
+    fieldnames = fieldnames or list(results[0].keys())
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(results)
+    print(f"[CSV] Saved → {path}")
+
+
 def _add_shared_args(parser: argparse.ArgumentParser):
     parser.add_argument("--train-dir", default=TRAIN_DIR)
     parser.add_argument("--model-dir", default="models/hrl_final")
     parser.add_argument("--test-dir", default=None)
     parser.add_argument("--test-files", nargs="+", default=None)
     parser.add_argument("--ll-pretrained", type=str, default=None)
+    parser.add_argument("--sample-files", type=int, default=None,
+                        help="Randomly sample N files from test/baseline dir")
+    parser.add_argument("--sample-seed", type=int, default=None,
+                        help="Random seed for file sampling")
+    parser.add_argument("--csv-out", type=str, default=None,
+                        help="Path to save CSV results")
 
 
 def _add_data_generation_args(parser: argparse.ArgumentParser):
@@ -417,11 +442,16 @@ def run_train(args):
                train_request_pct=getattr(args, "train_request_pct", DEFAULT_TRAIN_REQUEST_PCT))
 
 
-def _run_eval(model_dir, test_dir, test_files=None):
-    files = test_files or get_data_files(test_dir)
-    if not files:
+def _run_eval(model_dir, test_dir, test_files=None,
+              sample_n=None, sample_seed=None, csv_out=None):
+    all_files = test_files or get_data_files(test_dir)
+    if not all_files:
         print("[ERROR] No test files found.")
         return []
+
+    files = _sample_files(all_files, sample_n, sample_seed)
+    if sample_n and len(all_files) > len(files):
+        print(f"[Eval] Sampled {len(files)}/{len(all_files)} files (seed={sample_seed})")
 
     results = []
     for fp in files:
@@ -434,96 +464,159 @@ def _run_eval(model_dir, test_dir, test_files=None):
         stats = strategy.run_simulation_eval()
         env.print_statistics()
         results.append({
-            "name":  "HRL-VGAE",
-            "file":  os.path.basename(fp),
-            "ar":    stats.get("acceptance_ratio", 0),
-            "acc":   stats.get("accepted_requests", 0),
-            "rej":   stats.get("rejected_requests", 0),
-            "cost":  stats.get("total_cost", 0),
-            "delay": stats.get("total_delay", 0),
+            "algorithm": "HRL-VGAE",
+            "file":      os.path.basename(fp),
+            "acceptance_ratio": round(stats.get("acceptance_ratio", 0), 4),
+            "accepted":  stats.get("accepted_requests", 0),
+            "rejected":  stats.get("rejected_requests", 0),
+            "total_cost": round(stats.get("total_cost", 0), 2),
+            "avg_cost":   round(stats.get("average_cost", 0), 2),
+            "total_delay": round(stats.get("total_delay", 0), 2),
         })
 
     print("\n=== EVAL SUMMARY ===")
     print(f"{'File':<35} {'AccRatio':>9} {'Acc':>6} {'Rej':>6} {'Cost':>10}")
     print("-"*70)
     for r in results:
-        print(f"{r['file']:<35} {r['ar']:>9.3f} {r['acc']:>6} {r['rej']:>6} {r['cost']:>10.1f}")
+        print(f"{r['file']:<35} {r['acceptance_ratio']:>9.3f} {r['accepted']:>6} "
+              f"{r['rejected']:>6} {r['total_cost']:>10.1f}")
     if results:
-        print(f"\nAverage acceptance ratio: {sum(r['ar'] for r in results)/len(results):.3f}")
+        avg_ar = sum(r["acceptance_ratio"] for r in results) / len(results)
+        print(f"\nAverage acceptance ratio: {avg_ar:.3f}")
+
+    out = csv_out or os.path.join(ROOT_DIR, "eval_results.csv")
+    _save_csv(results, out)
     return results
 
 
 def run_eval(args):
     print("\n=== EVALUATION ===")
-    _run_eval(os.path.abspath(getattr(args, "model_dir", "models/hrl_final")),
-              os.path.abspath(getattr(args, "test_dir", None) or TEST_DIR),
-              getattr(args, "test_files", None))
+    _run_eval(
+        os.path.abspath(getattr(args, "model_dir", "models/hrl_final")),
+        os.path.abspath(getattr(args, "test_dir", None) or TEST_DIR),
+        getattr(args, "test_files", None),
+        sample_n=getattr(args, "sample_files", None),
+        sample_seed=getattr(args, "sample_seed", None),
+        csv_out=getattr(args, "csv_out", None),
+    )
 
 
 def run_baselines(args=None):
     baselines_to_run = getattr(args, "baselines", None) or list(BASELINE_REGISTRY.keys())
     plot_out         = getattr(args, "plot_out", None)
     test_dir         = os.path.abspath(getattr(args, "test_dir", None) or TEST_DIR)
+    sample_n         = getattr(args, "sample_files", None)
+    sample_seed      = getattr(args, "sample_seed", None)
+    csv_out          = getattr(args, "csv_out", None)
 
-    files = get_data_files(test_dir) or get_data_files(os.path.join(ROOT_DIR, "data"))
-    if not files:
+    all_files = get_data_files(test_dir) or get_data_files(os.path.join(ROOT_DIR, "data"))
+    if not all_files:
         print("[ERROR] No test files found. Run --mode generate first.")
         return
 
-    fp = files[0]
-    print(f"\nBaseline comparison on: {os.path.basename(fp)}")
+    files = _sample_files(all_files, sample_n, sample_seed)
+    if sample_n and len(all_files) > len(files):
+        print(f"[Baseline] Sampled {len(files)}/{len(all_files)} files (seed={sample_seed})")
 
-    results = []
-    for key in baselines_to_run:
-        if key not in BASELINE_REGISTRY:
-            print(f"  [WARN] Unknown baseline '{key}', skipping.")
-            continue
-        label, cls = BASELINE_REGISTRY[key]
-        print(f"\n[{label}]")
-        env = load_env_from_json(fp)
-        env.set_strategy(cls(env))
-        env.run_simulation()
-        env.print_statistics()
-        s = env.stats
-        results.append({
+    print(f"\nBaseline comparison on {len(files)} file(s): {[os.path.basename(f) for f in files]}")
+
+    # Per-file per-algorithm rows for CSV
+    csv_rows = []
+    # Aggregated for plotting
+    agg: dict = {}
+
+    for fp in files:
+        print(f"\n=== File: {os.path.basename(fp)} ===")
+        for key in baselines_to_run:
+            if key not in BASELINE_REGISTRY:
+                print(f"  [WARN] Unknown baseline '{key}', skipping.")
+                continue
+            label, cls = BASELINE_REGISTRY[key]
+            print(f"\n[{label}]")
+            env = load_env_from_json(fp)
+            env.set_strategy(cls(env))
+            env.run_simulation()
+            env.print_statistics()
+            s = env.stats
+            row = {
+                "algorithm":        label,
+                "file":             os.path.basename(fp),
+                "acceptance_ratio": round(s.get("acceptance_ratio", 0.0), 4),
+                "accepted":         s.get("accepted_requests", 0),
+                "rejected":         s.get("rejected_requests", 0),
+                "total_cost":       round(s.get("total_cost", 0.0), 2),
+                "avg_cost":         round(s.get("total_cost", 0.0) / max(s.get("accepted_requests", 1), 1), 2),
+                "total_delay":      round(s.get("total_delay", 0.0), 2),
+            }
+            csv_rows.append(row)
+            if label not in agg:
+                agg[label] = {"ar": [], "cost": [], "delay": []}
+            agg[label]["ar"].append(row["acceptance_ratio"])
+            agg[label]["cost"].append(row["total_cost"])
+            agg[label]["delay"].append(row["total_delay"])
+
+    # Build aggregated summary
+    plot_results = []
+    for label, vals in agg.items():
+        plot_results.append({
             "name":  label,
-            "ar":    s.get("acceptance_ratio", 0.0),
-            "acc":   s.get("accepted_requests", 0),
-            "rej":   s.get("rejected_requests", 0),
-            "cost":  s.get("total_cost", 0.0),
-            "delay": s.get("total_delay", 0.0),
+            "ar":    float(np.mean(vals["ar"])),
+            "cost":  float(np.mean(vals["cost"])),
+            "delay": float(np.mean(vals["delay"])),
         })
 
-    if len(results) > 1:
-        print("\n=== BASELINE SUMMARY ===")
-        print(f"{'Algorithm':<25} {'AccRatio':>9} {'Acc':>6} {'Rej':>6} {'Cost':>10} {'Delay':>10}")
-        print("-"*75)
-        for r in results:
-            print(f"{r['name']:<25} {r['ar']:>9.3f} {r['acc']:>6} {r['rej']:>6} "
-                  f"{r['cost']:>10.1f} {r['delay']:>10.1f}")
-        _plot_baseline_results(results, out_path=plot_out)
+    if len(plot_results) > 1:
+        print("\n=== BASELINE SUMMARY (avg across files) ===")
+        print(f"{'Algorithm':<25} {'AccRatio':>9} {'Cost':>10} {'Delay':>10}")
+        print("-"*60)
+        for r in plot_results:
+            print(f"{r['name']:<25} {r['ar']:>9.3f} {r['cost']:>10.1f} {r['delay']:>10.1f}")
+        _plot_baseline_results(plot_results, out_path=plot_out)
+
+    out = csv_out or os.path.join(ROOT_DIR, "baseline_results.csv")
+    _save_csv(csv_rows, out, fieldnames=["algorithm","file","acceptance_ratio","accepted","rejected","total_cost","avg_cost","total_delay"])
 
     model_dir = os.path.abspath(getattr(args, "model_dir", "models/hrl_final"))
     hrl_weights = ["hl_pmdrl_weights.npy", "ll_dqn_weights.npy", "vgae_weights.npy"]
     if os.path.isdir(model_dir) and any(
         os.path.exists(os.path.join(model_dir, w)) for w in hrl_weights
     ):
-        print(f"\n[HRL-VGAE] Evaluating from {model_dir} ...")
-        env      = load_env_from_json(fp)
-        strategy = HRL_VGAE_Strategy(env, is_training=False, episodes=1)
-        strategy.load_model(model_dir)
-        env.set_strategy(strategy)
-        hrl_stats = strategy.run_simulation_eval()
-        env.print_statistics()
-        hrl_r = [{
-            "name":  "HRL-VGAE",
-            "ar":    hrl_stats.get("acceptance_ratio", 0.0),
-            "cost":  hrl_stats.get("total_cost", 0.0),
-            "delay": hrl_stats.get("total_delay", 0.0),
-        }]
+        hrl_rows = []
+        hrl_agg = {"ar": [], "cost": [], "delay": []}
+        for fp in files:
+            print(f"\n[HRL-VGAE] Evaluating {os.path.basename(fp)} from {model_dir} ...")
+            env      = load_env_from_json(fp)
+            strategy = HRL_VGAE_Strategy(env, is_training=False, episodes=1)
+            strategy.load_model(model_dir)
+            env.set_strategy(strategy)
+            hrl_stats = strategy.run_simulation_eval()
+            env.print_statistics()
+            row = {
+                "algorithm":        "HRL-VGAE",
+                "file":             os.path.basename(fp),
+                "acceptance_ratio": round(hrl_stats.get("acceptance_ratio", 0.0), 4),
+                "accepted":         hrl_stats.get("accepted_requests", 0),
+                "rejected":         hrl_stats.get("rejected_requests", 0),
+                "total_cost":       round(hrl_stats.get("total_cost", 0.0), 2),
+                "avg_cost":         round(hrl_stats.get("average_cost", 0.0), 2),
+                "total_delay":      round(hrl_stats.get("total_delay", 0.0), 2),
+            }
+            csv_rows.append(row)
+            hrl_rows.append({"name": "HRL-VGAE", "ar": row["acceptance_ratio"],
+                             "cost": row["total_cost"], "delay": row["total_delay"]})
+            for k in ["ar", "cost", "delay"]:
+                hrl_agg[k].append(hrl_rows[-1][k])
+
+        hrl_plot = [{"name": "HRL-VGAE",
+                     "ar":   float(np.mean(hrl_agg["ar"])),
+                     "cost": float(np.mean(hrl_agg["cost"])),
+                     "delay":float(np.mean(hrl_agg["delay"]))}]
         cmp_out = (plot_out.replace(".png", "_vs_hrl.png") if plot_out
                    else os.path.join(ROOT_DIR, "hrl_vs_baselines.png"))
-        _plot_eval_vs_baselines(hrl_r, results, out_path=cmp_out)
+        _plot_eval_vs_baselines(hrl_plot, plot_results, out_path=cmp_out)
+
+        # Re-save CSV with HRL rows appended
+        _save_csv(csv_rows, out, fieldnames=["algorithm","file","acceptance_ratio","accepted","rejected","total_cost","avg_cost","total_delay"])
 
 
 def main():

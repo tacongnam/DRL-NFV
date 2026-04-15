@@ -24,7 +24,6 @@ _HL_WEIGHTS_FILE   = "hl_pmdrl_weights.npy"
 _VGAE_WEIGHTS_FILE = "vgae_weights.npy"
 
 class HRL_VGAE_Strategy(Strategy):
-
     def __init__(self, env,
                  is_training:        bool  = False,
                  episodes:           int   = 300,
@@ -70,7 +69,6 @@ class HRL_VGAE_Strategy(Strategy):
                 for k in config.RESOURCE_TYPE:
                     self._max_res[k] = max(self._max_res[k], node.cap[k])
 
-        # BestFit dùng chung — không khởi tạo lại mỗi request
         self._best_fit = None
 
         if ll_pretrained_path:
@@ -137,7 +135,7 @@ class HRL_VGAE_Strategy(Strategy):
             print(f"[HRL] HL load warning: {e}")
 
     def _bw_pruned_graph(self, t_start: int, t_end: int, bw: float) -> nx.Graph:
-        key = (round(bw, 1))
+        key = (t_start, t_end, round(bw, 1))
         if key in self._nx_graph_cache:
             return self._nx_graph_cache[key]
         G = nx.Graph()
@@ -200,7 +198,7 @@ class HRL_VGAE_Strategy(Strategy):
 
     def _get_z(self, t_start: int, t_end: int,
             bw_req: float) -> Tuple[np.ndarray, List[str]]:
-        key = (round(bw_req, 1))
+        key = (t_start, t_end, round(bw_req, 1))
         if key not in self._graph_cache:
             X, A, dcs = self._build_dc_graph(t_start, t_end, bw_req)
             Z = self.vgae_net.encode(X, A)
@@ -214,7 +212,6 @@ class HRL_VGAE_Strategy(Strategy):
         self._routing_cache.clear()
 
     def _clear_all_caches(self):
-        """Xoá hoàn toàn — gọi đầu mỗi episode."""
         self._nx_graph_cache.clear()
         self._path_cache.clear()
         self._routing_cache.clear()
@@ -298,7 +295,6 @@ class HRL_VGAE_Strategy(Strategy):
             node_placements, link_paths, vnf_timeslots, link_timeslots, sfc)
 
     def _get_best_fit(self):
-        """BestFit dùng chung trong episode — không tạo mới mỗi request."""
         if self._best_fit is None:
             from strategy.best_fit import BestFit
             self._best_fit = BestFit(self.env)
@@ -498,8 +494,6 @@ class HRL_VGAE_Strategy(Strategy):
         accepted = rejected = 0
         total_node_cost = 0.0
         t = pending[0].request.arrival_time if pending else 0.0
-        total_requests = len(pending)
-        processed = 0
         while pending or queue:
             if not queue and pending:
                 t = pending[0].request.arrival_time
@@ -509,7 +503,6 @@ class HRL_VGAE_Strategy(Strategy):
             expired_now = len(queue) - len(active)
             if expired_now > 0:
                 rejected += expired_now
-                processed += expired_now
             queue = active
             if not queue:
                 if pending:
@@ -530,7 +523,6 @@ class HRL_VGAE_Strategy(Strategy):
             if plan is None:
                 plan = self._greedy_placement(selected_sfc, t)
             success, rewards, _, plan, used_fallback = self._step_with_fallback(selected_sfc, t, plan)
-            processed += 1
             if success:
                 accepted += 1
                 node_cost = sum(self.env.network.nodes[v["dc"]].get_cost(self.env.vnfs[k]) for k, v in plan.get("nodes", {}).items() if v["dc"] in self.env.network.nodes and k in self.env.vnfs)
