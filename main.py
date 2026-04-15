@@ -33,11 +33,11 @@ DEFAULT_PRETRAIN_REQUEST_PCT = 0
 
 BASELINE_REGISTRY = {
     "fifs":     ("GreedyFIFS",          GreedyFIFS),
-    "glb":      ("GreedyGLB",           GreedyGLB),
-    "spf":      ("ShortestPathFirst",   ShortestPathFirst),
+    #"glb":      ("GreedyGLB",           GreedyGLB),
+    #"spf":      ("ShortestPathFirst",   ShortestPathFirst),
     "bestfit":  ("BestFit",             BestFit),
     "deadline": ("DeadlineAwareGreedy", DeadlineAwareGreedy),
-    "random":   ("RandomFit",           RandomFit),
+    #"random":   ("RandomFit",           RandomFit),
 }
 
 

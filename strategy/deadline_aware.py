@@ -9,6 +9,7 @@ import config
 class DeadlineAwareGreedy(Strategy):
     def __init__(self, env):
         super().__init__(env)
+        self.request_sort_key = lambda r: r.arrival_time + r.delay_max
         self.name = "DeadlineAwareGreedy"
         self._graph_cache: dict = {}
 
