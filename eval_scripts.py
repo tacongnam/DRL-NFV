@@ -101,7 +101,7 @@ def plot_results(df):
     plt.show()
 
 if __name__ == "__main__":
-    X_RUNS = 1
+    X_RUNS = 2
     results_df = run_evaluation(num_runs=X_RUNS)
     
     if not results_df.empty:
