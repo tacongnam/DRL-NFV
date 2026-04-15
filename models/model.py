@@ -355,6 +355,30 @@ class HighLevelAgent:
                         dom_count[i] += 1
         front = list(np.where(dom_count == 0)[0])
         return front if front else list(range(N))
+    
+    def _crowding_distance_selection(self, front_indices: List[int], q_mat: np.ndarray) -> int:
+        if len(front_indices) <= 2:
+            return random.choice(front_indices)
+
+        n = len(front_indices)
+        distances = np.zeros(n)
+        
+        for obj_idx in [0, 1]:
+            sorted_keys = sorted(range(n), key=lambda k: q_mat[front_indices[k], obj_idx])
+            
+            distances[sorted_keys[0]] = 1e9
+            distances[sorted_keys[-1]] = 1e9
+            
+            obj_min = q_mat[front_indices[sorted_keys[0]], obj_idx]
+            obj_max = q_mat[front_indices[sorted_keys[-1]], obj_idx]
+            obj_range = obj_max - obj_min
+            
+            if obj_range > 0:
+                for i in range(1, n - 1):
+                    distances[sorted_keys[i]] += (q_mat[front_indices[sorted_keys[i+1]], obj_idx] - 
+                                                q_mat[front_indices[sorted_keys[i-1]], obj_idx]) / obj_range
+        
+        return front_indices[np.argmax(distances)]
 
     def act(self, Z_t: np.ndarray, queue: list, epsilon: float = 0.0,
             ll_agent: Optional[LowLevelAgent] = None) -> int:
@@ -368,9 +392,9 @@ class HighLevelAgent:
         sfc_feats = self.extract_sfc_features(queue, Z_t, ll_agent)
         z_mean    = self._safe_z_mean(Z_t)
         S_batch = tf.constant(self._states_batch(z_mean, sfc_feats))
-        q_mat   = self.policy_net(S_batch, training=False).numpy()  # (N, 2)
+        q_mat   = self.policy_net(S_batch, training=False).numpy()
         front = self._nondominated_sort(q_mat)
-        return max(front, key=lambda i: q_mat[i, 0])
+        return self._crowding_distance_selection(front, q_mat)
 
     def train(self, buffer: ReplayBuffer, batch_size: int = 16):
         if len(buffer) < batch_size:
@@ -379,6 +403,7 @@ class HighLevelAgent:
 
         states, next_states = [], []
         actions, rewards_ar, rewards_cost, dones = [], [], [], []
+        q_next_max_ar, q_next_max_cost = [], []
 
         for (Z_mean, sfc_feats, sfc_idx, R_HL, Z_next_mean, sfc_feats_next, done) in batch:
             if len(sfc_feats) == 0:
@@ -388,38 +413,43 @@ class HighLevelAgent:
             z  = np.asarray(Z_mean,      np.float32).ravel()
             zn = np.asarray(Z_next_mean, np.float32).ravel()
             f  = np.asarray(sfc_feats[idx_clip], np.float32).ravel()
-            fn = np.asarray(sfc_feats_next[0] if len(sfc_feats_next) > 0
-                            else sfc_feats[idx_clip], np.float32).ravel()
-
             states.append(np.concatenate([z, f]))
-            next_states.append(np.concatenate([zn, fn]))
             actions.append(idx_clip)
 
             r_ar   = float(R_HL[0]) if hasattr(R_HL, '__len__') else float(R_HL)
             r_cost = float(R_HL[1]) if hasattr(R_HL, '__len__') and len(R_HL) > 1 else 0.0
             rewards_ar.append(r_ar)
             rewards_cost.append(r_cost)
-            dones.append(float(done))
+            dones.append(float(done))   
+
+            if not done and len(sfc_feats_next) > 0:
+                zn = np.asarray(Z_next_mean, np.float32).ravel()
+                Sn_batch = self._states_batch(zn, sfc_feats_next)
+                qn_values = self.target_net(tf.constant(Sn_batch), training=False).numpy()
+                
+                q_next_max_ar.append(np.max(qn_values[:, 0]))
+                q_next_max_cost.append(np.max(qn_values[:, 1]))
+            else:
+                q_next_max_ar.append(0.0)
+                q_next_max_cost.append(0.0)
 
         if not states:
             return
 
         S      = tf.constant(np.array(states,       np.float32))
-        Sn     = tf.constant(np.array(next_states,  np.float32))
         R_ar   = tf.constant(np.array(rewards_ar,   np.float32))
         R_cost = tf.constant(np.array(rewards_cost, np.float32))
         D      = tf.constant(np.array(dones,        np.float32))
-        A      = np.array(actions, dtype=np.int32)
 
-        Q_next   = self.target_net(Sn, training=False)
-        tgt_ar   = R_ar   + self.gamma * Q_next[:, 0] * (1.0 - D)
-        tgt_cost = R_cost + self.gamma * Q_next[:, 1] * (1.0 - D)
+        target_ar = R_ar + self.gamma * tf.constant(q_next_max_ar, tf.float32) * (1.0 - D)
+        target_cost = R_cost + self.gamma * tf.constant(q_next_max_cost, tf.float32) * (1.0 - D)
 
         with tf.GradientTape() as tape:
-            Q_pred    = self.policy_net(S, training=True)
-            loss_ar   = tf.reduce_mean(tf.square(tgt_ar   - Q_pred[:, 0]))
-            loss_cost = tf.reduce_mean(tf.square(tgt_cost - Q_pred[:, 1]))
-            loss      = loss_ar + loss_cost
+            Q_pred = self.policy_net(S, training=True)
+            loss_ar = tf.reduce_mean(tf.square(target_ar - Q_pred[:, 0]))
+            loss_cost = tf.reduce_mean(tf.square(target_cost - Q_pred[:, 1]))
+            loss = loss_ar + loss_cost
+
         self.opt.apply_gradients(
             zip(tape.gradient(loss, self.policy_net.trainable_variables),
                 self.policy_net.trainable_variables))

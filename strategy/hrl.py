@@ -417,10 +417,7 @@ class HRL_VGAE_Strategy(Strategy):
                 t_end_rough = t_start + max(int(max(s.request.delay_max for s in queue) / config.TIMESTEP), 10)
                 Z_t, _ = self._get_z(t_start, t_end_rough, bw_req)
                 sfc_feats_before = self.hl_agent.extract_sfc_features(queue, Z_t, self.ll_agent)
-                if np.random.random() < epsilon:
-                    sfc_idx = np.random.randint(len(queue))
-                else:
-                    sfc_idx = self.hl_agent.act(Z_t, queue, 0.0, self.ll_agent)
+                sfc_idx = self.hl_agent.act(Z_t, queue, 0.0, self.ll_agent)
                 selected_sfc = queue.pop(sfc_idx)
                 self.env.t = t
                 t_start = self.env._get_timeslot(t)
