@@ -84,6 +84,7 @@ class Env(gym.Env):
             'total_delay':       0.0,
             'accepted_details':  [],
             'rejected_details':  [],
+            'total_workload_served': 0.0,
         }
 
     def _reinit_network_usage(self):
@@ -198,6 +199,10 @@ class Env(gym.Env):
                 'arrival_time': sfc.request.arrival_time,
                 'score':        score,
             })
+            vnf_res = sum(sum(v.resource.values()) for v in sfc.request.vnfs)
+            duration = sfc.request.delay_max
+            workload = (vnf_res + sfc.request.bw) * duration
+            self.stats['total_workload_served'] += workload
         else:
             self.stats['rejected_requests'] += 1
             self.stats['rejected_details'].append({

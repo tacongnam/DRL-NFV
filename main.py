@@ -547,6 +547,7 @@ def run_baselines(args=None):
                 "total_cost":       round(s.get("total_cost", 0.0), 2),
                 "avg_cost":         round(s.get("total_cost", 0.0) / max(s.get("accepted_requests", 1), 1), 2),
                 "total_delay":      round(s.get("total_delay", 0.0), 2),
+                "workload served":  round(s.get("total_workload_served", 0.0), 2)
             }
             csv_rows.append(row)
             if label not in agg:
