@@ -9,7 +9,7 @@ from strategy.hrl import HRL_VGAE_Strategy
 # Cấu hình đường dẫn
 MODEL_DIR = "models/hrl_final"
 TEST_DIR = "data/shortlist_test"
-OUTPUT_DIR = "/"
+OUTPUT_DIR = "results_eval"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def parse_file_info(filename):
@@ -101,7 +101,7 @@ def plot_results(df):
     plt.show()
 
 if __name__ == "__main__":
-    X_RUNS = 2
+    X_RUNS = 1
     results_df = run_evaluation(num_runs=X_RUNS)
     
     if not results_df.empty:
