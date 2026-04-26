@@ -493,7 +493,6 @@ class HRL_VGAE_Strategy(Strategy):
                     self.hl_agent.train(self.buf_HL, BATCH_SIZE)
                 if total_steps % TARGET_SYNC == 0:
                     self.ll_agent.update_target_network()
-                    self.hl_agent.update_target_network()
                 if total_steps % VGAE_TRAIN_FREQ == 0 and len(self.buf_Graph) >= 4:
                     self.vgae_net.train(self.buf_Graph, epochs=1)
             total_ep = ep_accepted + ep_rejected
