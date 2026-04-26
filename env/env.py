@@ -233,33 +233,6 @@ class Env(gym.Env):
         self.stats['algorithm_name']   = self.strategy.name
         return self.stats
 
-    def _run_rl_simulation(self):
-        """Evaluate mô hình RL đã hội tụ theo vòng lặp timeslot."""
-        sorted_req = sorted(self.requests, key=lambda r: r.arrival_time)
-        req_idx    = 0
-
-        # FIX: tính max_time tự động nếu chưa được set từ bên ngoài
-        max_time = getattr(self, 'max_time', None)
-        if max_time is None:
-            max_time = max((r.end_time for r in self.requests), default=0.0)
-
-        for t_step in range(int(max_time / config.TIMESTEP) + 1):
-            self.t = t_step * config.TIMESTEP
-
-            while req_idx < len(sorted_req) and sorted_req[req_idx].arrival_time <= self.t:
-                self.waitlist.append(SFC(sorted_req[req_idx]))
-                req_idx += 1
-
-            valid, expired = [], []
-            for sfc in self.waitlist:
-                (valid if self.t <= sfc.request.end_time else expired).append(sfc)
-            self.stats['rejected_requests'] += len(expired)
-            self.waitlist = valid
-
-            while self.waitlist:
-                if not self.strategy.process_waitlist():
-                    break
-
     def print_statistics(self):
         s = self.stats
         print("\n" + "=" * 30)

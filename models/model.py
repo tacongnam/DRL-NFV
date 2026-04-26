@@ -60,9 +60,12 @@ class VGAENetwork:
             return np.zeros((0, self.latent_dim), dtype=np.float32)
         X_t   = tf.constant(X, dtype=tf.float32)
         A_hat = self._norm_adj(A.astype(np.float32))
-        mu    = self.gcn_mu(self.gcn1(X_t, A_hat), A_hat)
+        h     = self.gcn1(X_t, A_hat)
+        mu      = self.gcn_mu(h, A_hat)
+        log_var = self.gcn_lv(h, A_hat)
+        z = mu + tf.exp(0.5 * log_var) * tf.random.normal(tf.shape(mu))
         self._built = True
-        return mu.numpy()
+        return z.numpy()
 
     def _train_step(self, X_t: tf.Tensor, A_hat: tf.Tensor, A_t: tf.Tensor):
         with tf.GradientTape() as tape:
@@ -133,13 +136,12 @@ class LowLevelAgent:
         self.latent_dim = latent_dim
         self.max_dcs    = max_dcs
         self.gamma      = gamma
-
-        feat_dim = input_dim if input_dim else latent_dim + 3
+        # state = [z_mean(latent_dim), vnf_feat(3), loc_prev(latent_dim)]
+        feat_dim = input_dim if input_dim else latent_dim * 2 + 3
         self.policy_net = _mlp(feat_dim, 128, max_dcs, "ll_policy")
         self.target_net = _mlp(feat_dim, 128, max_dcs, "ll_target")
         self._sync_target()
         self.opt = keras.optimizers.Adam(lr)
-
         self.weight_net = _mlp(feat_dim, 32, 2, "ll_weights")
         self.opt_w      = keras.optimizers.Adam(lr)
 
@@ -166,25 +168,44 @@ class LowLevelAgent:
             return out
         return flat[:self.latent_dim]
 
-    def _make_state(self, Z_t: np.ndarray, vnf_feat) -> np.ndarray:
+    def _make_state(self, Z_t: np.ndarray, vnf_feat: list,
+                    loc_z: Optional[np.ndarray] = None) -> np.ndarray:
         z_mean = self._safe_z_mean(Z_t)
         f_arr  = np.asarray(vnf_feat, dtype=np.float32).ravel()
-        return np.concatenate([z_mean, f_arr])[None]
+        if loc_z is None:
+            loc_z = np.zeros(self.latent_dim, dtype=np.float32)
+        loc_arr = np.asarray(loc_z, dtype=np.float32).ravel()[:self.latent_dim]
+        if loc_arr.shape[0] < self.latent_dim:
+            pad = np.zeros(self.latent_dim, dtype=np.float32)
+            pad[:loc_arr.shape[0]] = loc_arr
+            loc_arr = pad
+        return np.concatenate([z_mean, f_arr, loc_arr])[None]
 
-    def _make_states_batch(self, Z_list: list, vnf_feat_list: list) -> np.ndarray:
+    def _make_states_batch(self, Z_list: list, vnf_feat_list: list,
+                           loc_list: Optional[list] = None) -> np.ndarray:
         rows = []
-        for Z, f in zip(Z_list, vnf_feat_list):
+        for i, (Z, f) in enumerate(zip(Z_list, vnf_feat_list)):
             z_mean = self._safe_z_mean(Z)
-            rows.append(np.concatenate([z_mean, np.asarray(f, np.float32).ravel()]))
+            loc_z  = (np.asarray(loc_list[i], np.float32).ravel()
+                      if loc_list and loc_list[i] is not None
+                      else np.zeros(self.latent_dim, np.float32))
+            if loc_z.shape[0] < self.latent_dim:
+                pad = np.zeros(self.latent_dim, np.float32)
+                pad[:loc_z.shape[0]] = loc_z
+                loc_z = pad
+            else:
+                loc_z = loc_z[:self.latent_dim]
+            rows.append(np.concatenate([z_mean, np.asarray(f, np.float32).ravel(), loc_z]))
         return np.array(rows, dtype=np.float32)
-
+    
     def act(self, Z_t: np.ndarray, vnf_feat: list,
-            valid_indices: List[int], epsilon: float = 0.0) -> int:
+            valid_indices: List[int], epsilon: float = 0.0,
+            loc_z: Optional[np.ndarray] = None) -> int:
         if not valid_indices:
             return 0
         if random.random() < epsilon:
             return random.choice(valid_indices)
-        state = self._make_state(Z_t, vnf_feat)
+        state = self._make_state(Z_t, vnf_feat, loc_z)
         q     = self.policy_net(state, training=False).numpy()[0]
         mask             = np.full(self.max_dcs, -1e9, dtype=np.float32)
         valid_clip       = [i for i in valid_indices if i < self.max_dcs]
@@ -193,8 +214,9 @@ class LowLevelAgent:
         mask[valid_clip] = q[valid_clip]
         return int(np.argmax(mask))
 
-    def get_reward_weights(self, Z_t: np.ndarray, vnf_feat: list) -> Tuple[float, float]:
-        state = self._make_state(Z_t, vnf_feat)
+    def get_reward_weights(self, Z_t: np.ndarray, vnf_feat: list,
+                           loc_z: Optional[np.ndarray] = None) -> Tuple[float, float]:
+        state = self._make_state(Z_t, vnf_feat, loc_z)
         w     = tf.sigmoid(self.weight_net(state, training=False)).numpy()[0]
         return float(w[0]) * 2.0, float(w[1]) * 1.0
 
@@ -223,17 +245,14 @@ class LowLevelAgent:
         if len(buffer) < batch_size:
             return
         batch = buffer.sample(batch_size)
-
-        Z_list, vnf_f_list, actions, rewards, Z_next_list, next_masks, dones = zip(*batch)
-        S  = tf.constant(self._make_states_batch(Z_list, vnf_f_list), dtype=tf.float32)
-        Sn = tf.constant(self._make_states_batch(Z_next_list, vnf_f_list), dtype=tf.float32)
-
+        Z_list, vnf_f_list, loc_list, actions, rewards, Z_next_list, next_masks, loc_next_list, dones = zip(*batch)
+        S  = tf.constant(self._make_states_batch(Z_list, vnf_f_list, loc_list), dtype=tf.float32)
+        Sn = tf.constant(self._make_states_batch(Z_next_list, vnf_f_list, loc_next_list), dtype=tf.float32)
         R = tf.constant(
             np.array([float(r[0]) if hasattr(r, '__len__') else float(r) for r in rewards],
                      dtype=np.float32))
         D = tf.constant(np.array(dones, dtype=np.float32))
         A = np.array([int(a) for a in actions], dtype=np.int32)
-
         Q_next_np = self.target_net(Sn, training=False).numpy()
         for i, mask in enumerate(next_masks):
             valid_clip = [m for m in mask if isinstance(m, int) and m < self.max_dcs]
@@ -243,9 +262,7 @@ class LowLevelAgent:
                 Q_next_np[i]   = row
             else:
                 Q_next_np[i]   = -1e9
-
         Q_next_max = tf.constant(Q_next_np.max(axis=1), dtype=tf.float32)
-        
         self._tf_train_step(S, R, D, tf.constant(A, dtype=tf.int32), Q_next_max)
 
 class HighLevelAgent:
@@ -259,18 +276,10 @@ class HighLevelAgent:
         self.max_queue    = max_queue
         self.gamma        = gamma
         self.use_ll_score = use_ll_score
-
         feat_dim = input_dim if input_dim else latent_dim + self.FEAT_PER_SFC
         self.policy_net = _mlp(feat_dim, 128, 2, "hl_policy")
-        self.target_net = _mlp(feat_dim, 128, 2, "hl_target")
-        self._sync_target()
         self.opt = keras.optimizers.Adam(lr)
-
-    def _sync_target(self):
-        self.target_net.set_weights(self.policy_net.get_weights())
-
-    def update_target_network(self):
-        self._sync_target()
+        self.log_std = tf.Variable(tf.zeros(2), trainable=True, name="hl_log_std")
 
     def _safe_z_mean(self, Z_t: np.ndarray) -> np.ndarray:
         z_arr = np.asarray(Z_t, dtype=np.float32)
@@ -400,56 +409,31 @@ class HighLevelAgent:
         if len(buffer) < batch_size:
             return
         batch = buffer.sample(batch_size)
-
-        states, next_states = [], []
-        actions, rewards_ar, rewards_cost, dones = [], [], [], []
-        q_next_max_ar, q_next_max_cost = [], []
-
+        states, actions, rewards_ar, rewards_cost, dones = [], [], [], [], []
         for (Z_mean, sfc_feats, sfc_idx, R_HL, Z_next_mean, sfc_feats_next, done) in batch:
             if len(sfc_feats) == 0:
                 continue
             idx_clip = min(int(sfc_idx), len(sfc_feats) - 1)
-
-            z  = np.asarray(Z_mean,      np.float32).ravel()
-            zn = np.asarray(Z_next_mean, np.float32).ravel()
-            f  = np.asarray(sfc_feats[idx_clip], np.float32).ravel()
+            z = np.asarray(Z_mean, np.float32).ravel()
+            f = np.asarray(sfc_feats[idx_clip], np.float32).ravel()
             states.append(np.concatenate([z, f]))
             actions.append(idx_clip)
-
             r_ar   = float(R_HL[0]) if hasattr(R_HL, '__len__') else float(R_HL)
             r_cost = float(R_HL[1]) if hasattr(R_HL, '__len__') and len(R_HL) > 1 else 0.0
             rewards_ar.append(r_ar)
             rewards_cost.append(r_cost)
-            dones.append(float(done))   
-
-            if not done and len(sfc_feats_next) > 0:
-                zn = np.asarray(Z_next_mean, np.float32).ravel()
-                Sn_batch = self._states_batch(zn, sfc_feats_next)
-                qn_values = self.target_net(tf.constant(Sn_batch), training=False).numpy()
-                
-                q_next_max_ar.append(np.max(qn_values[:, 0]))
-                q_next_max_cost.append(np.max(qn_values[:, 1]))
-            else:
-                q_next_max_ar.append(0.0)
-                q_next_max_cost.append(0.0)
-
+            dones.append(float(done))
         if not states:
             return
-
-        S      = tf.constant(np.array(states,       np.float32))
+        S      = tf.constant(np.array(states, np.float32))
         R_ar   = tf.constant(np.array(rewards_ar,   np.float32))
         R_cost = tf.constant(np.array(rewards_cost, np.float32))
-        D      = tf.constant(np.array(dones,        np.float32))
-
-        target_ar = R_ar + self.gamma * tf.constant(q_next_max_ar, tf.float32) * (1.0 - D)
-        target_cost = R_cost + self.gamma * tf.constant(q_next_max_cost, tf.float32) * (1.0 - D)
-
         with tf.GradientTape() as tape:
-            Q_pred = self.policy_net(S, training=True)
-            loss_ar = tf.reduce_mean(tf.square(target_ar - Q_pred[:, 0]))
-            loss_cost = tf.reduce_mean(tf.square(target_cost - Q_pred[:, 1]))
+            q_pred = self.policy_net(S, training=True)
+            adv_ar   = R_ar   - tf.stop_gradient(q_pred[:, 0])
+            adv_cost = R_cost - tf.stop_gradient(q_pred[:, 1])
+            loss_ar   = -tf.reduce_mean(adv_ar   * q_pred[:, 0])
+            loss_cost = -tf.reduce_mean(adv_cost * q_pred[:, 1])
             loss = loss_ar + loss_cost
-
-        self.opt.apply_gradients(
-            zip(tape.gradient(loss, self.policy_net.trainable_variables),
-                self.policy_net.trainable_variables))
+        grads = tape.gradient(loss, self.policy_net.trainable_variables)
+        self.opt.apply_gradients(zip(grads, self.policy_net.trainable_variables))

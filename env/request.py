@@ -33,40 +33,6 @@ class SFC:
         self.route_nodes: list[Node] = []
         self.route_links: list[Link] = []
         self.vnf_indices: list[int] = []
-
-    def deploy(self, T: float):
-        '''
-        Triển khai request trên mạng tại thời điểm T
-        '''
-        pass
-
-    def undeploy(self, T: float):
-        pass
-    
-    def __check_capacity_constraints(self, T):
-        for node in self.route_nodes:
-            if node.check_violated(T) is True:
-                return False
-        for link in self.route_links:
-            if link.check_violated(T) is True:
-                return False
-        return True
-    
-    def check_feasibility(self, T):
-        '''
-        Kiểm tra request thực hiện tại timeslot T có thỏa mãn không.
-        :param T: timeslot
-        '''
-        self.deploy(T)
-        valid = self.__check_capacity_constraints(T)
-        self.undeploy(T)
-        return valid
-
-    def to_dict(self):
-        return {
-            'nodes': [node.name for node in self.route_nodes],
-            'vnfs': self.vnf_indices
-        }
     
 class ListOfRequests:
     def __init__(self):
@@ -77,6 +43,3 @@ class ListOfRequests:
 
     def _get_arrival_time(self, n: Request):
         return n.arrival_time
-
-    def sort_requests(self):
-        self.requests.sort(key = self._get_arrival_time)

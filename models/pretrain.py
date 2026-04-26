@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import os, sys, json, argparse, time, math
 import numpy as np
 
@@ -215,8 +213,8 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
     import tensorflow as tf
     tf.keras.backend.clear_session()
 
-    ll_agent = LowLevelAgent(latent_dim=LATENT_DIM, max_dcs=MAX_DCS, input_dim=LATENT_DIM + 3)
-    dummy = np.zeros((1, LATENT_DIM + 3), dtype=np.float32)
+    ll_agent = LowLevelAgent(latent_dim=LATENT_DIM, max_dcs=MAX_DCS, input_dim=LATENT_DIM * 2 + 3)
+    dummy = np.zeros((1, LATENT_DIM * 2 + 3), dtype=np.float32)
     ll_agent.policy_net(dummy)
     ll_agent.target_net(dummy)
     buf_ll = ReplayBuffer(capacity=20_000)
@@ -286,6 +284,7 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
                     max_cost += max(finite)
 
             max_cost = max(1.0, max_cost)
+            prev_loc_z = np.zeros(LATENT_DIM, dtype=np.float32)
             for k, vnf in enumerate(req.vnfs):
                 node_plan = plan.get("nodes", {}).get(str(k))
                 if node_plan is None:
@@ -297,26 +296,35 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
                 if act_idx >= MAX_DCS:
                     continue
                 vnf_feat = np.array([vnf.resource.get(rk, 0.0) for rk in config.RESOURCE_TYPE], dtype=np.float32)
-                valid = [i for i, d in enumerate(dcs) if i < MAX_DCS and env._check_can_deploy_vnf(env.network.nodes[d], vnf, t_s, t_e)]
+                valid = [i for i, d in enumerate(dcs)
+                        if i < MAX_DCS and env._check_can_deploy_vnf(env.network.nodes[d], vnf, t_s, t_e)]
                 if not valid:
                     continue
-
                 chosen_node = env.network.nodes[greedy_dc]
-                alpha, beta = ll_agent.get_reward_weights(Z, vnf_feat)
-                time_rem = max(0.0, req.end_time - req.arrival_time)
-                tMax = max(req.delay_max, 1e-6)
-                raw_cost = chosen_node.get_cost(vnf) if chosen_node.cost is not None else 0.0
-
+                alpha, beta = ll_agent.get_reward_weights(Z, vnf_feat, prev_loc_z)
+                time_rem  = max(0.0, req.end_time - req.arrival_time)
+                tMax      = max(req.delay_max, 1e-6)
+                raw_cost  = chosen_node.get_cost(vnf) if chosen_node.cost is not None else 0.0
                 if raw_cost == float('inf'):
                     raw_cost = max_cost
                 cost_norm = min(1.0, raw_cost / max_cost)
-                reward = float(1.0 + alpha * (time_rem / tMax) - beta * cost_norm)
-                next_valid = valid
-                
+                reward    = float(1.0 + alpha * (time_rem / tMax) - beta * cost_norm)
+                # loc_z tiếp theo = latent vector của DC vừa chọn
+                cur_loc_z = Z[act_idx].copy() if act_idx < len(Z) else np.zeros(LATENT_DIM, np.float32)
                 if k + 1 < len(req.vnfs):
-                    next_vnf = req.vnfs[k + 1]
-                    next_valid = [i for i, d in enumerate(dcs) if i < MAX_DCS and env._check_can_deploy_vnf(env.network.nodes[d], next_vnf, t_s, t_e)] or valid
-                buf_ll.push((Z, vnf_feat, act_idx, reward, Z, next_valid, k == len(req.vnfs) - 1))
+                    next_vnf   = req.vnfs[k + 1]
+                    next_valid = [i for i, d in enumerate(dcs)
+                                if i < MAX_DCS and env._check_can_deploy_vnf(
+                                    env.network.nodes[d], next_vnf, t_s, t_e)] or valid
+                    next_loc_z = cur_loc_z
+                else:
+                    next_valid = valid
+                    next_loc_z = np.zeros(LATENT_DIM, np.float32)
+                buf_ll.push((Z, vnf_feat, prev_loc_z,
+                            act_idx, reward,
+                            Z, next_valid, next_loc_z,
+                            k == len(req.vnfs) - 1))
+                prev_loc_z = cur_loc_z
             env.step(plan)
 
         if len(buf_ll) >= batch:
@@ -333,41 +341,3 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
     out = os.path.join(LL_DIR, LL_WEIGHTS_FILE)
     np.save(out, np.array(ll_agent.policy_net.get_weights(), dtype=object), allow_pickle=True)
     return ll_agent
-
-def main():
-    parser = argparse.ArgumentParser(description="Pre-train VGAE and LL-DQN for HRL-VGAE")
-    _add_pretrain_args(parser)
-    args = parser.parse_args()
-
-    train_dir = os.path.abspath(args.train_dir)
-    if not os.path.isdir(train_dir):
-        print(f"[Pretrain] Train dir not found: {train_dir}", flush=True)
-        return
-
-    selected = get_train_files(train_dir)
-    if not selected:
-        print("[Pretrain] No training files selected.", flush=True)
-        return
-
-    print_selected_files(selected, args.request_pct)
-
-    vgae = None
-    if args.phase in ("vgae", "both"):
-        vgae = pretrain_vgae(selected, epochs=args.vgae_epochs, request_pct=args.request_pct)
-
-    if args.phase in ("ll", "both"):
-        if vgae is None:
-            vgae = VGAENetwork(latent_dim=LATENT_DIM)
-            vgae_path = os.path.join(VGAE_DIR, VGAE_WEIGHTS_FILE)
-            if os.path.exists(vgae_path):
-                vgae.load_weights(vgae_path)
-            else:
-                print(f"[Pretrain-LL] VGAE weights not found: {vgae_path}", flush=True)
-                return
-        pretrain_ll(selected, vgae, episodes=args.ll_episodes, request_pct=args.request_pct)
-
-    print("[Pretrain] Finished all requested phases.", flush=True)
-
-
-if __name__ == "__main__":
-    main()

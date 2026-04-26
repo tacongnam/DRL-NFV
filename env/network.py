@@ -250,25 +250,3 @@ class Network:
         if out_path:
             plt.savefig(out_path)
         plt.show()
-
-    def visualize_dynamic(self, timeslots, pause_time=1.0):
-        import matplotlib.pyplot as plt
-        G   = self.to_graph()
-        pos = nx.spring_layout(G)
-        plt.ion()
-        for t in timeslots:
-            plt.clf()
-            cols = ['blue' if G.nodes[n]['type'] == config.NODE_SWITCH else 'red'
-                    for n in G.nodes]
-            nx.draw(G, pos, node_color=cols, with_labels=True, node_size=500)
-            lbls = {
-                n: f"T={t}\n"
-                   f"{G.nodes[n]['used'].get(t, {'cpu': 0.0})['cpu']:.1f}"
-                   f"/{G.nodes[n]['cap']['cpu']:.1f}"
-                for n in G.nodes if G.nodes[n]['type'] == config.NODE_DC
-            }
-            nx.draw_networkx_labels(
-                G, {n: (c[0], c[1] + 0.15) for n, c in pos.items()}, lbls)
-            plt.pause(pause_time)
-        plt.ioff()
-        plt.show()
