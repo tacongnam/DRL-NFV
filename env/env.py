@@ -40,8 +40,8 @@ class Strategy(ABC):
         plan = {'nodes': {}, 'links': {}, 'bw': sfc.request.bw}
 
         for i, (dc, (T1, T2)) in enumerate(zip(node_placements, vnf_timeslots)):
-            vnf_key = str(sfc.request.vnfs[i].name)
-            plan['nodes'][vnf_key] = {'dc': dc, 'T1': T1, 'T2': T2}
+            vnf_key = f"{i}_{sfc.request.vnfs[i].name}"
+            plan['nodes'][vnf_key] = {'dc': dc, 'T1': T1, 'T2': T2, 'vnf_name': str(sfc.request.vnfs[i].name)}
 
         for i, (path, (T1, T2)) in enumerate(zip(link_paths, link_timeslots)):
             plan['links'][str(i)] = {'path': path, 'T1': T1, 'T2': T2}
@@ -110,7 +110,7 @@ class Env(gym.Env):
         self.strategy = strategy
 
     def _get_timeslot(self, t: float) -> int:
-        return int(round(t / config.TIMESTEP))
+        return int(t / config.TIMESTEP + 0.5)
 
     def _check_can_deploy_vnf(self, node: Node, vnf: VNF,
                            t_start: int, t_end: int) -> bool:
@@ -142,9 +142,10 @@ class Env(gym.Env):
 
         try:
             # 1. Deploy VNFs lên nodes
-            for vnf_name, node_plan in plan.get('nodes', {}).items():
+            for vnf_key, node_plan in plan.get('nodes', {}).items():
                 dc_name = node_plan['dc']
                 T1, T2  = node_plan['T1'], node_plan['T2']
+                vnf_name = node_plan.get('vnf_name', vnf_key)
                 dc  = self.network.nodes[dc_name]
                 vnf = self.vnfs[vnf_name]
 

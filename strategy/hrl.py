@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple
 import config
 from env.env import Strategy
 from env.request import SFC
-from models.model import ReplayBuffer, VGAENetwork, HighLevelAgent, LowLevelAgent
+from models import ReplayBuffer, VGAENetwork, HighLevelAgent, LowLevelAgent
 from strategy.d_star_lite import DStarLite
 
 BASE_AR_REWARD  = 1.0
@@ -60,7 +60,7 @@ class HRL_VGAE_Strategy(Strategy):
         self._routing_cache:  dict = {}
         self._max_cost_cache: dict = {}
 
-        self._dstar = DStarLite(env.network, latent_dim=LATENT_DIM)
+        self._dstar = DStarLite(env.network, latent_dim=LATENT_DIM, latent_scale=0.01)
         self._current_Z:  Optional[np.ndarray] = None
         self._current_dc: List[str]            = []
 
@@ -79,19 +79,19 @@ class HRL_VGAE_Strategy(Strategy):
         if ll_pretrained_path:
             self._load_ll(ll_pretrained_path)
 
-    def save_model(self, directory: str):
-        os.makedirs(directory, exist_ok=True)
-        try:
-            np.save(os.path.join(directory, _LL_WEIGHTS_FILE),
-                    np.array(self.ll_agent.policy_net.get_weights(), dtype=object),
-                    allow_pickle=True)
-            np.save(os.path.join(directory, _HL_WEIGHTS_FILE),
-                    np.array(self.hl_agent.policy_net.get_weights(), dtype=object),
-                    allow_pickle=True)
-            self.vgae_net.save_weights(os.path.join(directory, _VGAE_WEIGHTS_FILE))
-            print(f"[HRL] Models saved → {directory}")
-        except Exception as e:
-            print(f"[HRL] Save warning: {e}")
+    def get_weights(self) -> dict:
+        return {
+            'ar':   self.policy_net_ar.get_weights(),
+            'cost': self.policy_net_cost.get_weights(),
+        }
+
+    def set_weights(self, weights: dict):
+        if 'ar' in weights:
+            self.policy_net_ar.set_weights(weights['ar'])
+            self.target_net_ar.set_weights(weights['ar'])
+        if 'cost' in weights:
+            self.policy_net_cost.set_weights(weights['cost'])
+            self.target_net_cost.set_weights(weights['cost'])
 
     def load_model(self, directory: str):
         self._load_ll(os.path.join(directory, _LL_WEIGHTS_FILE))
@@ -125,19 +125,19 @@ class HRL_VGAE_Strategy(Strategy):
         except Exception as e:
             print(f"[HRL] LL load warning: {e}")
 
-    def _load_hl(self, path: str):
-        if not path:
-            return
-        path = self._resolve_npy_path(path, _HL_WEIGHTS_FILE)
-        if not os.path.exists(path):
-            return
-        try:
-            _dummy = np.zeros((1, LATENT_DIM + HighLevelAgent.FEAT_PER_SFC), dtype=np.float32)
-            self.hl_agent.policy_net(_dummy)
-            self.hl_agent.policy_net.set_weights(list(np.load(path, allow_pickle=True)))
-            print(f"[HRL] HL loaded <- {path}")
-        except Exception as e:
-            print(f"[HRL] HL load warning: {e}")
+    def get_weights(self) -> dict:
+        return {
+            'ar':   self.policy_net_ar.get_weights(),
+            'cost': self.policy_net_cost.get_weights(),
+        }
+
+    def set_weights(self, weights: dict):
+        if 'ar' in weights:
+            self.policy_net_ar.set_weights(weights['ar'])
+            self.target_net_ar.set_weights(weights['ar'])
+        if 'cost' in weights:
+            self.policy_net_cost.set_weights(weights['cost'])
+            self.target_net_cost.set_weights(weights['cost'])
 
     def _bw_pruned_graph(self, t_start: int, t_end: int, bw: float) -> nx.Graph:
         key = (t_start, t_end, round(bw, 1))
@@ -205,7 +205,7 @@ class HRL_VGAE_Strategy(Strategy):
         key = (t_start, t_end, round(bw_req, 1))
         if key not in self._graph_cache:
             X, A, dcs = self._build_dc_graph(t_start, t_end, bw_req)
-            Z = self.vgae_net.encode(X, A)
+            Z = self.vgae_net.encode(X, A, deterministic=not self.is_training)
             self._graph_cache[key] = (Z, dcs, X, A)
         Z, dcs, X, A = self._graph_cache[key]
         self._current_Z  = Z
@@ -330,103 +330,160 @@ class HRL_VGAE_Strategy(Strategy):
         result = max(1.0, max_cost)
         self._max_cost_cache[key] = result
         return result
+    
+    def _load_hl(self, path: str):
+        if not path:
+            return
+        path = self._resolve_npy_path(path, _HL_WEIGHTS_FILE)
+        if not os.path.exists(path):
+            return
+        try:
+            _dummy = np.zeros((1, LATENT_DIM + HighLevelAgent.FEAT_PER_SFC), dtype=np.float32)
+            self.hl_agent.policy_net_ar(_dummy)
+            self.hl_agent.policy_net_cost(_dummy)
+            self.hl_agent.target_net_ar(_dummy)
+            self.hl_agent.target_net_cost(_dummy)
+            w = list(np.load(path, allow_pickle=True))
+            if len(w) == 2:
+                self.hl_agent.policy_net_ar.set_weights(w[0])
+                self.hl_agent.target_net_ar.set_weights(w[0])
+                self.hl_agent.policy_net_cost.set_weights(w[1])
+                self.hl_agent.target_net_cost.set_weights(w[1])
+            print(f"[HRL] HL loaded <- {path}")
+        except Exception as e:
+            print(f"[HRL] HL load warning: {e}")
 
     def train(self) -> dict:
         total_steps = 0
         best_acc_rate = 0.0
         total_steps_planned = self.episodes * len(self.env.requests)
-        ep_accepted = 0
-        ep_rejected = 0
+
         for episode in range(1, self.episodes + 1):
+
             self.env.reset()
             self._clear_all_caches()
             self._best_fit = None
-            pending = sorted([SFC(r) for r in self.env.requests], key=lambda s: s.request.arrival_time)
+
+            pending = sorted(
+                [SFC(r) for r in self.env.requests],
+                key=lambda s: s.request.arrival_time,
+            )
             queue: List[SFC] = []
             ep_accepted = ep_rejected = 0
             t = pending[0].request.arrival_time if pending else 0.0
+
             while pending or queue:
+
                 if not queue and pending:
                     t = pending[0].request.arrival_time
+
                 while pending and pending[0].request.arrival_time <= t:
                     queue.append(pending.pop(0))
+
                 active = [s for s in queue if t <= s.request.end_time]
                 expired = len(queue) - len(active)
-                if expired > 0:
-                    ep_rejected += expired
+                ep_rejected += expired
                 queue = active
+
                 if not queue:
                     if pending:
                         t = pending[0].request.arrival_time
                     continue
+
                 total_steps += 1
                 progress = total_steps / max(1, total_steps_planned)
                 epsilon = max(0.05, 0.9 - progress * 1.7)
+
                 bw_req = max(s.request.bw for s in queue)
-                t_start = self.env._get_timeslot(t)
-                t_end_rough = t_start + max(int(max(s.request.delay_max for s in queue) / config.TIMESTEP), 10)
-                Z_t, _ = self._get_z(t_start, t_end_rough, bw_req)
+                t_start_rough = self.env._get_timeslot(t)
+                t_end_rough = t_start_rough + max(
+                    int(max(s.request.delay_max for s in queue) / config.TIMESTEP), 10
+                )
+                Z_t, _ = self._get_z(t_start_rough, t_end_rough, bw_req)
+
                 sfc_feats_before = self.hl_agent.extract_sfc_features(queue, Z_t, self.ll_agent)
                 sfc_idx = self.hl_agent.act(Z_t, queue, 0.0, self.ll_agent)
                 selected_sfc = queue.pop(sfc_idx)
+
                 self.env.t = t
                 t_start = self.env._get_timeslot(t)
                 t_end = self.env._get_timeslot(selected_sfc.request.end_time)
                 Z_t, dc_mapping = self._get_z(t_start, t_end, selected_sfc.request.bw)
+
                 cached = self._graph_cache.get((t_start, t_end, round(selected_sfc.request.bw, 1)))
                 X, A = (cached[2], cached[3]) if cached else (None, None)
+
                 snap = self._snapshot(self.env.network)
+
                 greedy_prob = max(0.0, 1.0 - progress * 2.0)
                 use_greedy = np.random.random() < greedy_prob
+
                 if use_greedy:
                     plan = self._get_best_fit().get_placement(selected_sfc, t)
                     self._ll_traj = []
+                    R_LL_override = 1.5
+
                     if plan is not None:
                         t_start_tmp = self.env._get_timeslot(t)
-                        t_end_tmp   = self.env._get_timeslot(selected_sfc.request.end_time)
-                        prev_loc_z  = np.zeros(LATENT_DIM, dtype=np.float32)
+                        t_end_tmp = self.env._get_timeslot(selected_sfc.request.end_time)
+                        prev_loc_z = np.zeros(LATENT_DIM, dtype=np.float32)
+
                         for i, vnf in enumerate(selected_sfc.request.vnfs):
                             node_plan = plan.get("nodes", {}).get(str(i))
                             if node_plan is None:
                                 continue
+
                             chosen_dc = node_plan["dc"]
                             if chosen_dc not in dc_mapping:
                                 continue
+
                             act_idx = dc_mapping.index(chosen_dc)
                             if act_idx >= MAX_DCS:
                                 continue
+
                             cand = [str(x) for x in vnf.get_dcs()]
                             if '-1' in cand or not cand:
                                 cand = dc_mapping
+
                             valid_indices = [
                                 idx for idx, dc_id in enumerate(dc_mapping)
-                                if dc_id in cand and idx < MAX_DCS
+                                if dc_id in cand
+                                and idx < MAX_DCS
                                 and self.env._check_can_deploy_vnf(
-                                    self.env.network.nodes[dc_id], vnf, t_start_tmp, t_end_tmp)
+                                    self.env.network.nodes[dc_id], vnf, t_start_tmp, t_end_tmp
+                                )
                             ]
-                            cur_loc_z = Z_t[act_idx].copy() if act_idx < len(Z_t) else np.zeros(LATENT_DIM, np.float32)
+
+                            cur_loc_z = (
+                                Z_t[act_idx].copy()
+                                if act_idx < len(Z_t)
+                                else np.zeros(LATENT_DIM, np.float32)
+                            )
+
                             self._ll_traj.append({
                                 "Z_t":        Z_t,
-                                "vnf_feat":   [vnf.resource.get(k, 0.) for k in config.RESOURCE_TYPE],
+                                "vnf_feat":   [vnf.resource.get(k, 0.0) for k in config.RESOURCE_TYPE],
                                 "loc_z":      prev_loc_z.copy(),
                                 "action_idx": act_idx,
                                 "valid_mask": valid_indices,
                             })
                             prev_loc_z = cur_loc_z
-                    R_LL_override = 1.5
+
                 else:
                     plan = self.get_placement(selected_sfc, t, Z_t, dc_mapping, epsilon)
+
                     if plan is None:
                         plan = self._get_best_fit().get_placement(selected_sfc, t)
                         R_LL_override = 1.0
                     else:
                         R_LL_override = None
-                
+
                 if plan is not None:
                     success, rewards, score = self.env.step(plan)
                 else:
                     success = False
                     rewards = [-1.0, 0.0]
+
                 if not success:
                     self._restore(self.env.network, snap)
                     fallback = self._get_best_fit().get_placement(selected_sfc, t)
@@ -437,67 +494,95 @@ class HRL_VGAE_Strategy(Strategy):
 
                 if success:
                     ep_accepted += 1
-                    raw_cost  = abs(rewards[1]) if len(rewards) > 1 else 0.0
+
+                    raw_cost = abs(rewards[1]) if len(rewards) > 1 else 0.0
                     cost_norm = min(1.0, raw_cost / max(self._estimate_max_cost(selected_sfc), 1e-6))
-                    time_ratio = ((t - selected_sfc.request.arrival_time)
-                                / max(selected_sfc.request.delay_max, 1e-6))
+                    time_ratio = (
+                        (t - selected_sfc.request.arrival_time)
+                        / max(selected_sfc.request.delay_max, 1e-6)
+                    )
                     R_HL = [BASE_AR_REWARD + time_ratio, -cost_norm]
-                    vnf_f = ([selected_sfc.request.vnfs[0].resource.get(k, 0.) for k in config.RESOURCE_TYPE] if selected_sfc.request.vnfs else [0., 0., 0.])
-                    
-                    if success:
-                        ep_accepted += 1
-                        raw_cost  = abs(rewards[1]) if len(rewards) > 1 else 0.0
-                        cost_norm = min(1.0, raw_cost / max(self._estimate_max_cost(selected_sfc), 1e-6))
-                        time_ratio = ((t - selected_sfc.request.arrival_time)
-                                    / max(selected_sfc.request.delay_max, 1e-6))
-                        R_HL = [BASE_AR_REWARD + time_ratio, -cost_norm]
-                        vnf_f = ([selected_sfc.request.vnfs[0].resource.get(k, 0.) for k in config.RESOURCE_TYPE]
-                                if selected_sfc.request.vnfs else [0., 0., 0.])
-                        if R_LL_override is not None:
-                            R_LL = R_LL_override
-                        else:
-                            R_LL = self._compute_ll_reward(rewards, selected_sfc, t, Z_t, vnf_f)
-                        self._clear_bw_caches()
+
+                    vnf_f = (
+                        [selected_sfc.request.vnfs[0].resource.get(k, 0.0) for k in config.RESOURCE_TYPE]
+                        if selected_sfc.request.vnfs
+                        else [0.0, 0.0, 0.0]
+                    )
+
+                    if R_LL_override is not None:
+                        R_LL = R_LL_override
+                    else:
+                        R_LL = self._compute_ll_reward(rewards, selected_sfc, t, Z_t, vnf_f)
 
                     self._clear_bw_caches()
+
                 else:
                     ep_rejected += 1
                     self._restore(self.env.network, snap)
-                    n_queue    = len(queue)
-                    penalty    = 1.0 + n_queue / max(self.hl_agent.max_queue, 1)
+
+                    n_queue = len(queue)
+                    penalty = 1.0 + n_queue / max(self.hl_agent.max_queue, 1)
                     R_HL = [-penalty, 0.0]
                     R_LL = -PENALTY_DROP
-                t_next = (min((s.request.arrival_time for s in pending), default=t) if pending else t)
+
+                t_next = (
+                    min((s.request.arrival_time for s in pending), default=t)
+                    if pending else t
+                )
                 t = max(t, t_next) if not queue else t
-                Z_mean = Z_t.mean(axis=0, keepdims=True)
+
                 is_done = not pending and not queue
+                Z_mean = Z_t.mean(axis=0, keepdims=True)
                 next_queue = queue[:]
-                sfc_feats_next = (self.hl_agent.extract_sfc_features(next_queue, Z_t, self.ll_agent) if next_queue else sfc_feats_before)
-                self.buf_HL.push((Z_mean, sfc_feats_before, sfc_idx, R_HL, Z_mean, sfc_feats_next, is_done))
-                # Sửa push vào buf_LL — thêm loc_z và loc_z_next
+                sfc_feats_next = (
+                    self.hl_agent.extract_sfc_features(next_queue, Z_t, self.ll_agent)
+                    if next_queue
+                    else sfc_feats_before
+                )
+                self.buf_HL.push((
+                    Z_mean, sfc_feats_before, sfc_idx,
+                    R_HL,
+                    Z_mean, sfc_feats_next, is_done,
+                ))
+
                 for i, step in enumerate(self._ll_traj):
-                    nxt_mask = self._ll_traj[i + 1]["valid_mask"] if i + 1 < len(self._ll_traj) else []
-                    loc_z_next = (self._ll_traj[i + 1]["loc_z"]
-                                if i + 1 < len(self._ll_traj)
-                                else np.zeros(LATENT_DIM, dtype=np.float32))
+                    nxt_mask = (
+                        self._ll_traj[i + 1]["valid_mask"]
+                        if i + 1 < len(self._ll_traj)
+                        else []
+                    )
+                    loc_z_next = (
+                        self._ll_traj[i + 1]["loc_z"]
+                        if i + 1 < len(self._ll_traj)
+                        else np.zeros(LATENT_DIM, dtype=np.float32)
+                    )
                     self.buf_LL.push((
                         step["Z_t"], list(step["vnf_feat"]), step["loc_z"],
                         step["action_idx"], R_LL,
-                        Z_t, nxt_mask, loc_z_next, is_done
+                        Z_t, nxt_mask, loc_z_next,
+                        is_done,
                     ))
+
                 if X is not None:
                     self.buf_Graph.push((X, A))
+
                 if total_steps % 4 == 0 and len(self.buf_LL) >= BATCH_SIZE:
                     self.ll_agent.train(self.buf_LL, BATCH_SIZE)
+
                 if total_steps % 8 == 0 and len(self.buf_HL) >= BATCH_SIZE:
                     self.hl_agent.train(self.buf_HL, BATCH_SIZE)
+
                 if total_steps % TARGET_SYNC == 0:
                     self.ll_agent.update_target_network()
+                    self.hl_agent.update_target_networks()
+
                 if total_steps % VGAE_TRAIN_FREQ == 0 and len(self.buf_Graph) >= 4:
                     self.vgae_net.train(self.buf_Graph, epochs=1)
+
             total_ep = ep_accepted + ep_rejected
             acc_rate = ep_accepted / max(1, total_ep)
             best_acc_rate = max(best_acc_rate, acc_rate)
+
         self.env.stats["accepted_requests"] = ep_accepted
         self.env.stats["rejected_requests"] = ep_rejected
         self.env.stats["acceptance_ratio"] = acc_rate
@@ -576,3 +661,18 @@ class HRL_VGAE_Strategy(Strategy):
         self.env.stats["average_cost"] = total_node_cost / accepted if accepted > 0 else 0.
         self.env.stats["algorithm_name"] = self.name
         return self.env.stats
+    
+    def save_model(self, directory: str):
+        os.makedirs(directory, exist_ok=True)
+        try:
+            np.save(os.path.join(directory, _LL_WEIGHTS_FILE),
+                    np.array(self.ll_agent.policy_net.get_weights(), dtype=object),
+                    allow_pickle=True)
+            np.save(os.path.join(directory, _HL_WEIGHTS_FILE),
+                    np.array([self.hl_agent.policy_net_ar.get_weights(),
+                            self.hl_agent.policy_net_cost.get_weights()], dtype=object),
+                    allow_pickle=True)
+            self.vgae_net.save_weights(os.path.join(directory, _VGAE_WEIGHTS_FILE))
+            print(f"[HRL] Models saved → {directory}")
+        except Exception as e:
+            print(f"[HRL] Save warning: {e}")

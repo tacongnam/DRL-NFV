@@ -387,7 +387,6 @@ def run_pretrain(args):
     ok = _run_pretrain_inline(args, train_dir)
     print("[Pretrain] Complete." if ok else "[Pretrain] Failed.", flush=True)
 
-
 def _run_train(episodes, ll_pretrained, save_dir, train_dir,
                train_request_pct=DEFAULT_TRAIN_REQUEST_PCT):
     files = get_data_files(train_dir)
@@ -397,15 +396,17 @@ def _run_train(episodes, ll_pretrained, save_dir, train_dir,
 
     _print_selected_files("TRAIN", files, request_pct=train_request_pct)
 
-    strategy = None
-    n_files = len(files)
-    base_episodes = episodes // n_files
-    extra = episodes % n_files
+    n_files      = len(files)
+    min_ep       = max(1, episodes // n_files)
+    extra        = episodes % n_files
+    total_ep_actual = min_ep * n_files + extra
 
+    print(f"[TRAIN] {episodes} episodes across {n_files} files "
+          f"(~{min_ep} ep/file, {extra} file(s) get +1) → total={total_ep_actual}")
+
+    strategy = None
     for i, fp in enumerate(files):
-        ep_for_file = base_episodes + (1 if i < extra else 0)
-        if ep_for_file <= 0:
-            continue
+        ep_for_file = min_ep + (1 if i < extra else 0)
 
         print(f"\n--- File {i+1}/{n_files}: {os.path.basename(fp)} ({ep_for_file} ep) ---")
         env = load_env_from_json(fp, request_pct=train_request_pct)
@@ -428,7 +429,6 @@ def _run_train(episodes, ll_pretrained, save_dir, train_dir,
     if strategy:
         strategy.save_model(save_dir)
     return strategy
-
 
 def run_train(args):
     print("\n=== TRAINING ===")

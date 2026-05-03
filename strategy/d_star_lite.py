@@ -12,15 +12,15 @@ class DStarLite:
     Trọng số cạnh = link delay. Cạnh hết băng thông bị loại (weight = inf).
     """
 
-    def __init__(self, network, latent_dim: int = 8):
-        self.network    = network
-        self.latent_dim = latent_dim
+    def __init__(self, network, latent_dim: int = 8, latent_scale: float = 0.01):
+        self.network       = network
+        self.latent_dim    = latent_dim
+        self.latent_scale  = latent_scale
 
-    def _heuristic(self, u: str, dest: str,
-                   Z_map: Dict[str, np.ndarray]) -> float:
+    def _heuristic(self, u: str, dest: str, Z_map: Dict[str, np.ndarray]) -> float:
         if u not in Z_map or dest not in Z_map:
             return 0.0
-        return float(np.linalg.norm(Z_map[u] - Z_map[dest]))
+        return self.latent_scale * float(np.linalg.norm(Z_map[u] - Z_map[dest]))
 
     def _edge_weight(self, u: str, v: str,
                      t_start: int, t_end: int, bw: float) -> float:

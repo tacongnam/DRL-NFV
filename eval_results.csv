@@ -1,0 +1,2 @@
+algorithm,file,acceptance_ratio,accepted,rejected,total_cost,avg_cost,total_delay
+HRL-VGAE,cogent_centers_easy_s1.json,0.8014,2005,497,0.0,0.0,4938.41

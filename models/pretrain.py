@@ -11,7 +11,7 @@ from env.vnf import VNF, ListOfVnfs
 from env.request import Request, ListOfRequests
 from env.network import Network
 from env.env import Env
-from models.model import VGAENetwork, LowLevelAgent, ReplayBuffer
+from models import VGAENetwork, ReplayBuffer, LowLevelAgent
 
 LATENT_DIM = 8
 MAX_DCS = 60
@@ -234,8 +234,17 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
 
     from strategy.best_fit import BestFit
     from env.request import SFC as SFCcls
+    from random import random
+
+    PRETRAIN_EPSILON_START = 0.5
+    PRETRAIN_EPSILON_END   = 0.05
 
     for ep in range(1, episodes + 1):
+        pretrain_epsilon = max(
+            PRETRAIN_EPSILON_END,
+            PRETRAIN_EPSILON_START * (1.0 - ep / episodes),
+        )
+
         file_name, env, path_cache, sorted_reqs = file_envs[(ep - 1) % len(file_envs)]
         env.reset()
         teacher = BestFit(env)
@@ -245,10 +254,9 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
             t_s = env._get_timeslot(req.arrival_time)
             t_e = env._get_timeslot(req.end_time)
             key = (t_s, t_e, round(req.bw, 1))
-
             if key not in z_cache:
                 X, A, dcs = build_dc_graph(env, t_s, t_e, req.bw, path_cache)
-                Z = vgae.encode(X, A) if len(dcs) >= 2 else np.zeros((0, LATENT_DIM), np.float32)
+                Z = vgae.encode(X, A, deterministic=True) if len(dcs) >= 2 else np.zeros((0, LATENT_DIM), np.float32)
                 z_cache[key] = (Z, dcs)
 
         for req in sorted_reqs:
@@ -260,19 +268,30 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
             if len(dcs) == 0:
                 continue
 
-            sfc = SFCcls(req)
+            sfc  = SFCcls(req)
             plan = teacher.get_placement(sfc, req.arrival_time)
 
             if plan is None:
                 for vnf in req.vnfs:
                     vnf_feat = np.array([vnf.resource.get(rk, 0.0) for rk in config.RESOURCE_TYPE], dtype=np.float32)
-                    valid = [i for i, d in enumerate(dcs) if i < MAX_DCS and env._check_can_deploy_vnf(env.network.nodes[d], vnf, t_s, t_e)]
-
+                    valid = [
+                        i for i, d in enumerate(dcs)
+                        if i < MAX_DCS and env._check_can_deploy_vnf(env.network.nodes[d], vnf, t_s, t_e)
+                    ]
                     if not valid:
                         continue
-
-                    best_idx = valid[0]
-                    buf_ll.push((Z, vnf_feat, best_idx, -1.0, Z, valid, False))
+                    if random.random() < pretrain_epsilon:
+                        best_idx = random.choice(valid)
+                    else:
+                        best_idx = valid[0]
+                    buf_ll.push((
+                        Z, vnf_feat,
+                        np.zeros(LATENT_DIM, dtype=np.float32),
+                        best_idx, -1.0,
+                        Z, valid,
+                        np.zeros(LATENT_DIM, dtype=np.float32),
+                        False,
+                    ))
                 continue
 
             max_cost = 0.0
