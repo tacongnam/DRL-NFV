@@ -1,5 +1,4 @@
-import os, sys, json, argparse, time, math
-import numpy as np
+import os, sys, json, argparse, time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -12,6 +11,7 @@ from env.request import Request, ListOfRequests
 from env.network import Network
 from env.env import Env
 from models import VGAENetwork, ReplayBuffer, LowLevelAgent
+from utils.helpers import sample_requests, resolve_request_limit
 
 LATENT_DIM = 8
 MAX_DCS = 60
@@ -22,20 +22,6 @@ LL_WEIGHTS_FILE = "ll_dqn_weights.npy"
 DEFAULT_VGAE_EPOCHS = 60
 DEFAULT_LL_EPISODES = 60
 DEFAULT_REQUEST_PCT = 0
-
-
-def sample_requests(req_rows: list, request_pct: int = 0) -> list:
-    req_limit = resolve_request_limit(len(req_rows), request_pct=request_pct)
-    if req_limit is None or req_limit <= 0 or len(req_rows) <= req_limit:
-        return req_rows
-    idxs = np.linspace(0, len(req_rows) - 1, num=req_limit, dtype=int)
-    return [req_rows[i] for i in idxs]
-
-
-def resolve_request_limit(total_requests: int, request_pct: int = 0) -> int | None:
-    if request_pct is None or request_pct <= 0:
-        return None
-    return max(1, math.ceil(total_requests * request_pct / 100.0))
 
 
 def load_env(path: str, request_pct: int = 0) -> Env:
@@ -205,6 +191,12 @@ def pretrain_vgae(train_files: list, epochs: int = 200, batch: int = 16,
     print(f"[Pretrain-VGAE] Saved -> {out}", flush=True)
     return vgae
 
+def _get_node_plan_map(plan: dict) -> dict:
+    result = {}
+    for vnf_key, vplan in plan.get("nodes", {}).items():
+        idx = int(vnf_key.split("_")[0])
+        result[idx] = vplan
+    return result
 
 def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch: int = 32, request_pct: int = 0):
     if not train_files:
@@ -234,7 +226,7 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
 
     from strategy.best_fit import BestFit
     from env.request import SFC as SFCcls
-    from random import random
+    import random
 
     PRETRAIN_EPSILON_START = 0.5
     PRETRAIN_EPSILON_END   = 0.05
@@ -304,8 +296,9 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
 
             max_cost = max(1.0, max_cost)
             prev_loc_z = np.zeros(LATENT_DIM, dtype=np.float32)
+            node_plan_map = _get_node_plan_map(plan)
             for k, vnf in enumerate(req.vnfs):
-                node_plan = plan.get("nodes", {}).get(str(k))
+                node_plan = node_plan_map.get(k)
                 if node_plan is None:
                     continue
                 greedy_dc = node_plan["dc"]

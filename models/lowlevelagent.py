@@ -55,9 +55,11 @@ class LowLevelAgent:
             return out
         return flat[:self.latent_dim]
 
-    def _make_state(self, Z_t: np.ndarray, vnf_feat: list,
-                    loc_z: Optional[np.ndarray] = None) -> np.ndarray:
-        z_mean = self._safe_z_mean(Z_t)
+    def _make_state(self, Z_t: np.ndarray, vnf_feat: list, loc_z: Optional[np.ndarray] = None, candidate_z = None) -> np.ndarray:
+        if candidate_z is not None:
+            global_z = candidate_z
+        else:
+            global_z = self._safe_z_mean(Z_t)
         f_arr  = np.asarray(vnf_feat, dtype=np.float32).ravel()
         if loc_z is None:
             loc_z = np.zeros(self.latent_dim, dtype=np.float32)
@@ -66,7 +68,7 @@ class LowLevelAgent:
             pad = np.zeros(self.latent_dim, dtype=np.float32)
             pad[:loc_arr.shape[0]] = loc_arr
             loc_arr = pad
-        return np.concatenate([z_mean, f_arr, loc_arr])[None]
+        return np.concatenate([global_z, f_arr, loc_arr])[None]
 
     def _make_states_batch(self, Z_list: list, vnf_feat_list: list,
                            loc_list: Optional[list] = None) -> np.ndarray:
@@ -145,7 +147,7 @@ class LowLevelAgent:
             self._reward_mean += delta / self._reward_count
             self._reward_var  += delta * (r - self._reward_mean)
 
-        std = max(np.sqrt(self._reward_var / max(self._reward_count, 1)), 1e-6)
+        std = max(np.sqrt(self._reward_var / max(self._reward_count - 1, 1)), 1e-6)
         normalized_rewards = (raw_rewards - self._reward_mean) / std
 
         S  = tf.constant(self._make_states_batch(Z_list, vnf_f_list, loc_list),       dtype=tf.float32)

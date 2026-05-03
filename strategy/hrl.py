@@ -125,22 +125,10 @@ class HRL_VGAE_Strategy(Strategy):
         except Exception as e:
             print(f"[HRL] LL load warning: {e}")
 
-    def get_weights(self) -> dict:
-        return {
-            'ar':   self.policy_net_ar.get_weights(),
-            'cost': self.policy_net_cost.get_weights(),
-        }
-
-    def set_weights(self, weights: dict):
-        if 'ar' in weights:
-            self.policy_net_ar.set_weights(weights['ar'])
-            self.target_net_ar.set_weights(weights['ar'])
-        if 'cost' in weights:
-            self.policy_net_cost.set_weights(weights['cost'])
-            self.target_net_cost.set_weights(weights['cost'])
-
+    # Note: HRL uses custom routing via DStarLite, not the standard get_routing().
+    # _bw_pruned_graph is used for graph construction, not exposed as public interface.
     def _bw_pruned_graph(self, t_start: int, t_end: int, bw: float) -> nx.Graph:
-        key = (t_start, t_end, round(bw, 1))
+        key = (t_start, t_end, round(bw, 2))  # Unified precision with _get_path_lengths
         if key in self._nx_graph_cache:
             return self._nx_graph_cache[key]
         G = nx.Graph()
@@ -153,7 +141,7 @@ class HRL_VGAE_Strategy(Strategy):
         return G
 
     def _get_path_lengths(self, t_start: int, t_end: int, bw: float) -> dict:
-        key = (t_start, t_end, round(bw, 1))
+        key = (t_start, t_end, round(bw, 2))  # Unified precision
         if key in self._path_cache:
             return self._path_cache[key]
         G = self._bw_pruned_graph(t_start, t_end, bw)
@@ -173,7 +161,7 @@ class HRL_VGAE_Strategy(Strategy):
             return [u]
         Z   = Z_t        if Z_t        is not None else (self._current_Z  if self._current_Z  is not None else np.zeros((0, LATENT_DIM), dtype=np.float32))
         dcs = dc_mapping if dc_mapping is not None else (self._current_dc if self._current_dc else [])
-        rkey = (u, v, t_start, t_end, round(bw, 1))
+        rkey = (u, v, t_start, t_end, round(bw, 2))  # Unified precision
         if rkey in self._routing_cache:
             return self._routing_cache[rkey]
         path = self._dstar.find_path(u, v, t_start, t_end, bw, Z, dcs)
@@ -192,13 +180,16 @@ class HRL_VGAE_Strategy(Strategy):
         for i, dc_id in enumerate(dcs):
             res  = self.env.network.nodes[dc_id].get_min_available_resource(t_start, t_end)
             X[i] = [res[k] / self._max_res[k] for k in config.RESOURCE_TYPE]
-            for j, dc_j in enumerate(dcs):
-                if i == j:
-                    A[i, j] = 1.0
-                else:
-                    dist = all_paths.get(dc_id, {}).get(dc_j)
-                    if dist is not None and dist > 0:
-                        A[i, j] = 1.0 / (dist + 1.0)
+        # Build symmetric adjacency matrix
+        for i, dc_i in enumerate(dcs):
+            A[i, i] = 1.0  # Self-loop
+            for j in range(i + 1, n):
+                dc_j = dcs[j]
+                dist_ij = all_paths.get(dc_i, {}).get(dc_j)
+                if dist_ij is not None and dist_ij > 0:
+                    w = 1.0 / (dist_ij + 1.0)
+                    A[i, j] = w
+                    A[j, i] = w  # Symmetric: A[i,j] = A[j,i]
         return X, A, dcs
 
     def _get_z(self, t_start, t_end, bw_req):
@@ -212,12 +203,7 @@ class HRL_VGAE_Strategy(Strategy):
         self._current_dc = dcs
         return Z, dcs
 
-    def _clear_bw_caches(self):
-        self._nx_graph_cache.clear()
-        self._path_cache.clear()
-        self._routing_cache.clear()
-
-    def _clear_all_caches(self):
+    def _clear_caches(self):
         self._nx_graph_cache.clear()
         self._path_cache.clear()
         self._routing_cache.clear()
@@ -353,6 +339,32 @@ class HRL_VGAE_Strategy(Strategy):
         except Exception as e:
             print(f"[HRL] HL load warning: {e}")
 
+    def _extract_node_plan_map(self, plan: dict) -> dict:
+        result = {}
+        for vnf_key, vplan in plan.get("nodes", {}).items():
+            idx = int(vnf_key.split("_")[0])
+            result[idx] = vplan
+        return result
+
+    def _execute_plan(self, plan: Optional[Dict], selected_sfc: SFC, t: float, 
+                     snap: dict, fallback_only: bool = False) -> Tuple[bool, list, Optional[float], Optional[Dict]]:
+        # Try primary plan
+        if plan is not None:
+            success, rewards, score = self.env.step(plan)
+            if success:
+                return success, rewards, score, plan
+            self._restore(self.env.network, snap)
+        
+        # Try fallback (best_fit)
+        if not fallback_only or plan is None:
+            fallback = self._get_best_fit().get_placement(selected_sfc, t)
+            if fallback is not None:
+                success, rewards, score = self.env.step(fallback)
+                if success:
+                    return success, rewards, score, fallback
+        
+        return False, [-1.0, 0.0], None, None
+
     def train(self) -> dict:
         total_steps = 0
         best_acc_rate = 0.0
@@ -361,7 +373,7 @@ class HRL_VGAE_Strategy(Strategy):
         for episode in range(1, self.episodes + 1):
 
             self.env.reset()
-            self._clear_all_caches()
+            self._clear_caches()
             self._best_fit = None
 
             pending = sorted(
@@ -402,7 +414,7 @@ class HRL_VGAE_Strategy(Strategy):
                 Z_t, _ = self._get_z(t_start_rough, t_end_rough, bw_req)
 
                 sfc_feats_before = self.hl_agent.extract_sfc_features(queue, Z_t, self.ll_agent)
-                sfc_idx = self.hl_agent.act(Z_t, queue, 0.0, self.ll_agent)
+                sfc_idx = self.hl_agent.act(Z_t, queue, epsilon, self.ll_agent)
                 selected_sfc = queue.pop(sfc_idx)
 
                 self.env.t = t
@@ -424,12 +436,13 @@ class HRL_VGAE_Strategy(Strategy):
                     R_LL_override = 1.5
 
                     if plan is not None:
+                        node_plan_map = self._extract_node_plan_map(plan)
                         t_start_tmp = self.env._get_timeslot(t)
                         t_end_tmp = self.env._get_timeslot(selected_sfc.request.end_time)
                         prev_loc_z = np.zeros(LATENT_DIM, dtype=np.float32)
 
                         for i, vnf in enumerate(selected_sfc.request.vnfs):
-                            node_plan = plan.get("nodes", {}).get(str(i))
+                            node_plan = node_plan_map.get("nodes", {}).get(str(i))
                             if node_plan is None:
                                 continue
 
@@ -471,36 +484,17 @@ class HRL_VGAE_Strategy(Strategy):
 
                 else:
                     plan = self.get_placement(selected_sfc, t, Z_t, dc_mapping, epsilon)
+                    R_LL_override = None if plan is not None else 1.0
 
-                    if plan is None:
-                        plan = self._get_best_fit().get_placement(selected_sfc, t)
-                        R_LL_override = 1.0
-                    else:
-                        R_LL_override = None
-
-                if plan is not None:
-                    success, rewards, score = self.env.step(plan)
-                else:
-                    success = False
-                    rewards = [-1.0, 0.0]
-
-                if not success:
-                    self._restore(self.env.network, snap)
-                    fallback = self._get_best_fit().get_placement(selected_sfc, t)
-                    if fallback is not None:
-                        success, rewards, score = self.env.step(fallback)
-                    if not success:
-                        rewards = [-1.0, 0.0]
+                success, rewards, score, executed_plan = self._execute_plan(plan, selected_sfc, t, snap)
+                plan = executed_plan  # Update plan to actual executed plan
 
                 if success:
                     ep_accepted += 1
 
                     raw_cost = abs(rewards[1]) if len(rewards) > 1 else 0.0
                     cost_norm = min(1.0, raw_cost / max(self._estimate_max_cost(selected_sfc), 1e-6))
-                    time_ratio = (
-                        (t - selected_sfc.request.arrival_time)
-                        / max(selected_sfc.request.delay_max, 1e-6)
-                    )
+                    time_ratio = min(1.0, (t - selected_sfc.request.arrival_time) / max(selected_sfc.request.delay_max, 1e-6))
                     R_HL = [BASE_AR_REWARD + time_ratio, -cost_norm]
 
                     vnf_f = (
@@ -514,7 +508,7 @@ class HRL_VGAE_Strategy(Strategy):
                     else:
                         R_LL = self._compute_ll_reward(rewards, selected_sfc, t, Z_t, vnf_f)
 
-                    self._clear_bw_caches()
+                    self._clear_caches()
 
                 else:
                     ep_rejected += 1
@@ -591,7 +585,7 @@ class HRL_VGAE_Strategy(Strategy):
 
     def run_simulation_eval(self) -> dict:
         self.env.reset()
-        self._clear_all_caches()
+        self._clear_caches()
         self._best_fit = None
         pending = sorted([SFC(r) for r in self.env.requests], key=lambda s: s.request.arrival_time)
         queue: List[SFC] = []
@@ -621,35 +615,24 @@ class HRL_VGAE_Strategy(Strategy):
             t_start = self.env._get_timeslot(t)
             t_end = self.env._get_timeslot(selected_sfc.request.end_time)
             Z_t, dc_mapping = self._get_z(t_start, t_end, selected_sfc.request.bw)
-            snap = self._snapshot(self.env.network)
             self.env.t = t
+            snap = self._snapshot(self.env.network)
             plan = self.get_placement(selected_sfc, t, Z_t, dc_mapping, 0.0)
-            if plan is None:
-                plan = self._get_best_fit().get_placement(selected_sfc, t)
             
-            if plan is not None:
-                success, rewards, score = self.env.step(plan)
-            else:
-                success = False
-                rewards = [-1.0, 0.0]
-            if not success:
-                fallback = self._get_best_fit().get_placement(selected_sfc, t)
-                if fallback is not None:
-                    success, rewards, score = self.env.step(fallback)
-                    plan = fallback if success else None
+            success, rewards, score, executed_plan = self._execute_plan(plan, selected_sfc, t, snap)
+            plan = executed_plan  # Use actual executed plan
 
-            if success:
+            if success and plan is not None and plan is not None:
                 accepted += 1
                 node_cost = sum(self.env.network.nodes[v["dc"]].get_cost(self.env.vnfs[k]) for k, v in plan.get("nodes", {}).items() if v["dc"] in self.env.network.nodes and k in self.env.vnfs)
                 if node_cost == float("inf") or node_cost < 0:
                     node_cost = abs(rewards[1]) if len(rewards) > 1 else 0.0
                 total_node_cost += node_cost
                 self.env.stats["total_delay"] += (selected_sfc.request.end_time - selected_sfc.request.arrival_time)
-                self._clear_bw_caches()
             else:
                 rejected += 1
-                self._restore(self.env.network, snap)
-                self._clear_bw_caches()
+            
+            self._clear_caches()
             t_next = (min((s.request.arrival_time for s in pending), default=t) if pending else t)
             t = max(t, t_next) if not queue else t
         total = accepted + rejected

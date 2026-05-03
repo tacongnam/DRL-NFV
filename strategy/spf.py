@@ -1,41 +1,18 @@
 from typing import Dict, List, Optional
-import networkx as nx
 
 from env.env import Strategy
 from env.request import SFC
+from strategy.routing_utils import RoutingMixin
 import config
 
-class ShortestPathFirst(Strategy):
+class ShortestPathFirst(Strategy, RoutingMixin):
+    """Shortest path first: prioritizes DCs with minimum delay. Uses RoutingMixin."""
+    
     def __init__(self, env):
         super().__init__(env)
+        RoutingMixin.__init__(self)
         self.name = "ShortestPathFirst"
-        self._graph_cache: dict = {}
-        self._path_cache: dict = {}
-
-    def _bw_pruned_graph(self, t_start: int, t_end: int, bw: float) -> nx.Graph:
-        key = (t_start, t_end, round(bw, 2))
-        if key in self._graph_cache:
-            return self._graph_cache[key]
-        G = nx.Graph()
-        for nid in self.env.network.nodes:
-            G.add_node(nid)
-        for link in self.env.network.links:
-            if link.get_available_bandwidth(t_start, t_end) >= bw:
-                G.add_edge(link.u.name, link.v.name, delay=link.delay)
-        self._graph_cache[key] = G
-        return G
-
-    def get_routing(self, u: str, v: str, t_start: int, t_end: int, bw: float) -> Optional[List[str]]:
-        u, v = str(u), str(v)
-        if u == v:
-            return [u]
-        G = self._bw_pruned_graph(t_start, t_end, bw)
-        if u not in G or v not in G:
-            return None
-        try:
-            return nx.shortest_path(G, u, v, weight='delay')
-        except (nx.NetworkXNoPath, nx.NetworkXError):
-            return None
+        self._path_cache: dict = {}  # Cache path delays separately from routing
 
     def _path_delay(self, path: List[str]) -> float:
         if not path or len(path) < 2:

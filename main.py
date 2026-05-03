@@ -1,5 +1,4 @@
-import os, sys, json, argparse, subprocess, math, random, csv
-import numpy as np
+import os, sys, json, argparse, subprocess, random, csv
 
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
@@ -23,6 +22,7 @@ from strategy.best_fit       import BestFit
 from strategy.deadline_aware import DeadlineAwareGreedy
 from strategy.random_fit     import RandomFit
 from strategy.hrl            import HRL_VGAE_Strategy
+from utils.helpers import sample_requests, resolve_request_limit
 
 TRAIN_DIR        = os.path.join(ROOT_DIR, "data/train")
 TEST_DIR         = os.path.join(ROOT_DIR, "data/test")
@@ -39,20 +39,6 @@ BASELINE_REGISTRY = {
     "deadline": ("DeadlineAwareGreedy", DeadlineAwareGreedy),
     #"random":   ("RandomFit",           RandomFit),
 }
-
-
-def _sample_requests(req_rows: list, request_pct: int = 0) -> list:
-    req_limit = _resolve_request_limit(len(req_rows), request_pct=request_pct)
-    if req_limit is None or req_limit <= 0 or len(req_rows) <= req_limit:
-        return req_rows
-    idxs = np.linspace(0, len(req_rows) - 1, num=req_limit, dtype=int)
-    return [req_rows[i] for i in idxs]
-
-
-def _resolve_request_limit(total_requests: int, request_pct: int = 0) -> int | None:
-    if request_pct is None or request_pct <= 0:
-        return None
-    return max(1, math.ceil(total_requests * request_pct / 100.0))
 
 
 def load_env_from_json(filepath: str, request_pct: int = 0) -> Env:
@@ -81,7 +67,7 @@ def load_env_from_json(filepath: str, request_pct: int = 0) -> Env:
                          d_f={k: v for k, v in vd.get("d_f", {}).items()}))
 
     req_rows = sorted(data.get("R", []), key=lambda r: r.get("T", 0))
-    req_rows = _sample_requests(req_rows, request_pct=request_pct)
+    req_rows = sample_requests(req_rows, request_pct=request_pct)  # From utils.helpers
 
     for idx, rd in enumerate(req_rows):
         requests.add_request(Request(
