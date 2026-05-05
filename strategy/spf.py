@@ -1,5 +1,5 @@
 from typing import Dict, List, Optional
-
+import networkx as nx
 from env.env import Strategy
 from env.request import SFC
 from strategy.routing_utils import RoutingMixin

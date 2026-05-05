@@ -598,6 +598,14 @@ class HRL_VGAE_Strategy(Strategy):
         for lnk, used in zip(network.links, snap["links"]):
             lnk.used = used
     
+    @staticmethod
+    def _snapshot(network) -> dict:
+        return {
+            "nodes": {nid: {t: dict(v) for t, v in n.used.items()}
+                      for nid, n in network.nodes.items()},
+            "links": [{t: bw for t, bw in lnk.used.items()} for lnk in network.links],
+        }
+    
     def _rebuild_ll_traj_from_plan(self, plan, sfc, t, Z_t, dc_mapping):
         node_plan_map = extract_node_plan_map(plan)
         t_start = self.env._get_timeslot(t)
