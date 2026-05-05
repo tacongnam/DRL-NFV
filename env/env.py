@@ -98,7 +98,6 @@ class Env(gym.Env):
             l.used = {0: 0.0}
 
     def reset(self, *, seed=None, options=None):
-        """Gymnasium >= 0.26: trả về (obs, info)."""
         super().reset(seed=seed)
         self._reinit_network_usage()
         self.waitlist = []

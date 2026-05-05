@@ -73,3 +73,16 @@ class BestFit(Strategy, RoutingMixin):
         link_timeslots.append((t_start, t_end))
 
         return self.build_placement_plan(node_placements, link_paths, vnf_timeslots, link_timeslots, sfc)
+    
+    def get_routing(self, u, v, t_start, t_end, bw, Z_t=None, dc_mapping=None):
+        import networkx as nx
+
+        G = nx.Graph()
+        for link in self.env.network.links:
+            if link.get_available_bandwidth(t_start, t_end) >= bw:
+                G.add_edge(link.u.name, link.v.name, weight=link.delay)
+
+        try:
+            return nx.shortest_path(G, u, v, weight="weight")
+        except:
+            return None

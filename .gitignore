@@ -29,3 +29,7 @@ Thumbs.db
 # Exceptions: Keep directory structure
 !data/train/.gitkeep
 !data/test/.gitkeep
+
+models/hrl_final/*
+models/ll_pretrained/*
+models/vgae_pretrained/*

@@ -13,9 +13,8 @@ class VNF:
         self.name = name
         self.resource = {"mem": h_f, "cpu": c_f, "ram": r_f}
 
-        # FIX: kiểm tra None hoặc dict rỗng TRƯỚC khi gán, ép key thành str để nhất quán
         if d_f is None or len(d_f) == 0:
-            self.d_f = {'-1': 0.0}          # '-1' = wildcard: có thể đặt lên mọi DC
+            self.d_f = {'-1': 0.0}
         else:
             self.d_f = {str(k): v for k, v in d_f.items()}
 

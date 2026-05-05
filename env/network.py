@@ -98,7 +98,6 @@ class Node:
             return True
         return False
 
-
 class Link:
     def __init__(self, u: Node, v: Node, bandwidth_capacity: float,
                  link_delay: float, used: dict = None):
