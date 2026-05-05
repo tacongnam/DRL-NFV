@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 
 import config
 from env.env import Strategy
-from env import SFC
+from env.request import SFC
 from models import ReplayBuffer, VGAENetwork, HighLevelAgent, LowLevelAgent
 from strategy.d_star_lite import DStarLite
 from utils.hrl_utils import (
@@ -590,6 +590,13 @@ class HRL_VGAE_Strategy(Strategy):
             "algorithm_name": self.name,
         })
         return self.env.stats
+    
+    @staticmethod
+    def _restore(network, snap):
+        for nid, used in snap["nodes"].items():
+            network.nodes[nid].used = used
+        for lnk, used in zip(network.links, snap["links"]):
+            lnk.used = used
     
     def _rebuild_ll_traj_from_plan(self, plan, sfc, t, Z_t, dc_mapping):
         node_plan_map = extract_node_plan_map(plan)
