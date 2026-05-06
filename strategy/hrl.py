@@ -9,7 +9,6 @@ import config
 from env.env import Strategy
 from env.request import SFC
 from models import ReplayBuffer, VGAENetwork, HighLevelAgent, LowLevelAgent
-from strategy.d_star_lite import DStarLite
 from utils.hrl_utils import (
     LRUCache, snapshot_network, restore_network, resolve_npy_path,
     get_next_time, extract_node_plan_map
@@ -48,7 +47,7 @@ class HRL_VGAE_Strategy(Strategy):
         self._routing_cache  = LRUCache(max_size=config.HRL_MAX_ROUTING_CACHE)
         self._max_cost_cache: dict = {}
 
-        self._dstar = DStarLite(env.network, latent_dim=config.LATENT_DIM, latent_scale=0.01)
+        #self._dstar = DStarLite(env.network, latent_dim=config.LATENT_DIM, latent_scale=0.01)
         self._current_Z:  Optional[np.ndarray] = None
         self._current_dc: List[str]            = []
 
@@ -130,7 +129,7 @@ class HRL_VGAE_Strategy(Strategy):
         dcs = dc_mapping if dc_mapping is not None else (self._current_dc if self._current_dc else [])
         return Z, dcs
 
-    def get_routing(self, u: str, v: str,
+    """ def get_routing(self, u: str, v: str,
                 t_start: int, t_end: int, bw: float,
                 Z_t: Optional[np.ndarray] = None,
                 dc_mapping: Optional[List[str]] = None) -> Optional[List[str]]:
@@ -143,6 +142,26 @@ class HRL_VGAE_Strategy(Strategy):
         if cached is not None:
             return cached
         path = self._dstar.find_path(u, v, t_start, t_end, bw, Z, dcs)
+        self._routing_cache.set(rkey, path)
+        return path """
+    
+    def get_routing(self, u: str, v: str,
+                t_start: int, t_end: int, bw: float,
+                Z_t=None, dc_mapping=None) -> Optional[List[str]]:
+        u, v = str(u), str(v)
+        if u == v:
+            return [u]
+        rkey = (u, v, t_start, t_end, round(bw, 2))
+        cached = self._routing_cache.get(rkey)
+        if cached is not None:
+            return cached
+
+        G = self._bw_pruned_graph(t_start, t_end, bw)
+        try:
+            path = nx.shortest_path(G, u, v, weight="delay")
+        except (nx.NetworkXNoPath, nx.NodeNotFound, nx.NetworkXError):
+            path = None
+
         self._routing_cache.set(rkey, path)
         return path
 
