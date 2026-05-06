@@ -29,6 +29,6 @@ Thumbs.db
 !data/train/.gitkeep
 !data/test/.gitkeep
 
-models/hrl_final/*
+#models/hrl_final/*
 models/ll_pretrained/*
 models/vgae_pretrained/*
