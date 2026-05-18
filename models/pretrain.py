@@ -8,6 +8,7 @@ import config
 from env import Env
 from models import VGAENetwork, ReplayBuffer, LowLevelAgent
 from utils.helpers import resolve_request_limit
+from utils.training_logger import TrainingLogger
 from data.load_data import load_env_from_json
 
 def get_train_files(train_dir: str) -> list:
@@ -67,7 +68,7 @@ def build_dc_graph(env: Env, t_start: int, t_end: int, bw: float, path_cache: di
                     A[j, i] = 1.0 / (dist + 1.0)
     return X, A, dcs
 
-def pretrain_vgae(train_files: list, epochs: int = 200, batch: int = 16, request_pct: int = 0):
+def pretrain_vgae(train_files: list, epochs: int = 200, batch: int = 16, request_pct: int = 0, logger: TrainingLogger = None):
     if not train_files:
         print("[Pretrain-VGAE] No JSON files selected", flush=True)
         return None
@@ -104,7 +105,9 @@ def pretrain_vgae(train_files: list, epochs: int = 200, batch: int = 16, request
 
     t0 = time.time()
     for ep in range(1, epochs + 1):
-        vgae.train(buffer, epochs=1, batch=batch)
+        loss = vgae.train(buffer, epochs=1, batch=batch)
+        if logger:
+            logger.log_vgae_pretrain(ep, loss if loss is not None else 0.0)
         if ep % 50 == 0 or ep == epochs:
             print(f"  epoch {ep}/{epochs}  ({time.time() - t0:.1f}s)", flush=True)
 
@@ -135,7 +138,7 @@ def _best_valid_dc(dcs: list, valid: list, env: Env, vnf, t_s: int, t_e: int) ->
     return best_idx
 
 
-def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch: int = 32, request_pct: int = 0):
+def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch: int = 32, request_pct: int = 0, logger: TrainingLogger = None):
     if not train_files:
         return None
 
@@ -166,6 +169,10 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
 
     PRETRAIN_EPSILON_START = 0.5
     PRETRAIN_EPSILON_END   = 0.05
+
+    print(f"\n{'=' * 50}", flush=True)
+    print(f"PHASE 1B: LL-Agent Pre-training  ({len(file_envs)} files, {episodes} episodes)", flush=True)
+    print(f"{'=' * 50}", flush=True)
 
     for ep in range(1, episodes + 1):
         pretrain_epsilon = max(
@@ -279,9 +286,13 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
             env.step(plan)
 
         if len(buf_ll) >= batch:
+            ep_loss = 0.0
             n_batches = min(len(buf_ll) // batch, 10)
             for _ in range(n_batches):
                 ll_agent.train(buf_ll, batch)
+            if logger:
+                avg_reward = np.mean([r[4] for r in buf_ll.buffer]) if buf_ll.buffer else 0.0
+                logger.log_ll_pretrain(ep, ep_loss, avg_reward)
 
         if ep == 1 or ep % 10 == 0 or ep == episodes:
             print(f"  [LL] episode {ep}/{episodes}  buf={len(buf_ll)}", flush=True)
