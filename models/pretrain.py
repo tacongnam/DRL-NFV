@@ -291,10 +291,10 @@ def pretrain_ll(train_files: list, vgae: VGAENetwork, episodes: int = 200, batch
             for _ in range(n_batches):
                 ll_agent.train(buf_ll, batch)
             if logger:
-                recent = list(buf_ll.buf)[-min(batch, len(buf_ll.buf)):]
-                avg_reward = np.mean([r[4] if not hasattr(r[4], '__len__') else r[4][0] for r in recent]) if recent else 0.0
-                logger.log_ll_pretrain(ep, ep_loss / max(n_batches, 1), avg_reward)
-
+                recent = list(buf_ll.buf)[-batch:]
+                avg_reward = float(np.mean([r[4] if not hasattr(r[4], '__len__') else r[4][0] for r in recent]))
+                logger.log_ll_pretrain(ep, ep_loss, avg_reward)
+                
         if ep == 1 or ep % 10 == 0 or ep == episodes:
             print(f"  [LL] episode {ep}/{episodes}  buf={len(buf_ll)}", flush=True)
 

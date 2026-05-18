@@ -93,16 +93,21 @@ class VGAENetwork:
 
     def train(self, buffer: ReplayBuffer, epochs: int = 1, batch: int = 16):
         if len(buffer) < 4:
-            return
+            return None
+        total_loss = 0.0
+        count = 0
         for _ in range(epochs):
             for X, A in buffer.sample(batch):
                 if X.shape[0] < 2:
                     continue
                 A_hat = self._norm_adj(A.astype(np.float32))
-                self._train_step(
+                loss = self._train_step(
                     tf.constant(X, dtype=tf.float32),
                     A_hat,
                     tf.constant(A, dtype=tf.float32))
+                total_loss += loss
+                count += 1
+        return total_loss / count if count > 0 else None
 
     def save_weights(self, path: str):
         self._ensure_built()

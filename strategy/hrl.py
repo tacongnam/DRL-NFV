@@ -389,6 +389,8 @@ class HRL_VGAE_Strategy(Strategy):
         ll_weight_losses_batch = []
         vgae_losses_batch = []
 
+        ep_accepted = ep_rejected = 0
+        acc_rate = 0.0
         for ep in range(1, self.episodes + 1):
             self.env.reset()
             self._clear_caches()
@@ -505,15 +507,15 @@ class HRL_VGAE_Strategy(Strategy):
                     self.ll_agent.train(self.buf_LL, config.HRL_BATCH_SIZE)
                     if self.logger:
                         # Approximate loss from buffer
-                        ll_losses_batch.append(np.mean([abs(r[4]) for r in self.buf_LL.buffer[-config.HRL_BATCH_SIZE:]]))
+                        ll_losses_batch.append(np.mean([abs(r[4]) for r in self.buf_LL.buf[-config.HRL_BATCH_SIZE:]]))
                         ll_weight_losses_batch.append(np.mean(ll_losses_batch[-10:]) if len(ll_losses_batch) > 0 else 0.0)
 
                 # HL-Agent Training
                 if total_steps % 8 == 0 and len(self.buf_HL) >= config.HRL_BATCH_SIZE:
                     self.hl_agent.train(self.buf_HL, config.HRL_BATCH_SIZE)
                     if self.logger:
-                        hl_losses_ar_batch.append(np.mean([abs(r[3][0]) for r in self.buf_HL.buffer[-config.HRL_BATCH_SIZE:]]))
-                        hl_losses_cost_batch.append(np.mean([abs(r[3][1]) for r in self.buf_HL.buffer[-config.HRL_BATCH_SIZE:]]))
+                        hl_losses_ar_batch.append(np.mean([abs(r[3][0]) for r in self.buf_HL.buf[-config.HRL_BATCH_SIZE:]]))
+                        hl_losses_cost_batch.append(np.mean([abs(r[3][1]) for r in self.buf_HL.buf[-config.HRL_BATCH_SIZE:]]))
 
                 # Target Network Sync
                 if total_steps % config.HRL_TARGET_SYNC == 0:
@@ -522,12 +524,10 @@ class HRL_VGAE_Strategy(Strategy):
 
                 # VGAE Online Training
                 if total_steps % config.HRL_VGAE_TRAIN_FREQ == 0 and len(self.buf_Graph) >= 4:
-                    self.vgae_net.train(self.buf_Graph, epochs=config.HRL_VGAE_EPOCHS)
-                    if self.logger:
-                        # Approximate VGAE loss
-                        vgae_loss = 1.5 * np.exp(-total_steps / 2000) + np.random.normal(0, 0.05)
-                        vgae_losses_batch.append(max(vgae_loss, 0.01))
-                        self.logger.log_vgae_online_train(total_steps, np.mean(vgae_losses_batch[-10:]) if vgae_losses_batch else 0.0)
+                    vgae_loss = self.vgae_net.train(self.buf_Graph, epochs=config.HRL_VGAE_EPOCHS)
+                    if self.logger and vgae_loss is not None:
+                        vgae_losses_batch.append(vgae_loss)
+                        self.logger.log_vgae_online_train(total_steps, np.mean(vgae_losses_batch[-10:]))
 
                 # Log step-wise metrics
                 if self.logger:
