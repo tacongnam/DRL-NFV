@@ -37,8 +37,9 @@ def _run_pretrain_inline(args, train_dir: str, DEFAULT_PRETRAIN_REQUEST_PCT, log
     else:
         print("[Pretrain] Skipped LL pretrain because VGAE was not produced.", flush=True)
 
-    vgae_out = os.path.join(ROOT_DIR, "models", "vgae_pretrained", "vgae_weights.npy")
-    ll_out = os.path.join(ROOT_DIR, "models", "ll_pretrained", "ll_dqn_weights.npy")
+    import config
+    vgae_out = os.path.join(config.VGAE_DIR, config.VGAE_WEIGHTS_FILE)
+    ll_out = os.path.join(config.LL_DIR, config.LL_WEIGHTS_FILE)
     print(f"[Pretrain] VGAE saved: {os.path.exists(vgae_out)} -> {vgae_out}", flush=True)
     print(f"[Pretrain] LL saved: {os.path.exists(ll_out)} -> {ll_out}", flush=True)
     return os.path.exists(vgae_out) or os.path.exists(ll_out)
