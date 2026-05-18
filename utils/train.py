@@ -1,7 +1,7 @@
 import os
 from data.load_data import get_data_files, print_selected_files, load_env_from_json
 
-def _run_train(episodes, ll_pretrained, save_dir, train_dir, train_request_pct):
+def _run_train(episodes, ll_pretrained, save_dir, train_dir, train_request_pct, logger=None):
     files = get_data_files(train_dir)
     if not files:
         print(f"[ERROR] No training files in {train_dir}.")
@@ -27,7 +27,9 @@ def _run_train(episodes, ll_pretrained, save_dir, train_dir, train_request_pct):
         strategy = HRL_VGAE_Strategy(
             env, is_training=True, episodes=ep_for_file,
             use_ll_score=True,
-            ll_pretrained_path=ll_pretrained if i == 0 else None)
+            ll_pretrained_path=ll_pretrained if i == 0 else None,
+            logger=logger
+        )
 
         if i > 0:
             hl_w = os.path.join(save_dir, "hl_pmdrl_weights.npy")

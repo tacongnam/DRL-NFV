@@ -1,7 +1,7 @@
 import os
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-def _run_pretrain_inline(args, train_dir: str, DEFAULT_PRETRAIN_REQUEST_PCT):
+def _run_pretrain_inline(args, train_dir: str, DEFAULT_PRETRAIN_REQUEST_PCT, logger=None):
     from models import pretrain
 
     selected = pretrain.get_train_files(train_dir)
@@ -18,6 +18,7 @@ def _run_pretrain_inline(args, train_dir: str, DEFAULT_PRETRAIN_REQUEST_PCT):
         selected,
         epochs=getattr(args, "vgae_epochs", 60),
         request_pct=req_pct,
+        logger=logger,
     )
     if vgae is None and getattr(args, "ll_episodes", 0) > 0:
         vgae_path = os.path.join(ROOT_DIR, "models", "vgae_pretrained", "vgae_weights.npy")
@@ -31,6 +32,7 @@ def _run_pretrain_inline(args, train_dir: str, DEFAULT_PRETRAIN_REQUEST_PCT):
             vgae,
             episodes=getattr(args, "ll_episodes", 60),
             request_pct=req_pct,
+            logger=logger,
         )
     else:
         print("[Pretrain] Skipped LL pretrain because VGAE was not produced.", flush=True)

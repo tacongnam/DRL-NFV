@@ -15,6 +15,7 @@ sys.path.insert(0, ROOT_DIR)
 from strategy import GreedyFIFS, BestFit, DeadlineAwareGreedy, RandomFit, HRL_VGAE_Strategy
 from data.load_data import load_env_from_json, get_data_files, sample_files, save_csv
 from utils import _run_eval, _run_train, _run_pretrain_inline, _plot_baseline_results, _plot_eval_vs_baselines
+from utils.training_logger import TrainingLogger
 
 TRAIN_DIR        = os.path.join(ROOT_DIR, "data/train")
 TEST_DIR         = os.path.join(ROOT_DIR, "data/test")
@@ -96,10 +97,14 @@ def run_pipeline(args):
     print(f"  train={len(get_data_files(TRAIN_DIR))}  test={len(get_data_files(TEST_DIR))}")
 
     print("\n[2/4] Pre-training VGAE + LL-DQN ...")
-    ok = _run_pretrain_inline(args, TRAIN_DIR, DEFAULT_PRETRAIN_REQUEST_PCT)
+    pretrain_logger = TrainingLogger(log_dir=os.path.join(ROOT_DIR, "logs/pretrain"))
+    ok = _run_pretrain_inline(args, TRAIN_DIR, DEFAULT_PRETRAIN_REQUEST_PCT, logger=pretrain_logger)
+    pretrain_logger.save()
+    pretrain_logger.plot_learning_curves()
     print("[2/4] Pre-training complete." if ok else "[2/4] Pre-training failed.", flush=True)
 
     print("\n[3/4] Training HRL ...")
+    train_logger = TrainingLogger(log_dir=os.path.join(ROOT_DIR, "logs/train"))
     ll_path = os.path.join(ROOT_DIR, "models/ll_pretrained/ll_dqn_weights.npy")
     _run_train(
         args.episodes,
@@ -107,7 +112,10 @@ def run_pipeline(args):
         os.path.join(ROOT_DIR, "models/hrl_final"),
         TRAIN_DIR,
         train_request_pct=getattr(args, "train_request_pct", DEFAULT_TRAIN_REQUEST_PCT),
+        logger=train_logger,
     )
+    train_logger.save()
+    train_logger.plot_learning_curves()
 
     print("\n[4/4] Evaluating ...")
     _run_eval(os.path.join(ROOT_DIR, "models/hrl_final"), TEST_DIR)
@@ -131,7 +139,10 @@ def run_pretrain(args):
     if not get_data_files(train_dir):
         print(f"[ERROR] No JSON files in {train_dir}. Run --mode generate first.")
         return
-    ok = _run_pretrain_inline(args, train_dir, DEFAULT_PRETRAIN_REQUEST_PCT)
+    logger = TrainingLogger(log_dir=os.path.join(ROOT_DIR, "logs/pretrain"))
+    ok = _run_pretrain_inline(args, train_dir, DEFAULT_PRETRAIN_REQUEST_PCT, logger=logger)
+    logger.save()
+    logger.plot_learning_curves()
     print("[Pretrain] Complete." if ok else "[Pretrain] Failed.", flush=True)
 
 def run_train(args):
@@ -140,10 +151,14 @@ def run_train(args):
     if not ll_path:
         candidate = os.path.join(ROOT_DIR, "models/ll_pretrained/ll_dqn_weights.npy")
         ll_path   = candidate if os.path.exists(candidate) else None
+    logger = TrainingLogger(log_dir=os.path.join(ROOT_DIR, "logs/train"))
     _run_train(args.episodes, ll_path,
                os.path.abspath(getattr(args, "model_dir", "models/hrl_final")),
                os.path.abspath(getattr(args, "train_dir", TRAIN_DIR)),
-               train_request_pct=getattr(args, "train_request_pct", DEFAULT_TRAIN_REQUEST_PCT))
+               train_request_pct=getattr(args, "train_request_pct", DEFAULT_TRAIN_REQUEST_PCT),
+               logger=logger)
+    logger.save()
+    logger.plot_learning_curves()
 
 def run_eval(args):
     print("\n=== EVALUATION ===")
