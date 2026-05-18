@@ -9,7 +9,7 @@ class ShortestPathFirst(RoutingMixin, Strategy):
     """Shortest path first: prioritizes DCs with minimum delay. Uses RoutingMixin."""
     
     def __init__(self, env):
-        super().__init__(env)
+        Strategy.__init__(self, env)
         RoutingMixin.__init__(self)
         self.name = "ShortestPathFirst"
         self._path_cache: dict = {}  # Cache path delays separately from routing

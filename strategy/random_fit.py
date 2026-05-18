@@ -7,7 +7,7 @@ import config
 
 class RandomFit(RoutingMixin, Strategy):
     def __init__(self, env, seed: int = None):
-        super().__init__(env)
+        Strategy.__init__(self, env)
         RoutingMixin.__init__(self)
         self.name = "RandomFit"
         if seed is not None:

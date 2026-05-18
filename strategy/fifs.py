@@ -9,7 +9,7 @@ class GreedyFIFS(RoutingMixin, Strategy):
     """FIFO + cost-based DC selection. Uses RoutingMixin for routing."""
     
     def __init__(self, env):
-        super().__init__(env)
+        Strategy.__init__(self, env)
         RoutingMixin.__init__(self)
         self.name = "GreedyFIFS"
 

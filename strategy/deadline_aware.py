@@ -10,7 +10,7 @@ class DeadlineAwareGreedy(RoutingMixin, Strategy):
     """Delay-aware placement prioritizing SFCs with tight deadlines. Uses RoutingMixin."""
     
     def __init__(self, env):
-        super().__init__(env)
+        Strategy.__init__(self, env)
         RoutingMixin.__init__(self)
         # Sort by deadline urgency (SFCs with tighter deadlines processed first)
         self.request_sort_key = lambda r: r.end_time

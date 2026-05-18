@@ -13,7 +13,7 @@ class BestFit(RoutingMixin, Strategy):
     """
 
     def __init__(self, env):
-        super().__init__(env)
+        Strategy.__init__(self, env)
         RoutingMixin.__init__(self)
         self.name = "BestFit"
 

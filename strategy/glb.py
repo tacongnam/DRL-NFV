@@ -10,7 +10,7 @@ class GreedyGLB(RoutingMixin, Strategy):
     """Global Load Balancing: selects DC with best resource utilization. Uses RoutingMixin."""
 
     def __init__(self, env):
-        super().__init__(env)
+        Strategy.__init__(self, env)
         RoutingMixin.__init__(self)
         self.name = "GreedyGLB"
 

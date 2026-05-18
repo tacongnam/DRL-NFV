@@ -17,7 +17,7 @@ from utils.hrl_utils import (
 class HRL_VGAE_Strategy(Strategy):
     def __init__(self, env, is_training=False, episodes=300,
                  use_ll_score=True, ll_pretrained_path=None):
-        super().__init__(env)
+        Strategy.__init__(self, env)
         self.name         = "HRL-VGAE"
         self.is_training  = is_training
         self.episodes     = episodes
