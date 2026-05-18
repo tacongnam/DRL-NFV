@@ -9,15 +9,16 @@ def _run_train(episodes, ll_pretrained, save_dir, train_dir, train_request_pct, 
 
     print_selected_files("TRAIN", files, request_pct=train_request_pct)
 
-    n_files      = len(files)
-    min_ep       = max(1, episodes // n_files)
-    extra        = episodes % n_files
+    n_files         = len(files)
+    min_ep          = max(1, episodes // n_files)
+    extra           = episodes % n_files
     total_ep_actual = min_ep * n_files + extra
 
     print(f"[TRAIN] {episodes} episodes across {n_files} files "
           f"(~{min_ep} ep/file, {extra} file(s) get +1) → total={total_ep_actual}")
 
     strategy = None
+    episode_offset = 0
     for i, fp in enumerate(files):
         ep_for_file = min_ep + (1 if i < extra else 0)
 
@@ -28,8 +29,8 @@ def _run_train(episodes, ll_pretrained, save_dir, train_dir, train_request_pct, 
             env, is_training=True, episodes=ep_for_file,
             use_ll_score=True,
             ll_pretrained_path=ll_pretrained if i == 0 else None,
-            logger=logger
-        )
+            logger=logger,
+            episode_offset=episode_offset)
 
         if i > 0:
             hl_w = os.path.join(save_dir, "hl_pmdrl_weights.npy")
@@ -41,6 +42,8 @@ def _run_train(episodes, ll_pretrained, save_dir, train_dir, train_request_pct, 
         env.run_simulation()
         os.makedirs(save_dir, exist_ok=True)
         strategy.save_model(save_dir)
+
+        episode_offset += ep_for_file
 
     if strategy:
         strategy.save_model(save_dir)

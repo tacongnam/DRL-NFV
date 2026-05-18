@@ -17,13 +17,14 @@ from utils.training_logger import TrainingLogger
 
 class HRL_VGAE_Strategy(Strategy):
     def __init__(self, env, is_training=False, episodes=300,
-                 use_ll_score=True, ll_pretrained_path=None, logger: TrainingLogger = None):
+                 use_ll_score=True, ll_pretrained_path=None, logger: TrainingLogger = None, episode_offset: int = 0):
         Strategy.__init__(self, env)
         self.name         = "HRL-VGAE"
         self.is_training  = is_training
         self.episodes     = episodes
         self.use_ll_score = use_ll_score
         self.logger       = logger
+        self.episode_offset = episode_offset
 
         self.vgae_net = VGAENetwork(latent_dim=config.LATENT_DIM)
         self.hl_agent = HighLevelAgent(
@@ -545,10 +546,10 @@ class HRL_VGAE_Strategy(Strategy):
             acc_rate = ep_accepted / max(1, total_ep)
             
             if self.logger:
-                self.logger.log_episode(ep, acc_rate, [ep_accepted, ep_rejected])
+                self.logger.log_episode(ep + self.episode_offset, acc_rate, [ep_accepted, ep_rejected])
             
             if ep % 10 == 0 or ep == self.episodes:
-                print(f"[HRL] Episode {ep}/{self.episodes}  Acceptance: {acc_rate:.3f}", flush=True)
+                print(f"[HRL] Episode {ep} (offset: {self.episode_offset})/{self.episodes}  Acceptance: {acc_rate:.3f}", flush=True)
 
         self.env.stats.update({
             "accepted_requests": ep_accepted,
