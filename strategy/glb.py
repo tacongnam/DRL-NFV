@@ -6,7 +6,7 @@ from env.network import Node
 from strategy.routing_utils import RoutingMixin
 import config
 
-class GreedyGLB(Strategy, RoutingMixin):
+class GreedyGLB(RoutingMixin, Strategy):
     """Global Load Balancing: selects DC with best resource utilization. Uses RoutingMixin."""
 
     def __init__(self, env):

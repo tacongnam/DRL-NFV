@@ -5,7 +5,7 @@ from env.request import SFC
 from strategy.routing_utils import RoutingMixin
 import config
 
-class RandomFit(Strategy, RoutingMixin):
+class RandomFit(RoutingMixin, Strategy):
     def __init__(self, env, seed: int = None):
         super().__init__(env)
         RoutingMixin.__init__(self)

@@ -5,7 +5,7 @@ from env.request import SFC
 from strategy.routing_utils import RoutingMixin
 import config
 
-class GreedyFIFS(Strategy, RoutingMixin):
+class GreedyFIFS(RoutingMixin, Strategy):
     """FIFO + cost-based DC selection. Uses RoutingMixin for routing."""
     
     def __init__(self, env):

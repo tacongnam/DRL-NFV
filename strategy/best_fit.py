@@ -6,7 +6,7 @@ from env.network import Node
 from strategy.routing_utils import RoutingMixin
 import config
 
-class BestFit(Strategy, RoutingMixin):
+class BestFit(RoutingMixin, Strategy):
     """
     Best-Fit VNF placement strategy: selects DC with minimum waste.
     Leverages RoutingMixin for routing/graph utilities (see routing_utils.py).

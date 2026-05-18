@@ -5,7 +5,7 @@ from env.request import SFC
 from strategy.routing_utils import RoutingMixin
 import config
 
-class ShortestPathFirst(Strategy, RoutingMixin):
+class ShortestPathFirst(RoutingMixin, Strategy):
     """Shortest path first: prioritizes DCs with minimum delay. Uses RoutingMixin."""
     
     def __init__(self, env):

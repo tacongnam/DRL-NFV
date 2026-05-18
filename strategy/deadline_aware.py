@@ -6,7 +6,7 @@ from strategy.routing_utils import RoutingMixin
 import config
 
 
-class DeadlineAwareGreedy(Strategy, RoutingMixin):
+class DeadlineAwareGreedy(RoutingMixin, Strategy):
     """Delay-aware placement prioritizing SFCs with tight deadlines. Uses RoutingMixin."""
     
     def __init__(self, env):

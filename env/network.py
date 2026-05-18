@@ -132,6 +132,12 @@ class Link:
                 
         for T in range(start_T, end_T):
             self.used[T] += bandwidth
+    
+    def get_load(self, t_start: int, t_end: int) -> float:
+        if self.cap <= 0:
+            return 1.0
+        used = self.cap - self.get_available_bandwidth(t_start, t_end)
+        return min(1.0, used / self.cap)
 
     def get_available_bandwidth(self, start_T: int, end_T: int) -> float:
         bw = self.cap
@@ -198,12 +204,6 @@ class Network:
 
     def check_violated_links(self, T: int) -> int:
         return sum(l.check_violated(T) for l in self.links)
-    
-    def get_load(self, t_start: int, t_end: int) -> float:
-        if self.cap <= 0:
-            return 1.0
-        used = self.cap - self.get_available_bandwidth(t_start, t_end)
-        return min(1.0, used / self.cap)
 
     def to_graph(self) -> nx.Graph:
         G = nx.Graph()
