@@ -12,7 +12,7 @@ for _d in ["models/vgae_pretrained", "models/ll_pretrained",
 
 sys.path.insert(0, ROOT_DIR)
 
-from strategy import GreedyFIFS, BestFit, DeadlineAwareGreedy, HRL_VGAE_Strategy
+from strategy import GreedyFIFS, BestFit, DeadlineAwareGreedy, RandomFit, HRL_VGAE_Strategy
 from data.load_data import load_env_from_json, get_data_files, sample_files, save_csv
 from utils import _run_eval, _run_train, _run_pretrain_inline, _plot_baseline_results, _plot_eval_vs_baselines
 
@@ -27,6 +27,7 @@ BASELINE_REGISTRY = {
     "fifs": ("GreedyFIFS", GreedyFIFS),
     "bestfit": ("BestFit", BestFit),
     "deadline": ("DeadlineAwareGreedy", DeadlineAwareGreedy),
+    "randomfit": ("RandomFit", RandomFit)
 }
 
 def _add_shared_args(parser: argparse.ArgumentParser):
@@ -199,7 +200,6 @@ def run_baselines(args=None):
                 "total_cost":       round(s.get("total_cost", 0.0), 2),
                 "avg_cost":         round(s.get("total_cost", 0.0) / max(s.get("accepted_requests", 1), 1), 2),
                 "total_delay":      round(s.get("total_delay", 0.0), 2),
-                "workload served":  round(s.get("total_workload_served", 0.0), 2)
             }
             csv_rows.append(row)
             if label not in agg:

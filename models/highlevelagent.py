@@ -31,7 +31,6 @@ class HighLevelAgent:
         self.target_net_cost = _mlp(feat_dim, 128, 1, "hl_target_cost")
         self.opt_ar   = keras.optimizers.Adam(lr)
         self.opt_cost = keras.optimizers.Adam(lr)
-        self.log_std  = tf.Variable(tf.zeros(2), trainable=True, name="hl_log_std")
         self._sync_targets()
 
     def _sync_targets(self):

@@ -84,7 +84,8 @@ class Env(gym.Env):
             'total_delay':       0.0,
             'accepted_details':  [],
             'rejected_details':  [],
-            'total_workload_served': 0.0,
+            'compute_throughput': 0.0,
+            'network_throughput': 0.0,
         }
 
     def _reinit_network_usage(self):
@@ -124,6 +125,14 @@ class Env(gym.Env):
             not any(node.used[t][k] + vnf.resource[k] > node.cap[k] for k in config.RESOURCE_TYPE)
             for t in relevant
         )
+    
+    def _check_path_delay(self, path: List[str], delay_max: float) -> bool:
+        total = sum(
+            l.delay for l in self.network.links
+            if (l.u.name, l.v.name) in zip(path, path[1:])
+            or (l.v.name, l.u.name) in zip(path, path[1:])
+        )
+        return total <= delay_max
 
     def step(self, plan: Optional[Dict]) -> Tuple[bool, List[float], float]:
         """
@@ -201,8 +210,10 @@ class Env(gym.Env):
             })
             vnf_res = sum(sum(v.resource.values()) for v in sfc.request.vnfs)
             duration = sfc.request.delay_max
-            workload = (vnf_res + sfc.request.bw) * duration
-            self.stats['total_workload_served'] += workload
+            self.stats['compute_throughput'] += sum(
+                sum(v.resource.values()) for v in sfc.request.vnfs
+            ) * duration
+            self.stats['network_throughput'] += sfc.request.bw * duration
         else:
             self.stats['rejected_requests'] += 1
             self.stats['rejected_details'].append({
@@ -249,4 +260,6 @@ class Env(gym.Env):
             print(f"{'Độ trễ trung bình:':<22} {avg_d:.2f}")
         if 'acceptance_ratio' in s:
             print(f"{'Acceptance ratio:':<22} {s['acceptance_ratio']:.3f}")
+        print(f"{'Compute throughput:':<22} {s['compute_throughput']:.2f}")
+        print(f"{'Network throughput:':<22} {s['network_throughput']:.2f}")
         print("=" * 30 + "\n")

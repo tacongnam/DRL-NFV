@@ -1,8 +1,8 @@
 from typing import Dict, List, Optional
 import networkx as nx
+import config
 from env.env import Strategy
 from env.request import SFC
-
 
 class RoutingMixin:    
     def __init__(self):
@@ -22,7 +22,9 @@ class RoutingMixin:
         
         for link in self.env.network.links:
             if link.get_available_bandwidth(t_start, t_end) >= bw:
-                G.add_edge(link.u.name, link.v.name, delay=link.delay)
+                load = link.get_load(t_start, t_end)
+                w = link.delay + config.ROUTING_BW_WEIGHT * load
+                G.add_edge(link.u.name, link.v.name, weight=w, delay=link.delay)
         
         self._graph_cache[key] = G
         return G
@@ -39,6 +41,6 @@ class RoutingMixin:
             return None
         
         try:
-            return nx.shortest_path(G, u, v, weight='delay')
+            return nx.shortest_path(G, u, v, weight='weight')
         except (nx.NetworkXNoPath, nx.NetworkXError):
             return None
