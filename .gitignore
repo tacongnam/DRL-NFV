@@ -34,5 +34,4 @@ data/*.png
 models/ll_pretrained/*
 models/vgae_pretrained/*
 
-results_eval
 eval_results.csv
