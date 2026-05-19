@@ -1,120 +1,295 @@
-import os, json, csv
+"""
+gen_tables.py
+─────────────
+Tạo bảng tổng hợp thực nghiệm theo 2 metrics (AR, EEI = AR/Cost),
+tách riêng từng mức Difficulty (easy / normal / hard).
+
+Chiều bảng:
+  - Hàng  : Algorithm
+  - Cột   : (Topology × Metric) và (Distribution × Metric)
+  
+Output mỗi difficulty:
+  results_eval/table_{difficulty}.tex
+  results_eval/table_{difficulty}.csv
+"""
+
+import os
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from main import load_env_from_json, BASELINE_REGISTRY
-from strategy.hrl import HRL_VGAE_Strategy
 
-# Cấu hình đường dẫn
-MODEL_DIR = "models/hrl_final"
-TEST_DIR = "data/shortlist_test"
+# ── Cấu hình ──────────────────────────────────────────────────────────────────
+CSV_PATH   = "eval_results.csv"
 OUTPUT_DIR = "results_eval"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-def parse_file_info(filename):
-    """Phân tích thông tin từ tên file: topo_dist_diff.json"""
-    parts = filename.replace(".json", "").split("_")
+ALGO_ORDER = ["BestFit", "DeadlineAwareGreedy", "GreedyFIFS", "RandomFit", "HRL-VGAE"]
+DIFF_ORDER = ["easy", "normal", "hard"]
+TOPO_ORDER = ["cogent", "conus", "nsf"]
+DIST_ORDER = ["uniform", "urban", "rural", "centers"]
+
+# Metrics cần tổng hợp: (tên cột trong df, nhãn LaTeX)
+METRICS = [
+    ("AR",  "AR"),
+    ("EEI", "EEI"),
+]
+
+
+# ── Load & chuẩn bị dữ liệu ───────────────────────────────────────────────────
+
+def parse_file_info(filename: str) -> dict:
+    parts = str(filename).replace(".json", "").split("_")
     return {
-        "Topology": parts[0] if len(parts) > 0 else "Unknown",
+        "Topology":     parts[0] if len(parts) > 0 else "Unknown",
         "Distribution": parts[1] if len(parts) > 1 else "Unknown",
-        "Difficulty": parts[2] if len(parts) > 2 else "Unknown"
+        "Difficulty":   parts[2] if len(parts) > 2 else "Unknown",
     }
 
-def run_evaluation(num_runs=5):
-    test_files = [f for f in os.listdir(TEST_DIR) if f.endswith(".json")]
-    all_results = []
-    algorithms = list(BASELINE_REGISTRY.keys()) + ["hrl-vgae"]
 
-    print(f"Bắt đầu thực nghiệm: {len(test_files)} kịch bản, mỗi kịch bản chạy {num_runs} lần...")
+def load_csv(path: str) -> pd.DataFrame:
+    df = pd.read_csv(path)
 
-    for fname in test_files:
-        info = parse_file_info(fname)
-        fpath = os.path.join(TEST_DIR, fname)
-        
-        # Vòng lặp số lần chạy (X lần)
-        for run_idx in range(num_runs):
-            print(f"Đang xử lý: {fname} | Lần chạy: {run_idx + 1}/{num_runs}")
-            
-            for algo_key in algorithms:
-                env = load_env_from_json(fpath)
-                
-                if algo_key == "hrl-vgae":
-                    strategy = HRL_VGAE_Strategy(env, is_training=False)
-                    if os.path.exists(MODEL_DIR):
-                        strategy.load_model(MODEL_DIR)
-                    label = "HRL-VGAE"
-                    stats = strategy.run_simulation_eval()
-                else:
-                    label, cls = BASELINE_REGISTRY[algo_key]
-                    strategy = cls(env)
-                    env.set_strategy(strategy)
-                    stats = env.run_simulation()
+    info = df["file"].apply(parse_file_info)
+    df["Topology"]     = info.apply(lambda x: x["Topology"])
+    df["Distribution"] = info.apply(lambda x: x["Distribution"])
+    df["Difficulty"]   = info.apply(lambda x: x["Difficulty"])
 
-                all_results.append({
-                    "Algorithm": label,
-                    "FileName": fname, # Lưu tên file để dễ group sau này
-                    "Topology": info["Topology"],
-                    "Distribution": info["Distribution"],
-                    "Difficulty": info["Difficulty"],
-                    "AR": stats.get("acceptance_ratio", 0),
-                    "Cost": stats.get("average_cost", 0),
-                    "Delay": stats.get("total_delay", 0) / max(stats.get("accepted_requests", 1), 1)
-                })
+    df = df.rename(columns={
+        "algorithm":        "Algorithm",
+        "acceptance_ratio": "AR",
+        "avg_cost":         "Cost",
+    })
 
-    return pd.DataFrame(all_results)
+    df["EEI"] = df["AR"] / df["Cost"].replace(0, np.nan)
 
-def plot_results(df):
-    sns.set_theme(style="whitegrid")
-    
-    # 1. Biểu đồ Acceptance Ratio theo Độ khó và Topo
-    fig1, ax1 = plt.subplots(1, 2, figsize=(16, 6))
-    sns.barplot(data=df, x="Difficulty", y="AR", hue="Algorithm", ax=ax1[0])
-    ax1[0].set_title("Tỷ lệ chấp nhận (AR) theo Độ khó")
-    
-    sns.barplot(data=df, x="Topology", y="AR", hue="Algorithm", ax=ax1[1])
-    ax1[1].set_title("Tỷ lệ chấp nhận (AR) theo Topology")
-    plt.savefig(os.path.join(OUTPUT_DIR, "ar_comparison.png"))
+    # Lọc chỉ giữ các giá trị hợp lệ
+    df = df[df["Algorithm"].isin(ALGO_ORDER)]
+    df["Algorithm"] = pd.Categorical(df["Algorithm"], categories=ALGO_ORDER, ordered=True)
 
-    # 2. Biểu đồ Cost (Chi phí vận hành)
-    fig2, ax2 = plt.subplots(1, 2, figsize=(16, 6))
-    sns.barplot(data=df, x="Difficulty", y="Cost", hue="Algorithm", ax=ax2[0])
-    ax2[0].set_title("Chi phí triển khai theo Độ khó")
-    
-    sns.barplot(data=df, x="Distribution", y="Cost", hue="Algorithm", ax=ax2[1])
-    ax2[1].set_title("Chi phí triển khai theo Chiến lược phân bổ")
-    plt.savefig(os.path.join(OUTPUT_DIR, "cost_comparison.png"))
+    return df
 
-    # 3. BIỂU ĐỒ ĐA MỤC TIÊU (Scatter Pareto Plot)
-    plt.figure(figsize=(10, 7))
-    scatter = sns.scatterplot(data=df, x="Cost", y="AR", hue="Algorithm", style="Topology", s=100)
-    plt.title("Phân tích Đa mục tiêu: AR vs Cost (Pareto Analysis)")
-    plt.xlabel("Chi phí vận hành chuẩn hóa (Càng thấp càng tốt)")
-    plt.ylabel("Tỷ lệ chấp nhận (Càng cao càng tốt)")
-    
-    # Vẽ mũi tên chỉ hướng tối ưu
-    plt.annotate('Vùng tối ưu (Pareto)', xy=(df['Cost'].min(), df['AR'].max()), 
-                 xytext=(df['Cost'].mean(), df['AR'].mean()),
-                 arrowprops=dict(facecolor='black', shrink=0.05, headwidth=10))
-    
-    plt.savefig(os.path.join(OUTPUT_DIR, "multi_objective_pareto.png"))
-    plt.show()
+
+# ── Tạo bảng pivot ────────────────────────────────────────────────────────────
+
+def build_pivot(df: pd.DataFrame, group_col: str, group_order: list) -> pd.DataFrame:
+    """
+    Tạo pivot: hàng = Algorithm, cột = (group_val, metric).
+    Giá trị = mean qua tất cả các file thuộc nhóm đó.
+    """
+    agg = (
+        df.groupby(["Algorithm", group_col], observed=True)[["AR", "EEI"]]
+        .mean()
+        .reset_index()
+    )
+
+    frames = []
+    for grp in group_order:
+        sub = agg[agg[group_col] == grp].set_index("Algorithm")[["AR", "EEI"]]
+        sub.columns = pd.MultiIndex.from_tuples(
+            [(grp, m) for m in ["AR", "EEI"]]
+        )
+        frames.append(sub)
+
+    pivot = pd.concat(frames, axis=1).reindex(ALGO_ORDER)
+    return pivot
+
+
+# ── Đánh dấu best / second best ───────────────────────────────────────────────
+
+def mark_best(pivot: pd.DataFrame) -> pd.DataFrame:
+    """
+    Trả về DataFrame cùng shape với nhãn: 'best', 'second', '' cho mỗi ô.
+    AR  → cao hơn tốt hơn
+    EEI → cao hơn tốt hơn
+    """
+    marks = pd.DataFrame("", index=pivot.index, columns=pivot.columns)
+    for col in pivot.columns:
+        vals = pivot[col].dropna().sort_values(ascending=False)
+        if len(vals) >= 1:
+            marks.loc[vals.index[0], col] = "best"
+        if len(vals) >= 2:
+            marks.loc[vals.index[1], col] = "second"
+    return marks
+
+
+# ── Render LaTeX ──────────────────────────────────────────────────────────────
+
+def _fmt(val, mark: str) -> str:
+    """Format một ô: 2 chữ số thập phân, bold nếu best, underline nếu second."""
+    if pd.isna(val):
+        return "--"
+    s = f"{val:.4f}"
+    if mark == "best":
+        return r"\textbf{" + s + "}"
+    if mark == "second":
+        return r"\underline{" + s + "}"
+    return s
+
+
+def pivot_to_latex(
+    topo_pivot: pd.DataFrame,
+    dist_pivot: pd.DataFrame,
+    topo_marks: pd.DataFrame,
+    dist_marks: pd.DataFrame,
+    difficulty: str,
+) -> str:
+    """Ghép 2 pivot (topology + distribution) thành 1 bảng LaTeX."""
+
+    topo_cols = list(topo_pivot.columns)   # [(topo, metric), ...]
+    dist_cols = list(dist_pivot.columns)   # [(dist, metric), ...]
+    n_topo = len(topo_cols)
+    n_dist = len(dist_cols)
+    n_total = n_topo + n_dist
+
+    # ── Column spec ──────────────────────────────────────────────────────────
+    # l | ccc...ccc | ccc...ccc
+    topo_spec = "".join(["c"] * n_topo)
+    dist_spec = "".join(["c"] * n_dist)
+    col_spec  = f"l|{topo_spec}|{dist_spec}"
+
+    lines = []
+    lines.append(r"\begin{table}[ht]")
+    lines.append(r"\centering")
+    lines.append(r"\small")
+    cap = (
+        f"Kết quả thực nghiệm ở mức độ \\textbf{{{difficulty.capitalize()}}}. "
+        r"Số in \textbf{đậm} = tốt nhất, \underline{gạch chân} = nhì. "
+        r"EEI $= \mathrm{AR} / \mathrm{Cost}_{\mathrm{norm}}$."
+    )
+    lines.append(r"\caption{" + cap + "}")
+    lines.append(r"\label{tab:results_" + difficulty + "}")
+    lines.append(r"\begin{tabular}{" + col_spec + "}")
+    lines.append(r"\toprule")
+
+    # ── Header row 1: nhóm (Topology / Distribution) ─────────────────────────
+    topo_groups = TOPO_ORDER
+    dist_groups = DIST_ORDER
+
+    h1_parts = [r"\multirow{2}{*}{\textbf{Algorithm}}"]
+    for g in topo_groups:
+        h1_parts.append(r"\multicolumn{2}{c}{" + g.capitalize() + "}")
+    for g in dist_groups:
+        h1_parts.append(r"\multicolumn{2}{c}{" + g.capitalize() + "}")
+    lines.append(" & ".join(h1_parts) + r" \\")
+
+    # Cmidrule dưới mỗi nhóm (bỏ qua cột Algorithm ở index 1)
+    cmidrules = []
+    col_idx = 2  # 1-based, cột 1 = Algorithm
+    for _ in topo_groups:
+        cmidrules.append(f"\\cmidrule(lr){{{col_idx}-{col_idx+1}}}")
+        col_idx += 2
+    for _ in dist_groups:
+        cmidrules.append(f"\\cmidrule(lr){{{col_idx}-{col_idx+1}}}")
+        col_idx += 2
+    lines.append(" ".join(cmidrules))
+
+    # ── Header row 2: AR / EEI cho mỗi nhóm ─────────────────────────────────
+    h2_parts = [""]
+    for _ in range(len(topo_groups) + len(dist_groups)):
+        h2_parts.append("AR")
+        h2_parts.append("EEI")
+    lines.append(" & ".join(h2_parts) + r" \\")
+    lines.append(r"\midrule")
+
+    # ── Data rows ─────────────────────────────────────────────────────────────
+    for algo in ALGO_ORDER:
+        # Tên hiển thị — rút ngắn DeadlineAwareGreedy cho vừa cột
+        display = algo.replace("DeadlineAwareGreedy", "DAGreedy")
+        row_cells = [display]
+
+        for col in topo_cols:
+            val  = topo_pivot.loc[algo, col] if algo in topo_pivot.index else np.nan
+            mark = topo_marks.loc[algo, col] if algo in topo_marks.index else ""
+            row_cells.append(_fmt(val, mark))
+
+        for col in dist_cols:
+            val  = dist_pivot.loc[algo, col] if algo in dist_pivot.index else np.nan
+            mark = dist_marks.loc[algo, col] if algo in dist_marks.index else ""
+            row_cells.append(_fmt(val, mark))
+
+        # Highlight HRL-VGAE bằng màu nền nhẹ
+        row_str = " & ".join(row_cells) + r" \\"
+        if algo == "HRL-VGAE":
+            row_str = r"\rowcolor{gray!12} " + row_str
+        lines.append(row_str)
+
+    lines.append(r"\bottomrule")
+    lines.append(r"\end{tabular}")
+    lines.append(r"\end{table}")
+    return "\n".join(lines)
+
+
+# ── Render CSV (dễ import vào Excel hoặc paste thủ công) ─────────────────────
+
+def pivots_to_csv(
+    topo_pivot: pd.DataFrame,
+    dist_pivot: pd.DataFrame,
+) -> pd.DataFrame:
+    """Ghép 2 pivot thành DataFrame phẳng, thêm tiền tố nhóm vào tên cột."""
+    topo = topo_pivot.copy()
+    topo.columns = [f"[Topo] {g} – {m}" for g, m in topo.columns]
+
+    dist = dist_pivot.copy()
+    dist.columns = [f"[Dist] {g} – {m}" for g, m in dist.columns]
+
+    return pd.concat([topo, dist], axis=1).reset_index()
+
+
+# ── Preamble gợi ý cho file LaTeX ─────────────────────────────────────────────
+
+LATEX_PREAMBLE = r"""% Thêm vào preamble của file .tex chính:
+% \usepackage{booktabs}
+% \usepackage{multirow}
+% \usepackage{colortbl}
+% \usepackage{xcolor}
+"""
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    print(f"Đọc dữ liệu: {CSV_PATH}")
+    df = load_csv(CSV_PATH)
+    print(f"  → {len(df)} dòng | Algorithms: {df['Algorithm'].unique().tolist()}\n")
+
+    all_tex_blocks = [LATEX_PREAMBLE, "% ════════════════════════════════════\n"]
+
+    for diff in DIFF_ORDER:
+        sub = df[df["Difficulty"] == diff]
+        if sub.empty:
+            print(f"  ⚠ Không có dữ liệu cho difficulty='{diff}', bỏ qua.")
+            continue
+
+        print(f"Đang tạo bảng: {diff.upper()} ({len(sub)} dòng)...")
+
+        topo_pivot = build_pivot(sub, "Topology",     TOPO_ORDER)
+        dist_pivot = build_pivot(sub, "Distribution", DIST_ORDER)
+
+        topo_marks = mark_best(topo_pivot)
+        dist_marks = mark_best(dist_pivot)
+
+        # ── LaTeX ──
+        tex = pivot_to_latex(topo_pivot, dist_pivot,
+                             topo_marks, dist_marks, diff)
+        tex_path = os.path.join(OUTPUT_DIR, f"table_{diff}.tex")
+        with open(tex_path, "w", encoding="utf-8") as f:
+            f.write(tex)
+        print(f"  ✓ LaTeX : {tex_path}")
+
+        all_tex_blocks.append(f"% ── Difficulty: {diff.upper()} ──\n" + tex + "\n")
+
+        # ── CSV ──
+        csv_df = pivots_to_csv(topo_pivot, dist_pivot)
+        csv_path = os.path.join(OUTPUT_DIR, f"table_{diff}.csv")
+        csv_df.to_csv(csv_path, index=False, float_format="%.4f")
+        print(f"  ✓ CSV   : {csv_path}")
+
+    # Gộp tất cả bảng vào 1 file .tex tiện lợi
+    combined_path = os.path.join(OUTPUT_DIR, "tables_all.tex")
+    with open(combined_path, "w", encoding="utf-8") as f:
+        f.write("\n\n".join(all_tex_blocks))
+    print(f"\n✓ File tổng hợp: {combined_path}")
+    print("  → Dùng \\input{{results_eval/tables_all.tex}} trong LaTeX chính.")
+
 
 if __name__ == "__main__":
-    X_RUNS = 2
-    results_df = run_evaluation(num_runs=X_RUNS)
-    
-    if not results_df.empty:
-        # Gom nhóm theo Thuật toán và File để tính trung bình các lần chạy
-        summary = results_df.groupby(["Algorithm", "FileName", "Difficulty", "Topology"]) \
-                            .mean(numeric_only=True) \
-                            .reset_index()
-        
-        # Lưu file csv kết quả cuối cùng
-        summary.to_csv(os.path.join(OUTPUT_DIR, "final_summary_averaged.csv"), index=False)
-        
-        print("\n=== KẾT QUẢ TỔNG HỢP (ĐÃ CHIA TRUNG BÌNH) ===")
-        print(summary) # Hiển thị 10 dòng đầu
-        
-        # Vẽ biểu đồ (Seaborn sẽ tự động tính khoảng tin cậy/error bars nếu truyền kết quả thô)
-        plot_results(results_df)
+    main()
