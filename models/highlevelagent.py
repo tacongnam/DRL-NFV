@@ -57,20 +57,24 @@ class HighLevelAgent:
             return out
         return flat[:self.latent_dim]
 
-    def extract_sfc_features(self, queue: list, Z_t = None, ll_agent = None, current_t = 0.0) -> np.ndarray:
+    def extract_sfc_features(self, queue, Z_t=None, ll_agent=None, current_t=0.0):
         if not queue:
             return np.zeros((0, self.FEAT_PER_SFC), dtype=np.float32)
 
-        max_delay = max(1.0, max(s.request.delay_max for s in queue))
-        remaining_times = [max(0.0, s.request.end_time - current_t) for s in queue]
-        max_rem = max(1e-6, max(remaining_times))
-        ll_scores = np.full(len(queue), 0.5, dtype=np.float32)
+        max_delay = max((s.request.delay_max for s in queue), default=1.0)
+        max_delay = max(max_delay, 1.0)
 
+        remaining_times = [max(0.0, s.request.end_time - current_t) for s in queue]
+        max_rem = max(remaining_times) if remaining_times else 1.0
+        max_rem = max(max_rem, 1e-6)
+
+        ll_scores = np.full(len(queue), 0.5, dtype=np.float32)
         if self.use_ll_score and Z_t is not None and ll_agent is not None:
             states, has_vnf = [], []
             for sfc in queue:
                 if sfc.request.vnfs:
-                    vnf_feat = [sfc.request.vnfs[0].resource.get(k, 0) for k in ["mem", "cpu", "ram"]]
+                    vnf_feat = [sfc.request.vnfs[0].resource.get(k, 0)
+                                for k in ["mem", "cpu", "ram"]]
                     states.append(ll_agent._make_state(Z_t, vnf_feat)[0])
                     has_vnf.append(True)
                 else:
@@ -79,19 +83,23 @@ class HighLevelAgent:
                 S_batch = tf.constant(np.array(states, dtype=np.float32))
                 Q_batch = ll_agent.policy_net(S_batch, training=False).numpy()
                 j = 0
-                for i, has in enumerate(has_vnf):
+                for idx, has in enumerate(has_vnf):
                     if has:
                         q_max = float(Q_batch[j].max())
-                        ll_scores[i] = q_max / (abs(q_max) + 1.0)
+                        ll_scores[idx] = q_max / (abs(q_max) + 1.0)
                         j += 1
 
-        feats = np.array([
-            [sfc.request.bw,
-            float(len(sfc.request.vnfs)),
-            min(1.0, sfc.request.delay_max / max_delay),
-            float(ll_scores[i])]
-            [1.0 - remaining_times[i] / max_rem] for i, sfc in enumerate(queue)
-        ], dtype=np.float32)
+        feats = np.array(
+            [
+                [sfc.request.bw,
+                float(len(sfc.request.vnfs)),
+                min(1.0, sfc.request.delay_max / max_delay),
+                float(score),
+                1.0 - rem / max_rem]
+                for sfc, score, rem in zip(queue, ll_scores, remaining_times)
+            ],
+            dtype=np.float32,
+        )
         return feats
     
     def get_weights(self) -> dict:

@@ -36,3 +36,6 @@ models/vgae_pretrained/*
 
 results_eval/*
 eval_results.csv
+logs/*
+
+__pycache__/
