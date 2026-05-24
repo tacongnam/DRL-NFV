@@ -4,6 +4,7 @@ import os
 import numpy as np
 import networkx as nx
 from typing import Dict, List, Optional, Tuple
+import math
 
 import config
 from env.env import Strategy
@@ -209,7 +210,7 @@ class HRL_VGAE_Strategy(Strategy):
         self._graph_cache.clear()
 
     def get_placement(self, sfc: SFC, current_time: float,
-                      Z_t=None, dc_mapping=None, epsilon=0.0) -> Optional[Dict]:
+                      Z_t=None, dc_mapping=None, epsilon_ll=0.0) -> Optional[Dict]:
         self._ll_traj = []
         t_start = self.env._get_timeslot(current_time)
         t_end   = self.env._get_timeslot(sfc.request.end_time)
@@ -241,7 +242,7 @@ class HRL_VGAE_Strategy(Strategy):
                 return None
 
             vnf_feat   = [vnf.resource.get(k, 0.0) for k in config.RESOURCE_TYPE]
-            action_idx = self.ll_agent.act(Z_t, vnf_feat, valid_indices, epsilon, loc_z)
+            action_idx = self.ll_agent.act(Z_t, vnf_feat, valid_indices, epsilon_ll, loc_z)
             chosen_dc  = dc_mapping[action_idx]
 
             path = self.get_routing(prev_dc, chosen_dc, t_start, t_end, sfc.request.bw)
@@ -290,16 +291,17 @@ class HRL_VGAE_Strategy(Strategy):
             self._best_fit = BestFit(self.env)
         return self._best_fit
 
-    def _compute_ll_reward(self, env_rewards: list, sfc: SFC,
-                           current_time: float, Z_t: np.ndarray, vnf_feat: list) -> float:
-        alpha, beta = self.ll_agent.get_reward_weights(Z_t, vnf_feat)
-        alpha = np.clip(alpha, *config.HRL_ALPHA_CLAMP)
-        beta  = np.clip(beta,  *config.HRL_BETA_CLAMP)
+    def _compute_ll_reward(self, env_rewards, sfc, current_time, Z_t, vnf_feat, Z_next=None):
         time_rem  = max(0.0, sfc.request.end_time - current_time)
         tMax      = max(sfc.request.delay_max, 1e-6)
         raw_cost  = abs(env_rewards[1]) if len(env_rewards) > 1 else 0.0
         cost_norm = min(1.0, raw_cost / max(self._estimate_max_cost(sfc), 1e-6))
-        return config.HRL_R_BASE_LL + alpha * (time_rem / tMax) - beta * cost_norm
+        base = config.HRL_R_BASE_LL + config.HRL_LL_ALPHA * (time_rem / tMax) - config.HRL_LL_BETA * cost_norm
+        if Z_next is not None and Z_t is not None and len(Z_t) > 0 and len(Z_next) > 0:
+            phi_s  = float(np.mean(np.clip(Z_t,  0, None)))
+            phi_s2 = float(np.mean(np.clip(Z_next, 0, None)))
+            base  += config.HRL_LL_GAMMA_POT * (config.gamma * phi_s2 - phi_s)
+        return base
 
     def _estimate_max_cost(self, sfc: SFC) -> float:
         key = tuple(id(v) for v in sfc.request.vnfs)
@@ -319,21 +321,22 @@ class HRL_VGAE_Strategy(Strategy):
         self._max_cost_cache[key] = result
         return result
 
-    def _execute_plan(self, plan: Optional[Dict], selected_sfc: SFC,
-                      t: float, snap: dict) -> Tuple[bool, list, Optional[float], Optional[Dict]]:
+    def _execute_plan(self, plan, selected_sfc, t, snap):
+        Z_t_on_ll_fail = None
         if plan is not None:
             success, rewards, score = self.env.step(plan)
             if success:
-                return success, rewards, score, plan
+                return success, rewards, score, plan, "ll", None
             restore_network(self.env.network, snap)
-
+            t_start = self.env._get_timeslot(t)
+            t_end   = self.env._get_timeslot(selected_sfc.request.end_time)
+            Z_t_on_ll_fail, _ = self._get_z(t_start, t_end, selected_sfc.request.bw)
         fallback = self._get_best_fit().get_placement(selected_sfc, t)
         if fallback is not None:
             success, rewards, score = self.env.step(fallback)
             if success:
-                return success, rewards, score, fallback
-
-        return False, [-1.0, 0.0], None, None
+                return success, rewards, score, fallback, "fallback", Z_t_on_ll_fail
+        return False, [-1.0, 0.0], None, None, "fail", None
 
     def _rebuild_ll_traj_from_plan(self, plan, sfc, t, Z_t, dc_mapping):
         node_plan_map = extract_node_plan_map(plan)
@@ -379,6 +382,17 @@ class HRL_VGAE_Strategy(Strategy):
             return abs(rewards[1]) if len(rewards) > 1 else 0.0
         return cost
 
+    import math
+
+    def _compute_epsilon(self, progress, mode="ll"):
+        p_w  = config.EPSILON_WARMUP
+        emax = config.EPSILON_HL_MAX if mode == "hl" else config.EPSILON_LL_MAX
+        emin = config.EPSILON_HL_MIN if mode == "hl" else config.EPSILON_LL_MIN
+        if progress < p_w:
+            return emax
+        t = (progress - p_w) / max(1.0 - p_w, 1e-6)
+        return emin + 0.5 * (emax - emin) * (1.0 + math.cos(math.pi * t))
+
     def train(self) -> dict:
         total_steps = 0
         total_steps_planned = self.episodes * len(self.env.requests)
@@ -421,7 +435,8 @@ class HRL_VGAE_Strategy(Strategy):
 
                 total_steps += 1
                 progress = total_steps / max(1, total_steps_planned)
-                epsilon  = max(0.05, 0.9 - progress * 1.7)
+                epsilon_hl = self._compute_epsilon(progress, mode="hl")
+                epsilon_ll = self._compute_epsilon(progress, mode="ll")
 
                 bw_req       = max(s.request.bw for s in queue)
                 t_start_rough = self.env._get_timeslot(t)
@@ -429,8 +444,8 @@ class HRL_VGAE_Strategy(Strategy):
                     int(max(s.request.delay_max for s in queue) / config.TIMESTEP), 10)
                 Z_t, _ = self._get_z(t_start_rough, t_end_rough, bw_req)
 
-                sfc_feats_before = self.hl_agent.extract_sfc_features(queue, Z_t, self.ll_agent)
-                sfc_idx      = self.hl_agent.act(Z_t, queue, epsilon, self.ll_agent)
+                sfc_feats_before = self.hl_agent.extract_sfc_features(queue, Z_t, self.ll_agent, current_t=t)
+                sfc_idx = self.hl_agent.act(Z_t, queue, epsilon_hl, self.ll_agent, current_t=t, progress=progress)
                 selected_sfc = queue.pop(sfc_idx)
 
                 self.env.t = t
@@ -452,11 +467,11 @@ class HRL_VGAE_Strategy(Strategy):
                     if plan is not None:
                         self._rebuild_ll_traj_from_plan(plan, selected_sfc, t, Z_t, dc_mapping)
                 else:
-                    plan = self.get_placement(selected_sfc, t, Z_t, dc_mapping, epsilon)
+                    plan = self.get_placement(selected_sfc, t, Z_t, dc_mapping, epsilon_ll)
                     if plan is None:
                         R_LL_override = 1.0
 
-                success, rewards, score, plan = self._execute_plan(plan, selected_sfc, t, snap)
+                success, rewards, score, plan, plan_source, Z_ll_fail = self._execute_plan(plan, selected_sfc, t, snap)
 
                 if success:
                     ep_accepted += 1
@@ -469,7 +484,7 @@ class HRL_VGAE_Strategy(Strategy):
                                for k in config.RESOURCE_TYPE]
                              if selected_sfc.request.vnfs else [0.0, 0.0, 0.0])
                     if R_LL_override is None:
-                        R_LL = self._compute_ll_reward(rewards, selected_sfc, t, Z_t, vnf_f)
+                        R_LL = self._compute_ll_reward(rewards, selected_sfc, t, Z_t, vnf_f, Z_next=Z_t)
                     else:
                         R_LL = R_LL_override
                 else:
@@ -483,35 +498,32 @@ class HRL_VGAE_Strategy(Strategy):
                 is_done = not pending and not queue
 
                 Z_mean = Z_t.mean(axis=0, keepdims=True)
-                sfc_feats_next = (self.hl_agent.extract_sfc_features(queue, Z_t, self.ll_agent)
+                sfc_feats_next = (self.hl_agent.extract_sfc_features(queue, Z_t, self.ll_agent, current_t=t)
                                   if queue else sfc_feats_before)
                 self.buf_HL.push((
                     Z_mean, sfc_feats_before, sfc_idx,
                     R_HL, Z_mean, sfc_feats_next, is_done))
-
-                for i, step in enumerate(self._ll_traj):
-                    nxt_mask  = (self._ll_traj[i+1]["valid_mask"]
-                                 if i+1 < len(self._ll_traj) else [])
+                
+                for i, step in enumerate(self.__ll_traj):
+                    nxt_mask  = self._ll_traj[i+1]["valid_mask"] if i+1 < len(self._ll_traj) else []
                     loc_z_next = (self._ll_traj[i+1]["loc_z"]
-                                  if i+1 < len(self._ll_traj)
-                                  else np.zeros(config.LATENT_DIM, dtype=np.float32))
+                                if i+1 < len(self._ll_traj)
+                                else np.zeros(config.LATENT_DIM, dtype=np.float32))
+                    reward = R_LL if plan_source in ("ll", "fail") else -config.HRL_PENALTY_DROP
                     self.buf_LL.push((
                         step["Z_t"], list(step["vnf_feat"]), step["loc_z"],
-                        step["action_idx"], R_LL,
+                        step["action_idx"], reward,
                         Z_t, nxt_mask, loc_z_next, is_done))
 
                 if X is not None:
                     self.buf_Graph.push((X, A))
 
-                # LL-Agent Training
                 if total_steps % 4 == 0 and len(self.buf_LL) >= config.HRL_BATCH_SIZE:
                     self.ll_agent.train(self.buf_LL, config.HRL_BATCH_SIZE)
                     if self.logger:
-                        # Approximate loss from buffer
                         ll_losses_batch.append(np.mean([abs(r[4]) for r in list(self.buf_LL.buf)[-config.HRL_BATCH_SIZE:]]))
                         ll_weight_losses_batch.append(np.mean(ll_losses_batch[-10:]) if ll_losses_batch else 0.0)
 
-                # HL-Agent Training
                 if total_steps % 8 == 0 and len(self.buf_HL) >= config.HRL_BATCH_SIZE:
                     self.hl_agent.train(self.buf_HL, config.HRL_BATCH_SIZE)
                     if self.logger:

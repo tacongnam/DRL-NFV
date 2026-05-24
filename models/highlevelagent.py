@@ -14,7 +14,7 @@ from models.model import _mlp, ReplayBuffer
 from models.lowlevelagent import LowLevelAgent
 
 class HighLevelAgent:
-    FEAT_PER_SFC = 4
+    FEAT_PER_SFC = 5
 
     def __init__(self, latent_dim: int = 8, max_queue: int = 20,
                  gamma: float = 0.95, lr: float = 5e-4,
@@ -57,22 +57,20 @@ class HighLevelAgent:
             return out
         return flat[:self.latent_dim]
 
-    def extract_sfc_features(self, queue: list, Z_t: Optional[np.ndarray] = None,
-                          ll_agent: Optional[LowLevelAgent] = None) -> np.ndarray:
+    def extract_sfc_features(self, queue: list, Z_t = None, ll_agent = None, current_t = 0.0) -> np.ndarray:
         if not queue:
             return np.zeros((0, self.FEAT_PER_SFC), dtype=np.float32)
 
-        max_delay = max((s.request.delay_max for s in queue), default=1.0)
-        max_delay = max(max_delay, 1.0)
-
+        max_delay = max(1.0, max(s.request.delay_max for s in queue))
+        remaining_times = [max(0.0, s.request.end_time - current_t) for s in queue]
+        max_rem = max(1e-6, max(remaining_times))
         ll_scores = np.full(len(queue), 0.5, dtype=np.float32)
+
         if self.use_ll_score and Z_t is not None and ll_agent is not None:
-            states  = []
-            has_vnf = []
+            states, has_vnf = [], []
             for sfc in queue:
                 if sfc.request.vnfs:
-                    vnf_feat = [sfc.request.vnfs[0].resource.get(k, 0)
-                                for k in ["mem", "cpu", "ram"]]
+                    vnf_feat = [sfc.request.vnfs[0].resource.get(k, 0) for k in ["mem", "cpu", "ram"]]
                     states.append(ll_agent._make_state(Z_t, vnf_feat)[0])
                     has_vnf.append(True)
                 else:
@@ -92,7 +90,7 @@ class HighLevelAgent:
             float(len(sfc.request.vnfs)),
             min(1.0, sfc.request.delay_max / max_delay),
             float(ll_scores[i])]
-            for i, sfc in enumerate(queue)
+            [1.0 - remaining_times[i] / max_rem] for i, sfc in enumerate(queue)
         ], dtype=np.float32)
         return feats
     
@@ -138,49 +136,43 @@ class HighLevelAgent:
         front = list(np.where(dom_count == 0)[0])
         return front if front else list(range(N))
     
-    def _crowding_distance_selection(self, front_indices: List[int], q_mat: np.ndarray) -> int:
-        if len(front_indices) <= 2:
-            return random.choice(front_indices)
-
+    def _crowding_distance_selection(self, front_indices, q_mat, progress=0.0):
+        if len(front_indices) == 1:
+            return front_indices[0]
         n = len(front_indices)
         distances = np.zeros(n)
-        
         for obj_idx in [0, 1]:
             sorted_keys = sorted(range(n), key=lambda k: q_mat[front_indices[k], obj_idx])
-            
-            distances[sorted_keys[0]] = 1e9
+            distances[sorted_keys[0]]  = 1e9
             distances[sorted_keys[-1]] = 1e9
-            
             obj_min = q_mat[front_indices[sorted_keys[0]], obj_idx]
             obj_max = q_mat[front_indices[sorted_keys[-1]], obj_idx]
             obj_range = obj_max - obj_min
-            
             if obj_range > 0:
                 for i in range(1, n - 1):
-                    distances[sorted_keys[i]] += (q_mat[front_indices[sorted_keys[i+1]], obj_idx] - 
-                                                q_mat[front_indices[sorted_keys[i-1]], obj_idx]) / obj_range
-        
-        return front_indices[np.argmax(distances)]
+                    distances[sorted_keys[i]] += (
+                        q_mat[front_indices[sorted_keys[i+1]], obj_idx] -
+                        q_mat[front_indices[sorted_keys[i-1]], obj_idx]) / obj_range
+        tau = max(0.1, 1.0 - progress)
+        logits = distances / tau
+        logits -= logits.max()
+        probs = np.exp(logits)
+        probs /= probs.sum()
+        return front_indices[np.random.choice(n, p=probs)]
 
-    def act(self, Z_t: np.ndarray, queue: list, epsilon: float = 0.0,
-            ll_agent: Optional[LowLevelAgent] = None) -> int:
-        if not queue:
-            return 0
-        if len(queue) == 1:
-            return 0
+    def act(self, Z_t, queue, epsilon=0.0, ll_agent=None, current_t=0.0, progress=0.0):
+        if not queue: return 0
+        if len(queue) == 1: return 0
         if random.random() < epsilon:
             return random.randrange(len(queue))
-
-        sfc_feats = self.extract_sfc_features(queue, Z_t, ll_agent)
+        sfc_feats = self.extract_sfc_features(queue, Z_t, ll_agent, current_t=current_t)
         z_mean    = self._safe_z_mean(Z_t)
-        S_batch = tf.constant(self._states_batch(z_mean, sfc_feats))
-        
+        S_batch   = tf.constant(self._states_batch(z_mean, sfc_feats))
         q_ar   = self.policy_net_ar(S_batch,   training=False).numpy()
         q_cost = self.policy_net_cost(S_batch, training=False).numpy()
         q_mat  = np.concatenate([q_ar, q_cost], axis=1)
-
-        front = self._nondominated_sort(q_mat)
-        return self._crowding_distance_selection(front, q_mat)
+        front  = self._nondominated_sort(q_mat)
+        return self._crowding_distance_selection(front, q_mat, progress=progress)
 
     def train(self, buffer: ReplayBuffer, batch_size: int = 16):
         if len(buffer) < batch_size:

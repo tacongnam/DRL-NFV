@@ -37,14 +37,15 @@ class GCNLayer(layers.Layer):
 
 class VGAENetwork:
     def __init__(self, node_feat_dim: int = 3, hidden_dim: int = 16,
-                 latent_dim: int = 8, lr: float = 1e-3, beta: float = 1e-3):
+                 latent_dim: int = 8, lr: float = 1e-3, beta: float = 1e-3, lambda_aux = 0.5):
         self.latent_dim = latent_dim
         self.beta       = beta
+        self.lambda_aux = lambda_aux
         self._built     = False
-
-        self.gcn1   = GCNLayer(hidden_dim, activation="relu",  name="gcn1")
-        self.gcn_mu = GCNLayer(latent_dim, activation=None,    name="gcn_mu")
-        self.gcn_lv = GCNLayer(latent_dim, activation=None,    name="gcn_logvar")
+        self.gcn1       = GCNLayer(hidden_dim, activation="relu", name="gcn1")
+        self.gcn_mu     = GCNLayer(latent_dim, activation=None, name="gcn_mu")
+        self.gcn_lv     = GCNLayer(latent_dim, activation=None, name="gcn_logvar")
+        self.aux_head   = layers.Dense(node_feat_dim, name = "aux_head")
         self.optimizer = keras.optimizers.Adam(lr)
 
     @staticmethod
@@ -71,7 +72,7 @@ class VGAENetwork:
         self._built = True
         return z.numpy()
 
-    def _train_step(self, X_t: tf.Tensor, A_hat: tf.Tensor, A_t: tf.Tensor):
+    def _train_step(self, X_t, A_hat, A_t):
         with tf.GradientTape() as tape:
             h       = self.gcn1(X_t, A_hat)
             mu      = self.gcn_mu(h, A_hat)
@@ -79,15 +80,20 @@ class VGAENetwork:
             log_var_clipped = tf.clip_by_value(log_var, -10.0, 10.0)
             z       = mu + tf.exp(0.5 * log_var_clipped) * tf.random.normal(tf.shape(mu))
             A_pred  = tf.sigmoid(tf.matmul(z, tf.transpose(z)))
-            eps     = 1e-7
+            eps_    = 1e-7
             bce     = -tf.reduce_mean(
-                A_t * tf.math.log(A_pred + eps) +
-                (1 - A_t) * tf.math.log(1 - A_pred + eps))
-            kl   = -0.5 * tf.reduce_mean(1 + log_var - mu**2 - tf.exp(log_var_clipped))
-            loss = bce + self.beta * kl
+                A_t * tf.math.log(A_pred + eps_) +
+                (1 - A_t) * tf.math.log(1 - A_pred + eps_))
+            kl      = -0.5 * tf.reduce_mean(1 + log_var - mu**2 - tf.exp(log_var_clipped))
+            vgae_loss = bce + self.beta * kl
+            X_pred  = self.aux_head(z)
+            aux     = tf.reduce_mean(tf.square(X_pred - X_t))
+            lam_eff = self.lambda_aux * vgae_loss / (vgae_loss + aux + 1e-7)
+            loss    = vgae_loss + lam_eff * aux
         vars_ = (self.gcn1.trainable_variables
-                 + self.gcn_mu.trainable_variables
-                 + self.gcn_lv.trainable_variables)
+                + self.gcn_mu.trainable_variables
+                + self.gcn_lv.trainable_variables
+                + self.aux_head.trainable_variables)
         self.optimizer.apply_gradients(zip(tape.gradient(loss, vars_), vars_))
         return loss.numpy()
 
@@ -112,16 +118,17 @@ class VGAENetwork:
     def save_weights(self, path: str):
         self._ensure_built()
         np.save(path, {
-            "gcn1":   [v.numpy() for v in self.gcn1.trainable_variables],
-            "gcn_mu": [v.numpy() for v in self.gcn_mu.trainable_variables],
-            "gcn_lv": [v.numpy() for v in self.gcn_lv.trainable_variables],
+            "gcn1":    [v.numpy() for v in self.gcn1.trainable_variables],
+            "gcn_mu":  [v.numpy() for v in self.gcn_mu.trainable_variables],
+            "gcn_lv":  [v.numpy() for v in self.gcn_lv.trainable_variables],
+            "aux_head":[v.numpy() for v in self.aux_head.trainable_variables]
         }, allow_pickle=True)
 
     def load_weights(self, path: str):
         try:
             w = np.load(path, allow_pickle=True).item()
             self._ensure_built()
-            for layer, key in [(self.gcn1, "gcn1"), (self.gcn_mu, "gcn_mu"), (self.gcn_lv, "gcn_lv")]:
+            for layer, key in [(self.gcn1, "gcn1"), (self.gcn_mu, "gcn_mu"), (self.gcn_lv, "gcn_lv"), (self.aux_head, "aux_head")]:
                 if key in w:
                     for var, val in zip(layer.trainable_variables, w[key]):
                         var.assign(val)
@@ -131,6 +138,7 @@ class VGAENetwork:
     def _ensure_built(self):
         if not self._built:
             self.encode(np.zeros((2, 3), np.float32), np.eye(2, dtype=np.float32))
+            self.aux_head(tf.zeros((2, self.latent_dim)))
 
 def _mlp(input_dim: int, hidden: int, out_dim: int, name: str) -> keras.Model:
     inp = keras.Input(shape=(input_dim,), name=name + "_in")

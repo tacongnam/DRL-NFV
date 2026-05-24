@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 # ── Cấu hình ──────────────────────────────────────────────────────────────────
-CSV_PATH   = "eval_results.csv"
+CSV_PATH   = "baseline_results.csv"
 OUTPUT_DIR = "results_eval"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
