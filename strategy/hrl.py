@@ -300,7 +300,7 @@ class HRL_VGAE_Strategy(Strategy):
         if Z_next is not None and Z_t is not None and len(Z_t) > 0 and len(Z_next) > 0:
             phi_s  = float(np.mean(np.clip(Z_t,  0, None)))
             phi_s2 = float(np.mean(np.clip(Z_next, 0, None)))
-            base  += config.HRL_LL_GAMMA_POT * (config.gamma * phi_s2 - phi_s)
+            base  += config.HRL_LL_GAMMA_POT * (self.hl_agent.gamma * phi_s2 - phi_s)
         return base
 
     def _estimate_max_cost(self, sfc: SFC) -> float:
@@ -504,7 +504,7 @@ class HRL_VGAE_Strategy(Strategy):
                     Z_mean, sfc_feats_before, sfc_idx,
                     R_HL, Z_mean, sfc_feats_next, is_done))
                 
-                for i, step in enumerate(self.__ll_traj):
+                for i, step in enumerate(self._ll_traj):
                     nxt_mask  = self._ll_traj[i+1]["valid_mask"] if i+1 < len(self._ll_traj) else []
                     loc_z_next = (self._ll_traj[i+1]["loc_z"]
                                 if i+1 < len(self._ll_traj)
@@ -612,7 +612,7 @@ class HRL_VGAE_Strategy(Strategy):
 
             snap = snapshot_network(self.env.network)
             plan = self.get_placement(selected_sfc, t, Z_t, dc_mapping, 0.0)
-            success, rewards, _, plan = self._execute_plan(plan, selected_sfc, t, snap)
+            success, rewards, _, plan, _, _ = self._execute_plan(plan, selected_sfc, t, snap)
 
             if success and plan:
                 accepted += 1
