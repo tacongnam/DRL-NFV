@@ -382,8 +382,6 @@ class HRL_VGAE_Strategy(Strategy):
             return abs(rewards[1]) if len(rewards) > 1 else 0.0
         return cost
 
-    import math
-
     def _compute_epsilon(self, progress, mode="ll"):
         p_w  = config.EPSILON_WARMUP
         emax = config.EPSILON_HL_MAX if mode == "hl" else config.EPSILON_LL_MAX

@@ -1,4 +1,5 @@
 import os
+import numpy as np
 from data.load_data import get_data_files, print_selected_files, load_env_from_json
 
 def _run_train(episodes, ll_pretrained, save_dir, train_dir, train_request_pct, logger=None):
@@ -33,6 +34,10 @@ def _run_train(episodes, ll_pretrained, save_dir, train_dir, train_request_pct, 
             episode_offset=episode_offset)
 
         if prev_strategy is not None:
+            dummy_X = np.zeros((2, 3), np.float32)
+            dummy_A = np.eye(2, dtype=np.float32)
+            strategy.vgae_net.encode(dummy_X, dummy_A)
+
             strategy.hl_agent.set_weights(prev_strategy.hl_agent.get_weights())
             strategy.ll_agent.policy_net.set_weights(prev_strategy.ll_agent.policy_net.get_weights())
             strategy.ll_agent.weight_net.set_weights(prev_strategy.ll_agent.weight_net.get_weights())
