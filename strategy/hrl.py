@@ -291,12 +291,12 @@ class HRL_VGAE_Strategy(Strategy):
             self._best_fit = BestFit(self.env)
         return self._best_fit
 
-    def _compute_ll_reward(self, env_rewards, sfc, current_time, Z_t, vnf_feat, Z_next=None):
+    def _compute_ll_reward(self, env_rewards, sfc, current_time, Z_t, vnf_feat, Z_next=None, progress=None):
         time_rem  = max(0.0, sfc.request.end_time - current_time)
         tMax      = max(sfc.request.delay_max, 1e-6)
         raw_cost  = abs(env_rewards[1]) if len(env_rewards) > 1 else 0.0
         cost_norm = min(1.0, raw_cost / max(self._estimate_max_cost(sfc), 1e-6))
-        base = config.HRL_R_BASE_LL + config.HRL_LL_ALPHA * (time_rem / tMax) - config.HRL_LL_BETA * cost_norm
+        base = config.HRL_R_BASE_LL + config.HRL_LL_ALPHA * (time_rem / tMax) - config.HRL_LL_BETA * min(1.0, progress * 2) * cost_norm
         if Z_next is not None and Z_t is not None and len(Z_t) > 0 and len(Z_next) > 0:
             phi_s  = float(np.mean(np.clip(Z_t,  0, None)))
             phi_s2 = float(np.mean(np.clip(Z_next, 0, None)))
@@ -334,6 +334,7 @@ class HRL_VGAE_Strategy(Strategy):
         fallback = self._get_best_fit().get_placement(selected_sfc, t)
         if fallback is not None:
             success, rewards, score = self.env.step(fallback)
+            reward = -config.HRL_PENALTY_DROP * 0.5
             if success:
                 return success, rewards, score, fallback, "fallback", Z_t_on_ll_fail
         return False, [-1.0, 0.0], None, None, "fail", None
@@ -456,7 +457,7 @@ class HRL_VGAE_Strategy(Strategy):
 
                 snap = snapshot_network(self.env.network)
 
-                use_greedy   = np.random.random() < max(0.05, 1.0 - progress * 0.95)
+                use_greedy = np.random.random() < max(0.05, 0.3 * (1.0 - progress))
                 R_LL_override = None
                 if use_greedy:
                     plan = self._get_best_fit().get_placement(selected_sfc, t)
@@ -482,7 +483,7 @@ class HRL_VGAE_Strategy(Strategy):
                                for k in config.RESOURCE_TYPE]
                              if selected_sfc.request.vnfs else [0.0, 0.0, 0.0])
                     if R_LL_override is None:
-                        R_LL = self._compute_ll_reward(rewards, selected_sfc, t, Z_t, vnf_f, Z_next=Z_t)
+                        R_LL = self._compute_ll_reward(rewards, selected_sfc, t, Z_t, vnf_f, Z_next=Z_t, progress=progress)
                     else:
                         R_LL = R_LL_override
                 else:
