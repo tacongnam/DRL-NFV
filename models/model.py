@@ -24,7 +24,6 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buf)
 
-
 class GCNLayer(layers.Layer):
     def __init__(self, out_dim: int, activation="relu", **kw):
         super().__init__(**kw)
@@ -34,7 +33,6 @@ class GCNLayer(layers.Layer):
     def call(self, H, A_hat):
         out = self.dense(tf.matmul(A_hat, H))
         return self.act(out) if self.act else out
-
 
 class VGAENetwork:
     NODE_FEAT_DIM = 6

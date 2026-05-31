@@ -9,6 +9,21 @@ class TrainingLogger:
         os.makedirs(log_dir, exist_ok=True)
         self.data = defaultdict(list)
 
+    def info(self, msg, *args):
+        if args:
+            msg = msg % args
+        print(f"[INFO] {msg}")
+
+    def warning(self, msg, *args):
+        if args:
+            msg = msg % args
+        print(f"[WARN] {msg}")
+
+    def error(self, msg, *args):
+        if args:
+            msg = msg % args
+        print(f"[ERROR] {msg}")
+
     def log_vgae_pretrain(self, epoch: int, loss: float):
         self.data["vgae_pretrain_epoch"].append(epoch)
         self.data["vgae_pretrain_loss"].append(float(loss))

@@ -15,10 +15,6 @@ from utils.helpers import resolve_request_limit
 from utils.training_logger import TrainingLogger
 from data.load_data import load_env_from_json
 
-
-# `get_train_files` removed in favor of callers enumerating files directly.
-
-
 def print_selected_files(files: list, request_pct: int = 0):
     print(f"[Pretrain] {len(files)} file(s)", flush=True)
     for fp in files:
