@@ -38,7 +38,7 @@ class ShortestPathFirst(RoutingMixin, Strategy):
         return result
 
     def get_placement(self, sfc: SFC, current_time: float) -> Optional[Dict]:
-        self._graph_cache.clear()
+        self.clear_routing_cache()
         self._path_cache.clear()
         t_start = self.env._get_timeslot(current_time)
         t_end   = self.env._get_timeslot(sfc.request.end_time)

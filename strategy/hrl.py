@@ -10,16 +10,18 @@ import config
 from env.env import Strategy
 from env.request import SFC
 from models import ReplayBuffer, VGAENetwork, HighLevelAgent, LowLevelAgent
+from strategy.routing_utils import RoutingMixin
 from utils.hrl_utils import (
     LRUCache, snapshot_network, restore_network, resolve_npy_path,
     get_next_time, extract_node_plan_map
 )
 from utils.training_logger import TrainingLogger
 
-class HRL_VGAE_Strategy(Strategy):
+class HRL_VGAE_Strategy(RoutingMixin, Strategy):
     def __init__(self, env, is_training=False, episodes=300,
                  use_ll_score=True, ll_pretrained_path=None, logger: TrainingLogger = None, episode_offset: int = 0):
         Strategy.__init__(self, env)
+        RoutingMixin.__init__(self)
         self.name         = "HRL-VGAE"
         self.is_training  = is_training
         self.episodes     = episodes
@@ -45,10 +47,7 @@ class HRL_VGAE_Strategy(Strategy):
         self.buf_Graph = ReplayBuffer(capacity=1_000)
         self._ll_traj: List[dict] = []
 
-        self._nx_graph_cache = LRUCache(max_size=config.HRL_MAX_NX_GRAPH_CACHE)
-        self._path_cache     = LRUCache(max_size=config.HRL_MAX_PATH_CACHE)
         self._graph_cache    = LRUCache(max_size=config.HRL_MAX_GRAPH_CACHE)
-        self._routing_cache  = LRUCache(max_size=config.HRL_MAX_ROUTING_CACHE)
         self._max_cost_cache: dict = {}
 
         self._current_Z:  Optional[np.ndarray] = None
@@ -118,55 +117,6 @@ class HRL_VGAE_Strategy(Strategy):
         except Exception as e:
             print(f"[HRL] HL load warning: {e}")
 
-    def _bw_pruned_graph(self, t_start: int, t_end: int, bw: float) -> nx.Graph:
-        key = (t_start, t_end, round(bw, 2))
-        cached = self._nx_graph_cache.get(key)
-        if cached is not None:
-            return cached
-        G = nx.Graph()
-        for nid in self.env.network.nodes:
-            G.add_node(nid)
-        for link in self.env.network.links:
-            if link.get_available_bandwidth(t_start, t_end) >= bw:
-                load = link.get_load(t_start, t_end)
-                w = link.delay + config.ROUTING_BW_WEIGHT * load
-                G.add_edge(link.u.name, link.v.name, weight=w, delay=link.delay)
-        self._nx_graph_cache.set(key, G)
-        return G
-
-    def _get_path_lengths(self, t_start: int, t_end: int, bw: float, sources=None) -> dict:
-        key = (t_start, t_end, round(bw, 2))
-        cached = self._path_cache.get(key)
-        if cached is not None:
-            return cached
-        G = self._bw_pruned_graph(t_start, t_end, bw)
-        lengths = {}
-        for src in (sources or list(G.nodes())):
-            if src in G:
-                try:
-                    lengths[src] = dict(
-                        nx.single_source_dijkstra_path_length(G, src, weight="weight"))
-                except Exception:
-                    pass
-        self._path_cache.set(key, lengths)
-        return lengths
-
-    def get_routing(self, u: str, v: str, t_start: int, t_end: int,
-                    bw: float, Z_t=None, dc_mapping=None) -> Optional[List[str]]:
-        u, v = str(u), str(v)
-        if u == v:
-            return [u]
-        rkey = (u, v, t_start, t_end, round(bw, 2))
-        cached = self._routing_cache.get(rkey)
-        if cached is not None:
-            return cached
-        G = self._bw_pruned_graph(t_start, t_end, bw)
-        try:
-            path = nx.shortest_path(G, u, v, weight="weight")
-        except (nx.NetworkXNoPath, nx.NodeNotFound, nx.NetworkXError):
-            path = None
-        self._routing_cache.set(rkey, path)
-        return path
 
     def _build_dc_graph(self, t_start: int, t_end: int,
                         bw_req: float = 0.0) -> Tuple[np.ndarray, np.ndarray, List[str]]:
@@ -174,40 +124,50 @@ class HRL_VGAE_Strategy(Strategy):
         n   = len(dcs)
         if n == 0:
             return np.zeros((0, 3), np.float32), np.zeros((0, 0), np.float32), []
-        all_paths = self._get_path_lengths(t_start, t_end, bw_req, sources=dcs)
+        
+        G = self._bw_pruned_graph(t_start, t_end, bw_req)
+        try:
+            all_len = dict(nx.shortest_path_length(G, weight="weight"))
+        except Exception:
+            all_len = {}
+        
         X = np.zeros((n, 3), np.float32)
         A = np.zeros((n, n), np.float32)
         for i, dc_id in enumerate(dcs):
             res  = self.env.network.nodes[dc_id].get_min_available_resource(t_start, t_end)
             X[i] = [res[k] / self._max_res[k] for k in config.RESOURCE_TYPE]
+        
         for i, dc_i in enumerate(dcs):
             A[i, i] = 1.0
+            src_lengths = all_len.get(dc_i, {})
             for j in range(i + 1, n):
                 dc_j  = dcs[j]
-                dist  = all_paths.get(dc_i, {}).get(dc_j)
+                dist  = src_lengths.get(dc_j)
                 if dist is not None and dist > 0:
                     w = 1.0 / (dist + 1.0)
                     A[i, j] = A[j, i] = w
+        
         return X, A, dcs
 
     def _get_z(self, t_start, t_end, bw_req):
         key = (t_start, t_end, round(bw_req, 1))
         cached = self._graph_cache.get(key)
-        if cached is None:
-            X, A, dcs = self._build_dc_graph(t_start, t_end, bw_req)
-            Z = self.vgae_net.encode(X, A, deterministic=not self.is_training)
-            self._graph_cache.set(key, (Z, dcs, X, A))
-        else:
+        if cached is not None:
             Z, dcs, X, A = cached
+            self._current_Z  = Z
+            self._current_dc = dcs
+            return Z, dcs
+        
+        X, A, dcs = self._build_dc_graph(t_start, t_end, bw_req)
+        Z = self.vgae_net.encode(X, A, deterministic=not self.is_training)
+        self._graph_cache.set(key, (Z, dcs, X, A))
         self._current_Z  = Z
         self._current_dc = dcs
         return Z, dcs
 
     def _clear_caches(self):
-        self._nx_graph_cache.clear()
-        self._path_cache.clear()
-        self._routing_cache.clear()
-        self._graph_cache.clear()
+        self.clear_routing_cache()
+        self.clear_routing_cache()
 
     def get_placement(self, sfc: SFC, current_time: float,
                       Z_t=None, dc_mapping=None, epsilon_ll=0.0) -> Optional[Dict]:
@@ -457,7 +417,7 @@ class HRL_VGAE_Strategy(Strategy):
 
                 snap = snapshot_network(self.env.network)
 
-                use_greedy = np.random.random() < max(0.05, 0.3 * (1.0 - progress))
+                use_greedy = np.random.random() < max(0.05, 0.3 * progress)
                 R_LL_override = None
                 if use_greedy:
                     plan = self._get_best_fit().get_placement(selected_sfc, t)
@@ -478,7 +438,10 @@ class HRL_VGAE_Strategy(Strategy):
                     cost_norm  = min(1.0, raw_cost / max(self._estimate_max_cost(selected_sfc), 1e-6))
                     time_ratio = min(1.0, (t - selected_sfc.request.arrival_time)
                                      / max(selected_sfc.request.delay_max, 1e-6))
-                    R_HL = [config.HRL_BASE_REWARD + 1.0 - time_ratio, -cost_norm]
+                    base_ar_reward = config.HRL_BASE_REWARD + 1.0 - time_ratio
+                    if plan_source == "fallback":
+                        base_ar_reward *= 0.5
+                    R_HL = [base_ar_reward, -cost_norm]
                     vnf_f = ([selected_sfc.request.vnfs[0].resource.get(k, 0.0)
                                for k in config.RESOURCE_TYPE]
                              if selected_sfc.request.vnfs else [0.0, 0.0, 0.0])
@@ -489,7 +452,8 @@ class HRL_VGAE_Strategy(Strategy):
                 else:
                     ep_rejected += 1
                     restore_network(self.env.network, snap)
-                    R_HL = [-(1.0 + len(queue) / max(self.hl_agent.max_queue, 1)), 0.0]
+                    cost_norm = 1.0 if len(queue) > 0 else 0.0
+                    R_HL = [-(1.0 + len(queue) / max(self.hl_agent.max_queue, 1)), -cost_norm]
                     R_LL = -config.HRL_PENALTY_DROP
 
                 self._clear_caches()

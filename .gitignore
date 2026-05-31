@@ -30,13 +30,16 @@ Thumbs.db
 !data/test/.gitkeep
 data/*.png
 
-# models/hrl_final/*.npy
+models/hrl_final/*.npy
 models/ll_pretrained/*
 models/vgae_pretrained/*
+
+strategy/hrl.py
 
 results_eval/*
 eval_results.csv
 logs/*
 .history/*
 
-__pycache__/
+__pycache__/*
+/strategy/__pycache__

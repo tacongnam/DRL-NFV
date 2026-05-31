@@ -161,16 +161,10 @@ class HighLevelAgent:
                     distances[sorted_keys[i]] += (
                         q_mat[front_indices[sorted_keys[i+1]], obj_idx] -
                         q_mat[front_indices[sorted_keys[i-1]], obj_idx]) / obj_range
-        tau = max(0.1, 1.0 - progress)
-        logits = distances / tau
-        logits -= logits.max()
-        probs = np.exp(logits)
-        probs /= probs.sum()
-        return front_indices[np.random.choice(n, p=probs)]
+        return front_indices[np.argmax(distances)]
 
     def act(self, Z_t, queue, epsilon=0.0, ll_agent=None, current_t=0.0, progress=0.0):
         if not queue: return 0
-        if len(queue) == 1: return 0
         if random.random() < epsilon:
             return random.randrange(len(queue))
         sfc_feats = self.extract_sfc_features(queue, Z_t, ll_agent, current_t=current_t)

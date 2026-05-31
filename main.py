@@ -12,7 +12,7 @@ for _d in ["models/vgae_pretrained", "models/ll_pretrained",
 
 sys.path.insert(0, ROOT_DIR)
 
-from strategy import GreedyFIFS, BestFit, DeadlineAwareGreedy, RandomFit, HRL_VGAE_Strategy
+from strategy import GreedyFIFS, BestFit, DeadlineAwareGreedy, RandomFit, DRL_Strategy
 from data.load_data import load_env_from_json, get_data_files, sample_files, save_csv
 from utils import _run_eval, _run_train, _run_pretrain_inline, _plot_baseline_results, _plot_eval_vs_baselines
 from utils.training_logger import TrainingLogger
@@ -253,7 +253,7 @@ def run_baselines(args=None):
         for fp in files:
             print(f"\n[HRL-VGAE] Evaluating {os.path.basename(fp)} from {model_dir} ...")
             env      = load_env_from_json(fp)
-            strategy = HRL_VGAE_Strategy(env, is_training=False, episodes=1)
+            strategy = DRL_Strategy(env, is_training=False, episodes=1)
             strategy.load_model(model_dir)
             env.set_strategy(strategy)
             hrl_stats = strategy.run_simulation_eval()
