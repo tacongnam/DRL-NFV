@@ -146,6 +146,7 @@ class VGAENetwork:
         except Exception as e:
             print(f"[VGAE] Could not load weights: {e}")
 
+
 def _mlp(input_dim: int, hidden: int, out_dim: int, name: str) -> keras.Model:
     inp = keras.Input(shape=(input_dim,), name=name + "_in")
     x = layers.Dense(hidden, activation="relu")(inp)

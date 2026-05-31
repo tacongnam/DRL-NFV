@@ -1,33 +1,46 @@
 import os
+import logging
+
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+logger = logging.getLogger(__name__)
+
 
 def _run_pretrain_inline(args, train_dir: str, DEFAULT_PRETRAIN_REQUEST_PCT, logger=None):
     from models import pretrain
 
-    selected = pretrain.get_train_files(train_dir)
+    # Inline simple file selection instead of calling get_train_files()
+    try:
+        selected = sorted(os.path.join(train_dir, f) for f in os.listdir(train_dir) if f.endswith('.json'))
+    except FileNotFoundError:
+        selected = []
+
     if not selected:
-        print("[Pretrain] No training files selected.", flush=True)
+        logger.warning("[Pretrain] No training files selected.")
         return False
 
     req_pct = getattr(args, "pretrain_request_pct", DEFAULT_PRETRAIN_REQUEST_PCT)
     pretrain.print_selected_files(selected, req_pct)
 
-    print(f"[Pretrain] Running inline on {train_dir}", flush=True)
-    vgae = None
+    logger.info("[Pretrain] Running inline on %s", train_dir)
+
     vgae = pretrain.pretrain_vgae(
         selected,
         epochs=getattr(args, "vgae_epochs", 60),
         request_pct=req_pct,
         logger=logger,
     )
-    if vgae is None and getattr(args, "ll_episodes", 0) > 0:
-        vgae_path = os.path.join(ROOT_DIR, "models", "vgae_pretrained", "vgae_weights.npy")
+
+    if vgae is None:
+        import config
+        vgae_path = os.path.join(config.VGAE_DIR, config.VGAE_WEIGHTS_FILE)
         if os.path.exists(vgae_path):
-            vgae = pretrain.VGAENetwork(latent_dim=pretrain.LATENT_DIM)
+            from models.model import VGAENetwork
+            import config as cfg
+            vgae = VGAENetwork(latent_dim=cfg.LATENT_DIM)
             vgae.load_weights(vgae_path)
 
-    if vgae is not None:
-        pretrain.pretrain_ll(
+    if vgae is not None and getattr(args, "ll_episodes", 0) > 0:
+        pretrain.pretrain_placer(
             selected,
             vgae,
             episodes=getattr(args, "ll_episodes", 60),
@@ -35,11 +48,11 @@ def _run_pretrain_inline(args, train_dir: str, DEFAULT_PRETRAIN_REQUEST_PCT, log
             logger=logger,
         )
     else:
-        print("[Pretrain] Skipped LL pretrain because VGAE was not produced.", flush=True)
+        logger.info("[Pretrain] Skipped Placer pretrain because VGAE was not produced.")
 
     import config
     vgae_out = os.path.join(config.VGAE_DIR, config.VGAE_WEIGHTS_FILE)
-    ll_out = os.path.join(config.LL_DIR, config.LL_WEIGHTS_FILE)
-    print(f"[Pretrain] VGAE saved: {os.path.exists(vgae_out)} -> {vgae_out}", flush=True)
-    print(f"[Pretrain] LL saved: {os.path.exists(ll_out)} -> {ll_out}", flush=True)
-    return os.path.exists(vgae_out) or os.path.exists(ll_out)
+    placer_out = os.path.join(config.PLACER_DIR, config.PLACER_WEIGHTS_FILE)
+    logger.info("[Pretrain] VGAE saved: %s -> %s", os.path.exists(vgae_out), vgae_out)
+    logger.info("[Pretrain] Placer saved: %s -> %s", os.path.exists(placer_out), placer_out)
+    return os.path.exists(vgae_out) or os.path.exists(placer_out)

@@ -16,15 +16,15 @@ def _run_eval(model_dir, test_dir, test_files=None,
     for fp in files:
         print(f"\n--- {os.path.basename(fp)} ---")
         env      = load_env_from_json(fp)
-        from strategy.hrl import HRL_VGAE_Strategy
-        strategy = HRL_VGAE_Strategy(env, is_training=False, episodes=1)
+        from strategy.drl_strategy import DRL_Strategy
+        strategy = DRL_Strategy(env, is_training=False, episodes=1)
         if model_dir and os.path.isdir(model_dir):
             strategy.load_model(model_dir)
         env.set_strategy(strategy)
         stats = strategy.run_simulation_eval()
         env.print_statistics()
         results.append({
-            "algorithm": "HRL-VGAE",
+            "algorithm": "DRL-NFV",
             "file":      os.path.basename(fp),
             "acceptance_ratio": round(stats.get("acceptance_ratio", 0), 4),
             "accepted":  stats.get("accepted_requests", 0),

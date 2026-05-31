@@ -1,6 +1,6 @@
 # DRL-NFV
 
-HRL-VGAE pipeline for VNF placement on synthetic NFV topologies.
+DRL-NFV pipeline for VNF placement on synthetic NFV topologies.
 
 ## Requirements
 
@@ -95,17 +95,15 @@ python main.py --mode pipeline --episodes 100 --pretrain-request-pct 10 --train-
 ## Baselines
 
 ```bash
-python main.py --mode baseline --baselines fifs bestfit deadline
+python main.py --mode baseline --baselines fifs bestfit deadline randomfit
 ```
 
 Available baselines:
 
 - `fifs`
-- `glb`
-- `spf`
 - `bestfit`
 - `deadline`
-- `random`
+- `randomfit`
 
 ## Current Behavior
 

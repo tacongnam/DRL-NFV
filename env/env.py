@@ -15,6 +15,9 @@ from env.network import Network, Link, Node
 from env.request import Request, SFC, ListOfRequests
 from env.vnf import VNF, ListOfVnfs
 import config
+import logging
+
+logger = logging.getLogger(__name__)
 
 class Strategy(ABC):
     def __init__(self, env: Env):
@@ -49,14 +52,6 @@ class Strategy(ABC):
         return plan
 
 class Env(gym.Env):
-    """
-    NFV placement environment.
-
-    Vòng lặp chính được điều khiển bởi Strategy.train() / run_simulation(),
-    không phải vòng lặp gym chuẩn. observation_space và action_space được khai
-    báo symbolic — override nếu tích hợp thư viện RL bên ngoài.
-    """
-
     _OBS_DIM = 1
     _ACT_DIM = 1
 
@@ -246,20 +241,10 @@ class Env(gym.Env):
 
     def print_statistics(self):
         s = self.stats
-        print("\n" + "=" * 30)
-        print("      THỐNG KÊ CHI TIẾT")
-        print("=" * 30)
-        print(f"{'Tổng số request:':<22} {s['total_requests']}")
-        print(f"{'Đã chấp nhận:':<22} {s['accepted_requests']}")
-        print(f"{'Đã từ chối:':<22} {s['rejected_requests']}")
-        print("-" * 30)
-        print(f"{'Tổng chi phí:':<22} {s['total_cost']:.2f}")
-        print(f"{'Tổng độ trễ:':<22} {s['total_delay']:.2f}")
-        if s['accepted_requests'] > 0:
-            avg_d = s['total_delay'] / s['accepted_requests']
-            print(f"{'Độ trễ trung bình:':<22} {avg_d:.2f}")
-        if 'acceptance_ratio' in s:
-            print(f"{'Acceptance ratio:':<22} {s['acceptance_ratio']:.3f}")
-        print(f"{'Compute throughput:':<22} {s['compute_throughput']:.2f}")
-        print(f"{'Network throughput:':<22} {s['network_throughput']:.2f}")
-        print("=" * 30 + "\n")
+        logger.info(
+            "Accepted %d/%d  AR=%.3f  Cost=%.2f  AvgDelay=%.2f",
+            s['accepted_requests'], s['total_requests'],
+            s.get('acceptance_ratio', 0.0),
+            s['total_cost'],
+            (s['total_delay'] / s['accepted_requests']) if s['accepted_requests'] > 0 else 0.0,
+        )

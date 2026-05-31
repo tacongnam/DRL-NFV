@@ -67,7 +67,7 @@ def _plot_eval_vs_baselines(hrl_results: list, baseline_results: list, out_path:
     colors = ["#5b8dd9"] * n_base + ["#e05c5c"] * len(hrl_results)
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    fig.suptitle("HRL-VGAE vs Baselines", fontsize=14, fontweight="bold")
+    fig.suptitle("DRL-NFV vs Baselines", fontsize=14, fontweight="bold")
 
     for ax, vals, title, ylabel in [
         (axes[0], ar,   "Acceptance Ratio", "Ratio"),
@@ -89,7 +89,7 @@ def _plot_eval_vs_baselines(hrl_results: list, baseline_results: list, out_path:
 
     axes[0].legend(handles=[
         mpatches.Patch(color="#5b8dd9", label="Baseline"),
-        mpatches.Patch(color="#e05c5c", label="HRL-VGAE"),
+        mpatches.Patch(color="#e05c5c", label="DRL-NFV"),
     ], loc="lower right", fontsize=9)
 
     plt.tight_layout()

@@ -1,7 +1,6 @@
 from __future__ import annotations
 import math, os
 import numpy as np
-import networkx as nx
 from typing import Dict, List, Optional, Tuple
 
 import config
@@ -13,6 +12,7 @@ from models.pretrain import build_dc_graph
 from strategy.routing_utils import RoutingMixin
 from utils.hrl_utils import snapshot_network, restore_network, LRUCache
 from utils.training_logger import TrainingLogger
+
 
 class DRL_Strategy(RoutingMixin, Strategy):
     def __init__(self, env, is_training: bool = False, episodes: int = 300,
@@ -27,7 +27,7 @@ class DRL_Strategy(RoutingMixin, Strategy):
         self.episode_offset = episode_offset
 
         self.vgae_net = VGAENetwork(latent_dim=config.LATENT_DIM)
-        input_dim = config.LATENT_DIM * 2 + 3
+        input_dim = config.LATENT_DIM * 2 + PlacerAgent.FEAT_DIM_EXTRA
         self.placer = PlacerAgent(latent_dim=config.LATENT_DIM,
                                   max_dcs=config.MAX_DCS, input_dim=input_dim)
         dummy = np.zeros((1, input_dim), dtype=np.float32)
@@ -40,8 +40,6 @@ class DRL_Strategy(RoutingMixin, Strategy):
         self._placer_traj: List[dict] = []
 
         self._z_cache = LRUCache(max_size=config.HRL_MAX_GRAPH_CACHE)
-        self._dc_list = [nid for nid, n in env.network.nodes.items()
-                         if n.type == config.NODE_DC]
         self._max_res = {k: 1.0 for k in config.RESOURCE_TYPE}
         for node in env.network.nodes.values():
             if node.type == config.NODE_DC and node.cap:
@@ -69,7 +67,7 @@ class DRL_Strategy(RoutingMixin, Strategy):
             print(f"[DRL] Placer weights not found: {path}")
             return
         try:
-            dummy = np.zeros((1, config.LATENT_DIM * 2 + 3), dtype=np.float32)
+            dummy = np.zeros((1, config.LATENT_DIM * 2 + PlacerAgent.FEAT_DIM_EXTRA), np.float32)
             self.placer.policy_net(dummy)
             self.placer.policy_net.set_weights(list(np.load(path, allow_pickle=True)))
             wn = path.replace(config.PLACER_WEIGHTS_FILE, config.PLACER_WEIGHT_NET_FILE)
@@ -100,7 +98,7 @@ class DRL_Strategy(RoutingMixin, Strategy):
         return self._best_fit
 
     def _get_z(self, t_start: int, t_end: int, bw_req: float,
-               vnf_demand: dict = None) -> Tuple[np.ndarray, List[str]]:
+               vnf_demand: dict = None) -> Tuple[np.ndarray, List[str], np.ndarray, np.ndarray]:
         key = (t_start, t_end, round(bw_req, 1))
         cached = self._z_cache.get(key)
         if cached is not None:
@@ -108,8 +106,9 @@ class DRL_Strategy(RoutingMixin, Strategy):
         path_cache = {}
         X, A, dcs = build_dc_graph(self.env, t_start, t_end, bw_req, path_cache, vnf_demand)
         Z = self.vgae_net.encode(X, A, deterministic=not self.is_training)
-        self._z_cache.set(key, (Z, dcs, X, A))
-        return Z, dcs, X, A
+        result = (Z, dcs, X, A)
+        self._z_cache.set(key, result)
+        return result
 
     def _clear_step_caches(self):
         self.clear_routing_cache()
@@ -130,42 +129,24 @@ class DRL_Strategy(RoutingMixin, Strategy):
                  and n.get_cost(v) < float('inf')), default=0.0)
             for v in sfc.request.vnfs))
 
-    def _compute_reward(self, env_rewards: list, sfc: SFC, t: float,
-                        Z_t: np.ndarray, Z_next: np.ndarray,
-                        chosen_dc_name: str, vnf) -> float:
+    def _compute_reward(self, sfc: SFC, t: float, chosen_dc_name: str,
+                        vnf, env_rewards: list) -> float:
         node = self.env.network.nodes[chosen_dc_name]
         t_start = self.env._get_timeslot(t)
         t_end = self.env._get_timeslot(sfc.request.end_time)
         res = node.get_min_available_resource(t_start, t_end)
-        node_press = PressureNode.compute(
-            res, vnf.resource, node.cap or {k: 1.0 for k in config.RESOURCE_TYPE})
-        path_press = self._avg_path_pressure(sfc, t)
+        cap = node.cap or {k: 1.0 for k in config.RESOURCE_TYPE}
+        node_press = PressureNode.compute(res, vnf.resource, cap)
+        path_press = self.avg_path_pressure(sfc, t)
         raw_cost = abs(env_rewards[1]) if len(env_rewards) > 1 else 0.0
         cost_norm = min(1.0, raw_cost / max(self._estimate_max_cost(sfc), 1e-6))
         time_rem = max(0.0, sfc.request.end_time - t)
-        tmax = max(sfc.request.delay_max, 1e-6)
-        base = (config.HRL_R_BASE_LL
-                + config.HRL_LL_ALPHA * (time_rem / tmax)
+        delay_norm = 1.0 - min(1.0, time_rem / max(sfc.request.delay_max, 1e-6))
+        return (config.HRL_R_BASE_LL
+                + config.HRL_LL_ALPHA * (1.0 - delay_norm)
                 - config.HRL_LL_BETA * cost_norm
                 - node_press
                 - path_press)
-        if len(Z_t) > 0 and len(Z_next) > 0:
-            phi = float(np.mean(np.clip(Z_t, 0, None)))
-            phi_next = float(np.mean(np.clip(Z_next, 0, None)))
-            base += config.HRL_LL_GAMMA_POT * (self.placer.gamma * phi_next - phi)
-        return base
-
-    def _avg_path_pressure(self, sfc: SFC, t: float) -> float:
-        t_start = self.env._get_timeslot(t)
-        t_end = self.env._get_timeslot(sfc.request.end_time)
-        pressures = []
-        for link in self.env.network.links:
-            avail = link.get_available_bandwidth(t_start, t_end)
-            if avail < sfc.request.bw:
-                pressures.append(1.0)
-            else:
-                pressures.append(self.link_pressure(avail - sfc.request.bw, link.cap))
-        return float(np.mean(pressures)) if pressures else 0.0
 
     def get_placement(self, sfc: SFC, current_time: float,
                       Z_t: np.ndarray = None, dc_mapping: List[str] = None,
@@ -175,8 +156,7 @@ class DRL_Strategy(RoutingMixin, Strategy):
         t_end = self.env._get_timeslot(sfc.request.end_time)
 
         if Z_t is None or dc_mapping is None:
-            result = self._get_z(t_start, t_end, sfc.request.bw)
-            Z_t, dc_mapping = result[0], result[1]
+            Z_t, dc_mapping, _, _ = self._get_z(t_start, t_end, sfc.request.bw)
         if not dc_mapping:
             return None
 
@@ -202,7 +182,8 @@ class DRL_Strategy(RoutingMixin, Strategy):
                 return None
 
             vnf_feat = [vnf.resource.get(k, 0.0) for k in config.RESOURCE_TYPE]
-            action_idx = self.placer.act(Z_t, vnf_feat, valid_indices, epsilon, loc_z)
+            node_press = self._mean_candidate_pressure(valid_indices, dc_mapping, vnf, t_start, t_end)
+            action_idx = self.placer.act(Z_t, vnf_feat, valid_indices, epsilon, loc_z, node_press)
             chosen_dc = dc_mapping[action_idx]
 
             path = self.get_routing(prev_dc, chosen_dc, t_start, t_end, sfc.request.bw)
@@ -218,7 +199,8 @@ class DRL_Strategy(RoutingMixin, Strategy):
 
             self._placer_traj.append({
                 "Z_t": Z_t, "vnf_feat": vnf_feat,
-                "loc_z": loc_z.copy(), "action_idx": action_idx,
+                "loc_z": loc_z.copy(), "node_press": node_press,
+                "action_idx": action_idx,
                 "valid_mask": valid_indices, "dc_name": chosen_dc,
             })
             loc_z = Z_t[action_idx].copy() if action_idx < len(Z_t) else loc_z
@@ -234,6 +216,17 @@ class DRL_Strategy(RoutingMixin, Strategy):
         link_paths.append(final_path)
         link_timeslots.append((t_start, t_end))
         return self.build_placement_plan(node_placements, link_paths, vnf_timeslots, link_timeslots, sfc)
+
+    def _mean_candidate_pressure(self, valid_indices: List[int], dc_mapping: List[str],
+                                  vnf, t_start: int, t_end: int) -> float:
+        pressures = []
+        for idx in valid_indices:
+            dc_id = dc_mapping[idx]
+            node = self.env.network.nodes[dc_id]
+            res = node.get_min_available_resource(t_start, t_end)
+            cap = node.cap or {k: 1.0 for k in config.RESOURCE_TYPE}
+            pressures.append(PressureNode.compute(res, vnf.resource, cap))
+        return float(sum(pressures) / len(pressures)) if pressures else 0.0
 
     def _execute_with_fallback(self, plan: Optional[Dict], sfc: SFC,
                                 t: float, snap: dict):
@@ -271,10 +264,14 @@ class DRL_Strategy(RoutingMixin, Strategy):
                      if dc_id in cand and idx < config.MAX_DCS
                      and self.env._check_can_deploy_vnf(
                          self.env.network.nodes[dc_id], vnf, t_start, t_end)]
+            node = self.env.network.nodes[np_["dc"]]
+            res = node.get_min_available_resource(t_start, t_end)
+            cap = node.cap or {k: 1.0 for k in config.RESOURCE_TYPE}
+            node_press = PressureNode.compute(res, vnf.resource, cap)
             self._placer_traj.append({
                 "Z_t": Z_t, "vnf_feat": [vnf.resource.get(k, 0.0) for k in config.RESOURCE_TYPE],
-                "loc_z": prev_loc_z, "action_idx": act_idx,
-                "valid_mask": valid, "dc_name": np_["dc"],
+                "loc_z": prev_loc_z, "node_press": node_press,
+                "action_idx": act_idx, "valid_mask": valid, "dc_name": np_["dc"],
             })
             prev_loc_z = Z_t[act_idx].copy() if act_idx < len(Z_t) else prev_loc_z
 
@@ -303,11 +300,9 @@ class DRL_Strategy(RoutingMixin, Strategy):
                 batch = []
                 while pending and pending[0].request.arrival_time <= t:
                     batch.append(pending.pop(0))
-
                 batch = [s for s in batch if t <= s.request.end_time]
                 if not batch:
                     continue
-
                 batch.sort(key=self._edf_sort_key)
 
                 for sfc in batch:
@@ -317,9 +312,9 @@ class DRL_Strategy(RoutingMixin, Strategy):
 
                     t_start = self.env._get_timeslot(t)
                     t_end = self.env._get_timeslot(sfc.request.end_time)
-                    result = self._get_z(t_start, t_end, sfc.request.bw,
-                                         sfc.request.vnfs[0].resource if sfc.request.vnfs else None)
-                    Z_t, dc_mapping, X, A = result
+                    Z_t, dc_mapping, X, A = self._get_z(
+                        t_start, t_end, sfc.request.bw,
+                        sfc.request.vnfs[0].resource if sfc.request.vnfs else None)
 
                     snap = snapshot_network(self.env.network)
                     use_greedy = np.random.random() < max(0.05, 0.3 * (1.0 - progress))
@@ -338,8 +333,7 @@ class DRL_Strategy(RoutingMixin, Strategy):
                     if success:
                         ep_accepted += 1
                         self._clear_step_caches()
-                        result_next = self._get_z(t_start, t_end, sfc.request.bw)
-                        Z_next = result_next[0]
+                        Z_next, _, _, _ = self._get_z(t_start, t_end, sfc.request.bw)
                         raw_cost = abs(rewards[1]) if len(rewards) > 1 else 0.0
                         cost_norm = min(1.0, raw_cost / max(self._estimate_max_cost(sfc), 1e-6))
                         time_ratio = min(1.0, (t - sfc.request.arrival_time)
@@ -363,10 +357,12 @@ class DRL_Strategy(RoutingMixin, Strategy):
                         loc_next = (self._placer_traj[i + 1]["loc_z"]
                                     if i + 1 < len(self._placer_traj)
                                     else np.zeros(config.LATENT_DIM, np.float32))
+                        press_next = (self._placer_traj[i + 1]["node_press"]
+                                      if i + 1 < len(self._placer_traj) else 0.0)
                         self.buf_placer.push((
-                            step["Z_t"], step["vnf_feat"], step["loc_z"],
+                            step["Z_t"], step["vnf_feat"], step["loc_z"], step["node_press"],
                             step["action_idx"], R_placer,
-                            Z_next, nxt_mask, loc_next, is_done))
+                            Z_next, nxt_mask, loc_next, press_next, is_done))
 
                     if X is not None:
                         self.buf_graph.push((X, A))
@@ -415,19 +411,17 @@ class DRL_Strategy(RoutingMixin, Strategy):
             batch = []
             while pending and pending[0].request.arrival_time <= t:
                 batch.append(pending.pop(0))
-
             batch = [s for s in batch if t <= s.request.end_time]
             if not batch:
                 continue
-
             batch.sort(key=self._edf_sort_key)
 
             for sfc in batch:
                 t_start = self.env._get_timeslot(t)
                 t_end = self.env._get_timeslot(sfc.request.end_time)
-                result = self._get_z(t_start, t_end, sfc.request.bw,
-                                      sfc.request.vnfs[0].resource if sfc.request.vnfs else None)
-                Z_t, dc_mapping = result[0], result[1]
+                Z_t, dc_mapping, _, _ = self._get_z(
+                    t_start, t_end, sfc.request.bw,
+                    sfc.request.vnfs[0].resource if sfc.request.vnfs else None)
 
                 snap = snapshot_network(self.env.network)
                 plan = self.get_placement(sfc, t, Z_t, dc_mapping, 0.0)

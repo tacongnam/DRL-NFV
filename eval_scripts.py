@@ -22,7 +22,7 @@ CSV_PATH   = "baseline_results.csv"
 OUTPUT_DIR = "results_eval"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-ALGO_ORDER = ["BestFit", "DeadlineAwareGreedy", "GreedyFIFS", "RandomFit", "HRL-VGAE"]
+ALGO_ORDER = ["BestFit", "DeadlineAwareGreedy", "GreedyFIFS", "RandomFit", "DRL-NFV"]
 DIFF_ORDER = ["easy", "normal", "hard"]
 TOPO_ORDER = ["cogent", "conus", "nsf"]
 DIST_ORDER = ["uniform", "urban", "rural", "centers"]
@@ -206,9 +206,9 @@ def pivot_to_latex(
             mark = dist_marks.loc[algo, col] if algo in dist_marks.index else ""
             row_cells.append(_fmt(val, mark))
 
-        # Highlight HRL-VGAE bằng màu nền nhẹ
-        row_str = " & ".join(row_cells) + r" \\"
-        if algo == "HRL-VGAE":
+        # Highlight DRL-NFV bằng màu nền nhẹ
+        row_str = " & ".join(row_cells) + r" \\" 
+        if algo == "DRL-NFV":
             row_str = r"\rowcolor{gray!12} " + row_str
         lines.append(row_str)
 

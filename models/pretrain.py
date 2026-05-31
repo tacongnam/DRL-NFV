@@ -16,9 +16,7 @@ from utils.training_logger import TrainingLogger
 from data.load_data import load_env_from_json
 
 
-def get_train_files(train_dir: str) -> list:
-    return sorted([os.path.join(train_dir, f)
-                   for f in os.listdir(train_dir) if f.endswith(".json")])
+# `get_train_files` removed in favor of callers enumerating files directly.
 
 
 def print_selected_files(files: list, request_pct: int = 0):
@@ -65,9 +63,11 @@ def build_dc_graph(env, t_start: int, t_end: int, bw: float,
     X = np.zeros((n, VGAENetwork.NODE_FEAT_DIM), np.float32)
     A = np.zeros((n, n), np.float32)
     for i, did in enumerate(dcs):
-        res = env.network.nodes[did].get_min_available_resource(t_start, t_end)
+        node = env.network.nodes[did]
+        res = node.get_min_available_resource(t_start, t_end)
+        cap = node.cap or {k: 1.0 for k in config.RESOURCE_TYPE}
         for j, k in enumerate(config.RESOURCE_TYPE):
-            X[i, j] = res[k] / max_r[k]
+            X[i, j] = res[k] / max(max_r[k], 1e-6)
             slack = res[k] - demand.get(k, 0.0)
             X[i, j + 3] = min(slack / max(max_r[k], 1e-6), 1.0) if slack > 0 else 0.0
         for jj, dj in enumerate(dcs):
@@ -129,7 +129,7 @@ def pretrain_placer(train_files: list, vgae: VGAENetwork, episodes: int = 60,
     if not train_files:
         return None
     tf.keras.backend.clear_session()
-    input_dim = config.LATENT_DIM * 2 + 3
+    input_dim = config.LATENT_DIM * 2 + PlacerAgent.FEAT_DIM_EXTRA
     placer = PlacerAgent(latent_dim=config.LATENT_DIM, max_dcs=config.MAX_DCS, input_dim=input_dim)
     dummy = np.zeros((1, input_dim), dtype=np.float32)
     placer.policy_net(dummy)
@@ -184,7 +184,7 @@ def pretrain_placer(train_files: list, vgae: VGAENetwork, episodes: int = 60,
                         continue
                     act_idx = (random.choice(valid) if random.random() < epsilon
                                else _best_valid_dc(dcs, valid, env, vnf, t_s, t_e))
-                    buf.push((Z, vnf_feat, zeros, act_idx, -1.0, Z, valid, zeros, False))
+                    buf.push((Z, vnf_feat, zeros, 0.0, act_idx, -1.0, Z, valid, zeros, 0.0, False))
                 continue
 
             max_cost = max(1.0, sum(
@@ -212,17 +212,19 @@ def pretrain_placer(train_files: list, vgae: VGAENetwork, episodes: int = 60,
                     continue
 
                 chosen_node = env.network.nodes[node_plan["dc"]]
-                alpha, beta = placer.get_reward_weights(Z, vnf_feat, prev_loc_z)
                 res = chosen_node.get_min_available_resource(t_s, t_e)
-                node_press = PressureNode.compute(res, vnf.resource,
-                                                  chosen_node.cap or {k: 1.0 for k in config.RESOURCE_TYPE})
+                cap = chosen_node.cap or {rk: 1.0 for rk in config.RESOURCE_TYPE}
+                node_press = PressureNode.compute(res, vnf.resource, cap)
+
+                alpha, beta = placer.get_reward_weights(Z, vnf_feat, prev_loc_z, node_press)
                 raw_cost = chosen_node.get_cost(vnf)
                 if raw_cost == float('inf'):
                     raw_cost = max_cost
                 cost_norm = min(1.0, raw_cost / max_cost)
                 time_rem = max(0.0, req.end_time - req.arrival_time)
+                delay_norm = 1.0 - min(1.0, time_rem / max(req.delay_max, 1e-6))
                 reward = float(config.HRL_R_BASE_LL
-                               + alpha * (time_rem / max(req.delay_max, 1e-6))
+                               + alpha * (1.0 - delay_norm)
                                - beta * cost_norm
                                - node_press)
 
@@ -237,12 +239,14 @@ def pretrain_placer(train_files: list, vgae: VGAENetwork, episodes: int = 60,
                     X_next, A_next, _ = build_dc_graph(env, t_s, t_e, req.bw, path_cache, next_vnf.resource)
                     Z_next = vgae.encode(X_next, A_next, deterministic=True)
                     chosen_node.use({rk: -vnf.resource[rk] for rk in config.RESOURCE_TYPE}, t_s, t_e + 1)
+                    next_press = node_press
                 else:
-                    next_valid, Z_next = valid, Z
+                    next_valid, Z_next, next_press = valid, Z, 0.0
                     cur_loc_z = zeros
 
-                buf.push((Z, vnf_feat, prev_loc_z, act_idx, reward,
-                          Z_next, next_valid, cur_loc_z, k == len(req.vnfs) - 1))
+                buf.push((Z, vnf_feat, prev_loc_z, node_press, act_idx, reward,
+                          Z_next, next_valid, cur_loc_z, next_press,
+                          k == len(req.vnfs) - 1))
                 prev_loc_z = cur_loc_z
 
             env.step(plan)
@@ -252,7 +256,7 @@ def pretrain_placer(train_files: list, vgae: VGAENetwork, episodes: int = 60,
                 placer.train(buf, batch)
             if logger:
                 recent = list(buf.buf)[-batch:]
-                avg_r = float(np.mean([r[4] if not hasattr(r[4], '__len__') else r[4][0]
+                avg_r = float(np.mean([r[5] if not hasattr(r[5], '__len__') else r[5][0]
                                        for r in recent]))
                 logger.log_ll_pretrain(ep, 0.0, avg_r)
 
