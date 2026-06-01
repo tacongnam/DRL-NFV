@@ -3,7 +3,7 @@ from typing import Dict, List, Optional
 from env.env import Strategy
 from env.request import SFC
 from env.network import Node
-from strategy.routing_utils import RoutingMixin
+from utils.routing_utils import RoutingMixin
 import config
 
 class BestFit(RoutingMixin, Strategy):

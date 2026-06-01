@@ -19,7 +19,7 @@ from utils import _run_eval, _run_train, _run_pretrain_inline, _plot_baseline_re
 from utils.training_logger import TrainingLogger
 
 TRAIN_DIR = os.path.join(ROOT_DIR, "data/train")
-TEST_DIR = os.path.join(ROOT_DIR, "data/test")
+TEST_DIR = os.path.join(ROOT_DIR, "data/train-gen")
 GENERATE_SCRIPT = os.path.join(ROOT_DIR, "data/generate.py")
 DEFAULT_EPISODES = 60
 
@@ -78,7 +78,6 @@ def _generate_data(topology, distribution, difficulty, scale, requests,
     if result.returncode != 0:
         print(f"[WARN] Command failed: {' '.join(cmd)}", flush=True)
     return result.returncode == 0
-
 
 def run_generate(args):
     print("\n[Generating] Topology={} Distribution={} Difficulty={}".format(

@@ -1,5 +1,5 @@
 from __future__ import annotations
-import math, random
+import math, random, collections
 from typing import List, Optional, Tuple
 import numpy as np
 
@@ -28,6 +28,7 @@ class PressureNode:
 
 class PlacerAgent:
     FEAT_DIM_EXTRA = 3 + 1
+    _REWARD_WINDOW = 200
 
     def __init__(self, latent_dim: int = 8, max_dcs: int = 50,
                  gamma: float = 0.95, lr: float = 5e-4,
@@ -42,9 +43,7 @@ class PlacerAgent:
         self.opt = keras.optimizers.Adam(lr)
         self.weight_net = _mlp(self.feat_dim, 32, 2, "placer_weights")
         self.opt_w = keras.optimizers.Adam(lr)
-        self._reward_mean = 0.0
-        self._reward_var = 1.0
-        self._reward_count = 0
+        self._reward_window = collections.deque(maxlen=self._REWARD_WINDOW)
 
     def _sync_target(self):
         self.target_net.set_weights(self.policy_net.get_weights())
@@ -152,13 +151,10 @@ class PlacerAgent:
         raw = np.array(
             [float(r[0]) if hasattr(r, '__len__') else float(r) for r in rewards],
             dtype=np.float32)
-        for r in raw:
-            self._reward_count += 1
-            delta = r - self._reward_mean
-            self._reward_mean += delta / self._reward_count
-            self._reward_var += delta * (r - self._reward_mean)
-        std = max(np.sqrt(self._reward_var / max(self._reward_count - 1, 1)), 1e-6)
-        norm_r = (raw - self._reward_mean) / std
+        self._reward_window.extend(raw.tolist())
+        w_mean = float(np.mean(self._reward_window))
+        w_std  = max(float(np.std(self._reward_window)), 1e-6)
+        norm_r = (raw - w_mean) / w_std
 
         S = tf.constant(self._make_states_batch(Z_list, vnf_f, loc_list, pressure_list),
                         dtype=tf.float32)

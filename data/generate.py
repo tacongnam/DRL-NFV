@@ -253,7 +253,6 @@ def generate_requests(
 
     # Build networkx graph để kiểm tra connectivity
     G_full = nx.Graph()
-    G_full.add_nodes_from(f"v{n}" for n in range(max(all_links_raw, key=lambda x: max(x))[1] + 1))
 
     link_delays = {}
     for link_obj in all_links_raw:

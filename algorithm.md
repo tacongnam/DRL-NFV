@@ -319,22 +319,22 @@ for ep in 1..episodes:
 
             if success:
                 Z_next = _get_z(...)    # post-placement graph
-                R = HRL_R_BASE_LL + α(1−time_ratio) − β·cost_norm
+                R = DRL_R_BASE_LL + α(1−time_ratio) − β·cost_norm
             else:
-                R = −HRL_PENALTY_DROP
+                R = −DRL_PENALTY_DROP
                 restore_network(snap)
 
             push trajectory steps to buf_placer
             push (X, A) to buf_graph
 
-            if total_steps % 4 == 0 and buf_placer ≥ HRL_BATCH_SIZE:
+            if total_steps % 4 == 0 and buf_placer ≥ DRL_BATCH_SIZE:
                 placer.train(buf_placer)
 
-            if total_steps % HRL_TARGET_SYNC == 0:
+            if total_steps % DRL_TARGET_SYNC == 0:
                 placer.update_target_network()
 
-            if total_steps % HRL_VGAE_TRAIN_FREQ == 0:
-                vgae.train(buf_graph, epochs=HRL_VGAE_EPOCHS)
+            if total_steps % DRL_VGAE_TRAIN_FREQ == 0:
+                vgae.train(buf_graph, epochs=DRL_VGAE_EPOCHS)
 ```
 
 ### 7.4 Epsilon Schedule
@@ -384,16 +384,15 @@ All baselines use `RoutingMixin` for routing (same bandwidth-pruned shortest pat
 | `LATENT_DIM` | 8 | VGAE latent dimension |
 | `MAX_DCS` | 60 | Max DC action space size |
 | `TIMESTEP` | 0.1 | Time quantization unit |
-| `HRL_BATCH_SIZE` | 32 | Placer training batch size |
-| `HRL_TARGET_SYNC` | 100 | Steps between target network sync |
-| `HRL_VGAE_TRAIN_FREQ` | 200 | Steps between online VGAE updates |
-| `HRL_VGAE_EPOCHS` | 3 | Epochs per online VGAE update |
-| `HRL_R_BASE_LL` | 1.0 | Base reward for successful placement |
-| `HRL_PENALTY_DROP` | 0.5 | Penalty for failed placement |
-| `HRL_LL_ALPHA` | 0.5 | Delay weight in reward |
-| `HRL_LL_BETA` | 1.0 | Cost weight in reward |
-| `HRL_LL_GAMMA_POT` | 0.3 | Auxiliary potential weight (reserved) |
+| `DRL_BATCH_SIZE` | 32 | Placer training batch size |
+| `DRL_TARGET_SYNC` | 40 | Steps between target network sync |
+| `DRL_VGAE_TRAIN_FREQ` | 500 | Steps between online VGAE updates |
+| `DRL_VGAE_EPOCHS` | 3 | Epochs per online VGAE update |
+| `DRL_R_BASE_LL` | 1.0 | Base reward for successful placement |
+| `DRL_PENALTY_DROP` | 0.5 | Penalty for failed placement |
+| `DRL_LL_ALPHA` | 0.5 | Delay weight in reward |
+| `DRL_LL_BETA` | 1.0 | Cost weight in reward |
 | `EPSILON_MAX / MIN` | 0.9 / 0.1 | Exploration range |
 | `EPSILON_WARMUP` | 0.1 | Warmup fraction before decay |
 | `ROUTING_PRESSURE_WEIGHT` | 0.5 | BW pressure weight in routing cost |
-| `HRL_MAX_GRAPH_CACHE` | 500 | LRU cache size for VGAE embeddings |
+| `DRL_MAX_GRAPH_CACHE` | 500 | LRU cache size for VGAE embeddings |

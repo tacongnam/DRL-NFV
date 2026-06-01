@@ -2,7 +2,7 @@ import random
 from typing import Dict, List, Optional
 from env.env import Strategy
 from env.request import SFC
-from strategy.routing_utils import RoutingMixin
+from utils.routing_utils import RoutingMixin
 import config
 
 class RandomFit(RoutingMixin, Strategy):

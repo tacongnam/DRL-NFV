@@ -242,7 +242,7 @@ def pretrain_placer(train_files: list, vgae: VGAENetwork, episodes: int = 60,
                 cost_norm = min(1.0, raw_cost / max_cost)
                 time_rem = max(0.0, req.end_time - req.arrival_time)
                 delay_norm = 1.0 - min(1.0, time_rem / max(req.delay_max, 1e-6))
-                reward = float(config.HRL_R_BASE_LL
+                reward = float(config.DRL_R_BASE_LL
                                + alpha * (1.0 - delay_norm)
                                - beta * cost_norm
                                - node_press)

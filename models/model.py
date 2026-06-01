@@ -50,6 +50,54 @@ class VGAENetwork:
         self.aux_head = layers.Dense(self.NODE_FEAT_DIM, name="aux_head")
         self.optimizer = keras.optimizers.Adam(lr)
 
+        HRL_VGAE_FINETUNE_LR   = 1e-5
+        HRL_VGAE_FINETUNE_FREQ = 500
+        HRL_VGAE_FINETUNE_EPOCHS = 1
+        HRL_VGAE_ONLINE        = False
+
+    def freeze_backbone(self):
+        self.gcn1.trainable   = False
+        self.gcn_mu.trainable = False
+        self.gcn_lv.trainable = False
+        self.aux_head.trainable = True
+
+    def unfreeze(self):
+        self.gcn1.trainable    = True
+        self.gcn_mu.trainable  = True
+        self.gcn_lv.trainable  = True
+        self.aux_head.trainable = True
+
+    def set_finetune_lr(self, lr: float):
+        self.ft_optimizer = keras.optimizers.Adam(lr)
+
+    def finetune_step(self, X_t, A_hat, A_t):
+        with tf.GradientTape() as tape:
+            h  = self.gcn1(X_t, A_hat)
+            mu = self.gcn_mu(h, A_hat)
+            lv = tf.clip_by_value(self.gcn_lv(h, A_hat), -10.0, 10.0)
+            z  = mu + tf.exp(0.5 * lv) * tf.random.normal(tf.shape(mu))
+            aux = tf.reduce_mean(tf.square(self.aux_head(z) - X_t))
+        self.ft_optimizer.apply_gradients(
+            zip(tape.gradient(aux, self.aux_head.trainable_variables),
+                self.aux_head.trainable_variables))
+        return aux.numpy()
+
+    def finetune(self, buffer: ReplayBuffer, epochs: int = 1, batch: int = 16):
+        if len(buffer) < 4:
+            return None
+        total, count = 0.0, 0
+        for _ in range(epochs):
+            for X, A in buffer.sample(batch):
+                if X.shape[0] < 2:
+                    continue
+                loss = self.finetune_step(
+                    tf.constant(X, dtype=tf.float32),
+                    self._norm_adj(A.astype(np.float32)),
+                    tf.constant(A, dtype=tf.float32))
+                total += loss
+                count += 1
+        return total / count if count > 0 else None
+
     def _norm_adj(self, A: np.ndarray) -> tf.Tensor:
         key = A.tobytes()
         if key in self._adj_cache:
