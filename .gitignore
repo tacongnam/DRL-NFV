@@ -31,7 +31,7 @@ Thumbs.db
 data/*.png
 
 models/placer/*
-# models/hrl_final/*
+models/hrl_final/*
 models/vgae_pretrained/*
 data/test1
 data/easy
