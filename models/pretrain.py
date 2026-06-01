@@ -24,13 +24,12 @@ def print_selected_files(files: list, request_pct: int = 0):
         lim = resolve_request_limit(total, request_pct=request_pct)
         print(f"  {os.path.basename(fp)}: {min(total, lim) if lim else total}/{total}", flush=True)
 
-
 def build_dc_graph(env, t_start: int, t_end: int, bw: float,
                    path_cache: dict, vnf_demand: dict = None):
     dcs = [nid for nid, n in env.network.nodes.items() if n.type == config.NODE_DC]
     n = len(dcs)
     if n == 0:
-        return np.zeros((0, VGAENetwork.NODE_FEAT_DIM), np.float32), np.zeros((0, 0), np.float32), []
+        return np.zeros((0, 8), np.float32), np.zeros((0, 0), np.float32), []
 
     cache_key = (t_start, t_end, round(bw, 1))
     if cache_key in path_cache:
@@ -56,16 +55,40 @@ def build_dc_graph(env, t_start: int, t_end: int, bw: float,
 
     demand = vnf_demand or {k: 0.0 for k in config.RESOURCE_TYPE}
 
-    X = np.zeros((n, VGAENetwork.NODE_FEAT_DIM), np.float32)
+    X = np.zeros((n, 8), np.float32)
     A = np.zeros((n, n), np.float32)
+
     for i, did in enumerate(dcs):
         node = env.network.nodes[did]
-        res = node.get_min_available_resource(t_start, t_end)
-        cap = node.cap or {k: 1.0 for k in config.RESOURCE_TYPE}
+        res  = node.get_min_available_resource(t_start, t_end)
+        cap  = node.cap or {k: 1.0 for k in config.RESOURCE_TYPE}
+
+        # Features 0-2: available ratio per resource type
         for j, k in enumerate(config.RESOURCE_TYPE):
             X[i, j] = res[k] / max(max_r[k], 1e-6)
-            slack = res[k] - demand.get(k, 0.0)
-            X[i, j + 3] = min(slack / max(max_r[k], 1e-6), 1.0) if slack > 0 else 0.0
+
+        # Features 3-5: load ratio per resource type (thay slack ratio)
+        for j, k in enumerate(config.RESOURCE_TYPE):
+            X[i, j + 3] = (cap[k] - res[k]) / max(cap[k], 1e-6)
+
+        # Feature 6: M/M/1 aggregate pressure của node
+        loads = [
+            min((cap[k] - res[k]) / max(cap[k], 1e-6), 0.999)
+            for k in config.RESOURCE_TYPE
+        ]
+        avg_load = sum(loads) / len(loads)
+        omega    = max(1.0 - avg_load, 0.001)
+        X[i, 6]  = min((avg_load / omega) / 20.0, 1.0)
+
+        # Feature 7: neighbor link congestion trung bình
+        neighbor_loads = []
+        for lnk in node.links:
+            avail_bw  = lnk.get_available_bandwidth(t_start, t_end)
+            link_load = (lnk.cap - avail_bw) / max(lnk.cap, 1e-6)
+            neighbor_loads.append(min(link_load, 1.0))
+        X[i, 7] = float(np.mean(neighbor_loads)) if neighbor_loads else 0.0
+
+        # Adjacency matrix: 1/delay-distance giữa các DC
         for jj, dj in enumerate(dcs):
             if i == jj:
                 A[i, jj] = 1.0
@@ -73,8 +96,8 @@ def build_dc_graph(env, t_start: int, t_end: int, bw: float,
                 dist = all_len.get(did, {}).get(dj)
                 if dist is not None and dist > 0:
                     A[i, jj] = A[jj, i] = 1.0 / (dist + 1.0)
-    return X, A, dcs
 
+    return X, A, dcs
 
 def pretrain_vgae(train_files: list, epochs: int = 60, batch: int = 16,
                   request_pct: int = 0, logger: TrainingLogger = None):
@@ -256,7 +279,7 @@ def pretrain_placer(train_files: list, vgae: VGAENetwork, episodes: int = 60,
                                        for r in recent]))
                 logger.log_ll_pretrain(ep, 0.0, avg_r)
 
-        if ep == 1 or ep % 10 == 0 or ep == episodes:
+        if ep == 1 or ep % 3 == 0 or ep == episodes:
             print(f"  [Placer] ep {ep}/{episodes}  buf={len(buf)}", flush=True)
 
     placer.policy_net(dummy)

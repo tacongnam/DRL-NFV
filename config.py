@@ -15,9 +15,6 @@ DEFAULT_VGAE_EPOCHS = 60
 DEFAULT_PLACER_EPISODES = 60
 DEFAULT_REQUEST_PCT = 0
 
-ROUTING_BW_WEIGHT = 0.3
-ROUTING_PRESSURE_WEIGHT = 0.5
-
 HRL_BASE_REWARD = 1.0
 HRL_PENALTY_DROP = 0.5
 HRL_R_BASE_LL = 1.0
@@ -36,3 +33,11 @@ EPSILON_WARMUP = 0.1
 HRL_LL_ALPHA = 0.5
 HRL_LL_BETA = 1.0
 HRL_LL_GAMMA_POT = 0.3
+
+ROUTING_K_PATHS = 3
+ 
+ROUTING_DELAY_WEIGHT    = 0.4  # w_delay : tổng delay dọc path
+ROUTING_BW_WEIGHT       = 0.3  # w_bw    : mean exponential BW pressure
+ROUTING_PRESSURE_WEIGHT = 0.2  # w_mm1   : mean M/M/1 queuing pressure
+ROUTING_HOP_WEIGHT      = 0.1  # w_hops  : số hop (tránh path quá dài)
+ 

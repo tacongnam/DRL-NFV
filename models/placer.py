@@ -18,10 +18,12 @@ class PressureNode:
         pressures = []
         for k in config.RESOURCE_TYPE:
             cap = capacity.get(k, 1.0)
-            slack = remaining.get(k, 0.0) - demand.get(k, 0.0)
-            if slack <= 0:
-                return 1.0
-            pressures.append(math.exp(-slack / max(cap, 1e-6)))
+            used = cap - remaining.get(k, 0.0)
+            load = min(used / max(cap, 1e-6), 0.999)
+            omega = 1.0 - load
+            
+            mm1 = load / max(omega, 0.001)
+            pressures.append(min(mm1 / 20.0, 1.0))
         return sum(pressures) / len(pressures) if pressures else 0.0
 
 class PlacerAgent:

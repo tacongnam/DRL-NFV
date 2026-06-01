@@ -1,0 +1,217 @@
+=== File: cogent_centers_easy_s1.json ===
+
+[GreedyFIFS]
+[GreedyFIFS] acceptance ratio 0.8106  completed in 37.595s
+
+[BestFit]
+[BestFit] acceptance ratio 0.7678  completed in 37.475s
+
+[DeadlineAwareGreedy]
+[DeadlineAwareGreedy] acceptance ratio 0.793  completed in 38.057s
+
+[RandomFit]
+[RandomFit] acceptance ratio 0.8026  completed in 43.138s
+
+=== File: cogent_centers_easy_s2.json ===
+
+[GreedyFIFS]
+[GreedyFIFS] acceptance ratio 0.7726  completed in 54.297s
+
+[BestFit]
+[BestFit] acceptance ratio 0.732  completed in 52.884s
+
+[DeadlineAwareGreedy]
+[DeadlineAwareGreedy] acceptance ratio 0.7674  completed in 43.697s
+
+[RandomFit]
+[RandomFit] acceptance ratio 0.7734  completed in 50.847s
+
+=== File: cogent_centers_easy_s3.json ===
+
+[GreedyFIFS]
+[GreedyFIFS] acceptance ratio 0.6766  completed in 54.126s
+
+[BestFit]
+[BestFit] acceptance ratio 0.6766  completed in 55.175s
+
+[DeadlineAwareGreedy]
+[DeadlineAwareGreedy] acceptance ratio 0.6789  completed in 49.675s
+
+[RandomFit]
+[RandomFit] acceptance ratio 0.7291  completed in 58.431s
+
+=== File: cogent_rural_easy_s1.json ===
+
+[GreedyFIFS]
+[GreedyFIFS] acceptance ratio 0.8239  completed in 57.663s
+
+[BestFit]
+[BestFit] acceptance ratio 0.8127  completed in 62.102s
+
+[DeadlineAwareGreedy]
+[DeadlineAwareGreedy] acceptance ratio 0.7958  completed in 53.996s
+
+[RandomFit]
+[RandomFit] acceptance ratio 0.8223  completed in 63.186s
+
+=== File: cogent_rural_easy_s2.json ===
+
+[GreedyFIFS]
+[GreedyFIFS] acceptance ratio 0.7432  completed in 70.738s
+
+[BestFit]
+[BestFit] acceptance ratio 0.6892  completed in 68.646s
+
+[DeadlineAwareGreedy]
+[DeadlineAwareGreedy] acceptance ratio 0.7223  completed in 66.582s
+
+[RandomFit]
+[RandomFit] acceptance ratio 0.7901  completed in 78.943s
+
+=== File: cogent_rural_easy_s3.json ===
+
+[GreedyFIFS]
+[GreedyFIFS] acceptance ratio 0.6798  completed in 78.821s
+
+[BestFit]
+[BestFit] acceptance ratio 0.6097  completed in 76.550s
+
+[DeadlineAwareGreedy]
+[DeadlineAwareGreedy] acceptance ratio 0.7046  completed in 77.731s
+
+[RandomFit]
+[RandomFit] acceptance ratio 0.8385  completed in 114.055s
+
+=== File: cogent_uniform_easy_s1.json ===
+
+[GreedyFIFS]
+[GreedyFIFS] acceptance ratio 0.8052  completed in 52.772s
+
+[BestFit]
+[BestFit] acceptance ratio 0.8064  completed in 57.575s
+
+[DeadlineAwareGreedy]
+[DeadlineAwareGreedy] acceptance ratio 0.7973  completed in 53.346s
+
+[RandomFit]
+[RandomFit] acceptance ratio 0.8005  completed in 56.264s
+
+=== File: cogent_uniform_easy_s2.json ===
+
+[GreedyFIFS]
+[GreedyFIFS] acceptance ratio 0.7554  completed in 75.686s
+
+[BestFit]
+[BestFit] acceptance ratio 0.6958  completed in 61.959s
+
+[DeadlineAwareGreedy]
+[DeadlineAwareGreedy] acceptance ratio 0.7431  completed in 64.238s
+
+[RandomFit]
+[RandomFit] acceptance ratio 0.7986  completed in 73.281s
+
+=== File: cogent_uniform_easy_s3.json ===
+
+[GreedyFIFS]
+[GreedyFIFS] acceptance ratio 0.6555  completed in 74.834s
+
+[BestFit]
+[BestFit] acceptance ratio 0.5943  completed in 72.984s
+
+[DeadlineAwareGreedy]
+[DeadlineAwareGreedy] acceptance ratio 0.7049  completed in 69.669s
+
+[RandomFit]
+[RandomFit] acceptance ratio 0.7864  completed in 79.599s
+
+=== File: cogent_urban_easy_s1.json ===
+
+[GreedyFIFS]
+[GreedyFIFS] acceptance ratio 0.7759  completed in 44.989s
+
+[BestFit]
+[BestFit] acceptance ratio 0.7815  completed in 45.862s
+
+[DeadlineAwareGreedy]
+[DeadlineAwareGreedy] acceptance ratio 0.7878  completed in 43.748s
+
+[RandomFit]
+[RandomFit] acceptance ratio 0.7859  completed in 61.861s
+
+=== File: cogent_urban_easy_s2.json ===
+
+[GreedyFIFS]
+[GreedyFIFS] acceptance ratio 0.756  completed in 55.689s
+
+[BestFit]
+[BestFit] acceptance ratio 0.7102  completed in 53.136s
+
+[DeadlineAwareGreedy]
+[DeadlineAwareGreedy] acceptance ratio 0.7498  completed in 63.230s
+
+[RandomFit]
+[RandomFit] acceptance ratio 0.7948  completed in 81.481s
+
+=== File: cogent_urban_easy_s3.json ===
+
+[GreedyFIFS]
+[GreedyFIFS] acceptance ratio 0.6601  completed in 73.704s
+
+[BestFit]
+[BestFit] acceptance ratio 0.5912  completed in 69.982s
+
+[DeadlineAwareGreedy]
+[DeadlineAwareGreedy] acceptance ratio 0.6512  completed in 63.709s
+
+[RandomFit]
+[RandomFit] acceptance ratio 0.7829  completed in 89.719s
+
+=== File: conus_centers_easy_s1.json ===
+
+[GreedyFIFS]
+[GreedyFIFS] acceptance ratio 0.8527  completed in 36.347s
+
+[BestFit]
+[BestFit] acceptance ratio 0.8539  completed in 36.176s
+
+[DeadlineAwareGreedy]
+[DeadlineAwareGreedy] acceptance ratio 0.8424  completed in 33.893s
+
+[RandomFit]
+[RandomFit] acceptance ratio 0.8492  completed in 40.083s
+
+=== File: conus_centers_easy_s2.json ===
+
+[GreedyFIFS]
+[GreedyFIFS] acceptance ratio 0.7843  completed in 43.817s
+
+[BestFit]
+[BestFit] acceptance ratio 0.8045  completed in 46.773s
+
+[DeadlineAwareGreedy]
+[DeadlineAwareGreedy] acceptance ratio 0.788  completed in 48.571s
+
+[RandomFit]
+[RandomFit] acceptance ratio 0.8037  completed in 46.109s
+
+=== File: conus_centers_easy_s3.json ===
+
+[GreedyFIFS]
+[GreedyFIFS] acceptance ratio 0.7793  completed in 47.530s
+
+[BestFit]
+[BestFit] acceptance ratio 0.7396  completed in 51.490s
+
+[DeadlineAwareGreedy]
+[DeadlineAwareGreedy] acceptance ratio 0.7543  completed in 50.418s
+
+[RandomFit]
+[RandomFit] acceptance ratio 0.7979  completed in 47.011s
+
+=== File: conus_rural_easy_s1.json ===
+
+[GreedyFIFS]
+[GreedyFIFS] acceptance ratio 1.0  completed in 204.725s
+
+[BestFit]
+[BestFit] acceptance ratio 1.0  completed in 130.532s

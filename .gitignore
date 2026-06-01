@@ -41,6 +41,7 @@ results_eval/*
 eval_results.csv
 logs/*
 .history/*
+data/easy/*
 
 __pycache__/*
 strategy/__pycache__

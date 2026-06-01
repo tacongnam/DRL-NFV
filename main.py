@@ -1,4 +1,4 @@
-import os, sys, argparse, subprocess
+import os, sys, argparse, subprocess, time
 import numpy as np
 
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
@@ -37,12 +37,11 @@ def _add_shared_args(parser: argparse.ArgumentParser):
     parser.add_argument("--train-dir", default=TRAIN_DIR)
     parser.add_argument("--model-dir", default="models/hrl_final")
     parser.add_argument("--test-dir", default=None)
-    parser.add_argument("--test-files", nargs="+", default=None)
     parser.add_argument("--ll-pretrained", type=str, default=None)
     parser.add_argument("--sample-files", type=int, default=None)
     parser.add_argument("--sample-seed", type=int, default=None)
-    parser.add_argument("--csv-out", type=str, default=None)
-
+    parser.add_argument("--num-runs", type=int, default=1,
+                       help="Number of evaluation runs per test file (for averaging results)")
 
 def _add_data_generation_args(parser: argparse.ArgumentParser):
     for name, default, choices in [
@@ -121,7 +120,8 @@ def run_pipeline(args):
     train_logger.plot_learning_curves()
 
     print("\n[4/4] Evaluating ...")
-    _run_eval(os.path.join(ROOT_DIR, "models/hrl_final"), TEST_DIR)
+    _run_eval(os.path.join(ROOT_DIR, "models/hrl_final"), TEST_DIR,
+              num_runs=getattr(args, "num_runs", 1))
 
     print("\n" + "="*60 + "\nPIPELINE COMPLETE\n" + "="*60)
 
@@ -157,10 +157,9 @@ def run_eval(args):
     _run_eval(
         os.path.abspath(getattr(args, "model_dir", "models/hrl_final")),
         os.path.abspath(getattr(args, "test_dir", None) or TEST_DIR),
-        getattr(args, "test_files", None),
         sample_n=getattr(args, "sample_files", None),
         sample_seed=getattr(args, "sample_seed", None),
-        csv_out=getattr(args, "csv_out", None),
+        num_runs=getattr(args, "num_runs", 1),
     )
 
 def run_baselines(args=None):
@@ -193,10 +192,12 @@ def run_baselines(args=None):
                 continue
             label, cls = BASELINE_REGISTRY[key]
             print(f"\n[{label}]")
+            t_start = time.time()
             env = load_env_from_json(fp)
             env.set_strategy(cls(env))
             env.run_simulation()
             env.print_statistics()
+            t_elapsed = time.time() - t_start
             s = env.stats
             row = {
                 "algorithm": label,
@@ -207,13 +208,16 @@ def run_baselines(args=None):
                 "total_cost": round(s.get("total_cost", 0.0), 2),
                 "avg_cost": round(s.get("total_cost", 0.0) / max(s.get("accepted_requests", 1), 1), 2),
                 "total_delay": round(s.get("total_delay", 0.0), 2),
+                "computing_time": round(t_elapsed, 3),
             }
             csv_rows.append(row)
             if label not in agg:
-                agg[label] = {"ar": [], "cost": [], "delay": []}
+                agg[label] = {"ar": [], "cost": [], "delay": [], "time": []}
             agg[label]["ar"].append(row["acceptance_ratio"])
             agg[label]["cost"].append(row["total_cost"])
             agg[label]["delay"].append(row["total_delay"])
+            agg[label]["time"].append(row["computing_time"])
+            print(f"[{label}] acceptance ratio {row['acceptance_ratio']}  completed in {t_elapsed:.3f}s")
 
     plot_results = []
     for label, vals in agg.items():
@@ -234,7 +238,7 @@ def run_baselines(args=None):
 
     out = csv_out or os.path.join(ROOT_DIR, "baseline_results.csv")
     save_csv(csv_rows, out, fieldnames=["algorithm", "file", "acceptance_ratio", "accepted",
-                                        "rejected", "total_cost", "avg_cost", "total_delay"])
+                                        "rejected", "total_cost", "avg_cost", "total_delay", "computing_time"])
 
     import config
     model_dir = os.path.abspath(getattr(args, "model_dir", "models/hrl_final"))
@@ -243,30 +247,35 @@ def run_baselines(args=None):
         os.path.exists(os.path.join(model_dir, w)) for w in drl_weights
     ):
         hrl_rows = []
-        hrl_agg = {"ar": [], "cost": [], "delay": []}
+        hrl_agg = {"ar": [], "cost": [], "delay": [], "time": []}
         for fp in files:
-            print(f"\n[DRL-NFV] Evaluating {os.path.basename(fp)} from {model_dir} ...")
+            filename = os.path.basename(fp)
+            print(f"\n[DRL-NFV] Evaluating {filename} from {model_dir} ...")
+            t_start = time.time()
             env = load_env_from_json(fp)
             strategy = DRL_Strategy(env, is_training=False, episodes=1)
             strategy.load_model(model_dir)
             env.set_strategy(strategy)
             drl_stats = strategy.run_simulation_eval()
             env.print_statistics()
+            t_elapsed = time.time() - t_start
             row = {
                 "algorithm": "DRL-NFV",
-                "file": os.path.basename(fp),
+                "file": filename,
                 "acceptance_ratio": round(drl_stats.get("acceptance_ratio", 0.0), 4),
                 "accepted": drl_stats.get("accepted_requests", 0),
                 "rejected": drl_stats.get("rejected_requests", 0),
                 "total_cost": round(drl_stats.get("total_cost", 0.0), 2),
                 "avg_cost": round(drl_stats.get("average_cost", 0.0), 2),
                 "total_delay": round(drl_stats.get("total_delay", 0.0), 2),
+                "computing_time": round(t_elapsed, 3),
             }
             csv_rows.append(row)
             hrl_rows.append({"name": "DRL-NFV", "ar": row["acceptance_ratio"],
-                             "cost": row["total_cost"], "delay": row["total_delay"]})
-            for k in ["ar", "cost", "delay"]:
+                             "cost": row["total_cost"], "delay": row["total_delay"], "time": row["computing_time"]})
+            for k in ["ar", "cost", "delay", "time"]:
                 hrl_agg[k].append(hrl_rows[-1][k])
+            print(f"[DRL-NFV] {filename:<40} completed in {t_elapsed:.3f}s")
 
         drl_plot = [{"name": "DRL-NFV",
                      "ar": float(np.mean(hrl_agg["ar"])),
@@ -277,7 +286,7 @@ def run_baselines(args=None):
         _plot_eval_vs_baselines(drl_plot, plot_results, out_path=cmp_out)
 
         save_csv(csv_rows, out, fieldnames=["algorithm", "file", "acceptance_ratio", "accepted",
-                                             "rejected", "total_cost", "avg_cost", "total_delay"])
+                                             "rejected", "total_cost", "avg_cost", "total_delay", "computing_time"])
 
 
 def main():

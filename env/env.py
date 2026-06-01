@@ -241,10 +241,14 @@ class Env(gym.Env):
 
     def print_statistics(self):
         s = self.stats
+        avg_delay = (s['total_delay'] / s['accepted_requests']) if s['accepted_requests'] > 0 else 0.0
+        avg_cost = s.get('average_cost', 0.0) or (s['total_cost'] / s['accepted_requests'] if s['accepted_requests'] > 0 else 0.0)
         logger.info(
-            "Accepted %d/%d  AR=%.3f  Cost=%.2f  AvgDelay=%.2f",
+            "Accepted %d/%d  AR=%.4f  TotalCost=%.2f  AvgCost=%.2f  TotalDelay=%.2f  AvgDelay=%.2f",
             s['accepted_requests'], s['total_requests'],
             s.get('acceptance_ratio', 0.0),
             s['total_cost'],
-            (s['total_delay'] / s['accepted_requests']) if s['accepted_requests'] > 0 else 0.0,
+            avg_cost,
+            s['total_delay'],
+            avg_delay,
         )

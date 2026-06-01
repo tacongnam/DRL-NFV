@@ -236,12 +236,13 @@ class DRL_Strategy(RoutingMixin, Strategy):
                 return success, rewards, score, plan, False
             restore_network(self.env.network, snap)
 
-        fallback = self._get_best_fit().get_placement(sfc, t)
+        # No fallback
+        """ fallback = self._get_best_fit().get_placement(sfc, t)
         if fallback is not None:
             success, rewards, score = self.env.step(fallback)
             if success:
                 return success, rewards, score, fallback, True
-        restore_network(self.env.network, snap)
+        restore_network(self.env.network, snap) """
         return False, [-1.0, 0.0], None, None, False
 
     def _rebuild_traj_from_plan(self, plan: dict, sfc: SFC, t: float,
@@ -341,8 +342,8 @@ class DRL_Strategy(RoutingMixin, Strategy):
                         R_placer = (config.HRL_R_BASE_LL
                                     + config.HRL_LL_ALPHA * (1.0 - time_ratio)
                                     - config.HRL_LL_BETA * cost_norm)
-                        if used_fallback:
-                            R_placer = -config.HRL_PENALTY_DROP * 0.5
+                        """ if used_fallback:
+                            R_placer = -config.HRL_PENALTY_DROP * 0.5 """
                     else:
                         ep_rejected += 1
                         restore_network(self.env.network, snap)

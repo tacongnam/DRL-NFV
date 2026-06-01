@@ -35,7 +35,7 @@ class GCNLayer(layers.Layer):
         return self.act(out) if self.act else out
 
 class VGAENetwork:
-    NODE_FEAT_DIM = 6
+    NODE_FEAT_DIM = 8
 
     def __init__(self, hidden_dim: int = 16, latent_dim: int = 8,
                  lr: float = 1e-3, beta: float = 1e-3, lambda_aux: float = 0.5):
