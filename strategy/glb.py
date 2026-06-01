@@ -28,7 +28,6 @@ class GreedyGLB(RoutingMixin, Strategy):
         node_placements, vnf_timeslots = [], []
         link_paths,      link_timeslots = [], []
         prev_dc = sfc.request.start_node
-
         for vnf in sfc.request.vnfs:
             candidate_dcs = vnf.get_dcs()
             if '-1' in candidate_dcs:

@@ -126,6 +126,8 @@ def _run_eval(model_dir, test_dir, sample_n=None, sample_seed=None, num_runs=1):
         print(f"  Total Delay:      {avg_delay:.2f}")
         print(f"  Avg Time (s):     {avg_time:.3f}")
 
-    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "eval_results.csv")
+    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs", "eval")
+    os.makedirs(log_dir, exist_ok=True)
+    out = os.path.join(log_dir, "eval_results.csv")
     save_csv(results, out)
     return results

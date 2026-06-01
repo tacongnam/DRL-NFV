@@ -31,10 +31,11 @@ Thumbs.db
 data/*.png
 
 models/placer/*
-models/hrl_final/*
-models/ll_pretrained/*
+# models/hrl_final/*
 models/vgae_pretrained/*
-
+data/test1
+data/easy
+data/shortlist_test
 strategy/hrl.py
 
 results_eval/*

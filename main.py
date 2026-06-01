@@ -13,8 +13,8 @@ for _d in ["models/vgae_pretrained", "models/placer",
 sys.path.insert(0, ROOT_DIR)
 
 import config
-from strategy import GreedyFIFS, BestFit, DeadlineAwareGreedy, RandomFit, DRL_Strategy
-from data.load_data import load_env_from_json, get_data_files, sample_files, save_csv
+from strategy import GreedyFIFS, BestFit, DeadlineAwareGreedy, RandomFit, ShortestPathFirst, GreedyGLB, DRL_Strategy
+from data.load_data import load_env_from_json, get_data_files, save_csv
 from utils import _run_eval, _run_train, _run_pretrain_inline, _plot_baseline_results, _plot_eval_vs_baselines
 from utils.training_logger import TrainingLogger
 
@@ -22,14 +22,14 @@ TRAIN_DIR = os.path.join(ROOT_DIR, "data/train")
 TEST_DIR = os.path.join(ROOT_DIR, "data/test")
 GENERATE_SCRIPT = os.path.join(ROOT_DIR, "data/generate.py")
 DEFAULT_EPISODES = 60
-DEFAULT_TRAIN_REQUEST_PCT = 100
-DEFAULT_PRETRAIN_REQUEST_PCT = 100
 
 BASELINE_REGISTRY = {
     "fifs": ("GreedyFIFS", GreedyFIFS),
     "bestfit": ("BestFit", BestFit),
     "deadline": ("DeadlineAwareGreedy", DeadlineAwareGreedy),
-    "randomfit": ("RandomFit", RandomFit)
+    "randomfit": ("RandomFit", RandomFit),
+    "spf": ("ShortestPathFirst", ShortestPathFirst),
+    "glb": ("GreedyGLB", GreedyGLB)
 }
 
 
@@ -38,8 +38,6 @@ def _add_shared_args(parser: argparse.ArgumentParser):
     parser.add_argument("--model-dir", default="models/hrl_final")
     parser.add_argument("--test-dir", default=None)
     parser.add_argument("--ll-pretrained", type=str, default=None)
-    parser.add_argument("--sample-files", type=int, default=None)
-    parser.add_argument("--sample-seed", type=int, default=None)
     parser.add_argument("--num-runs", type=int, default=1,
                        help="Number of evaluation runs per test file (for averaging results)")
 
@@ -60,8 +58,6 @@ def _add_training_budget_args(parser: argparse.ArgumentParser):
     parser.add_argument("--episodes", type=int, default=DEFAULT_EPISODES)
     parser.add_argument("--vgae-epochs", type=int, default=60)
     parser.add_argument("--ll-episodes", type=int, default=60)
-    parser.add_argument("--train-request-pct", type=int, default=DEFAULT_TRAIN_REQUEST_PCT)
-    parser.add_argument("--pretrain-request-pct", type=int, default=DEFAULT_PRETRAIN_REQUEST_PCT)
 
 
 def _generate_data(topology, distribution, difficulty, scale, requests,
@@ -84,46 +80,11 @@ def _generate_data(topology, distribution, difficulty, scale, requests,
     return result.returncode == 0
 
 
-def run_pipeline(args):
-    print("\n" + "="*60)
-    print("DRL-NFV PIPELINE: generate → pretrain → train → eval")
-    print("="*60)
-
-    print("\n[1/4] Generating data ...")
-    for diff, offset in [("easy", 0), ("hard", args.num_train_files)]:
-        _generate_data(args.topology, args.distribution, diff,
-                       args.scale, args.requests, args.num_train_files,
-                       TRAIN_DIR, seed_offset=offset)
+def run_generate(args):
+    print("\n[Generating] Topology={} Distribution={} Difficulty={}".format(
+        args.topology, args.distribution, args.difficulty))
     _generate_data(args.topology, args.distribution, args.difficulty,
                    args.scale, args.requests, args.num_test_files, TEST_DIR)
-    print(f"  train={len(get_data_files(TRAIN_DIR))}  test={len(get_data_files(TEST_DIR))}")
-
-    print("\n[2/4] Pre-training VGAE + Placer ...")
-    pretrain_logger = TrainingLogger(log_dir=os.path.join(ROOT_DIR, "logs/pretrain"))
-    ok = _run_pretrain_inline(args, TRAIN_DIR, DEFAULT_PRETRAIN_REQUEST_PCT, logger=pretrain_logger)
-    pretrain_logger.save()
-    pretrain_logger.plot_learning_curves()
-    print("[2/4] Pre-training complete." if ok else "[2/4] Pre-training failed.", flush=True)
-
-    print("\n[3/4] Training DRL ...")
-    train_logger = TrainingLogger(log_dir=os.path.join(ROOT_DIR, "logs/train"))
-    placer_path = os.path.join(ROOT_DIR, config.PLACER_DIR, config.PLACER_WEIGHTS_FILE)
-    _run_train(
-        args.episodes,
-        placer_path if os.path.exists(placer_path) else None,
-        os.path.join(ROOT_DIR, "models/hrl_final"),
-        TRAIN_DIR,
-        train_request_pct=getattr(args, "train_request_pct", DEFAULT_TRAIN_REQUEST_PCT),
-        logger=train_logger,
-    )
-    train_logger.save()
-    train_logger.plot_learning_curves()
-
-    print("\n[4/4] Evaluating ...")
-    _run_eval(os.path.join(ROOT_DIR, "models/hrl_final"), TEST_DIR,
-              num_runs=getattr(args, "num_runs", 1))
-
-    print("\n" + "="*60 + "\nPIPELINE COMPLETE\n" + "="*60)
 
 def run_pretrain(args):
     train_dir = os.path.abspath(getattr(args, "train_dir", TRAIN_DIR))
@@ -131,7 +92,7 @@ def run_pretrain(args):
         print(f"[ERROR] No JSON files in {train_dir}. Run --mode generate first.")
         return
     logger = TrainingLogger(log_dir=os.path.join(ROOT_DIR, "logs/pretrain"))
-    ok = _run_pretrain_inline(args, train_dir, DEFAULT_PRETRAIN_REQUEST_PCT, logger=logger)
+    ok = _run_pretrain_inline(args, train_dir, 100, logger=logger)
     logger.save()
     logger.plot_learning_curves()
     print("[Pretrain] Complete." if ok else "[Pretrain] Failed.", flush=True)
@@ -140,14 +101,13 @@ def run_train(args):
     print("\n=== TRAINING ===")
     ll_path = getattr(args, "ll_pretrained", None)
     if not ll_path:
-        import config
         candidate = os.path.join(ROOT_DIR, config.PLACER_DIR, config.PLACER_WEIGHTS_FILE)
         ll_path = candidate if os.path.exists(candidate) else None
     logger = TrainingLogger(log_dir=os.path.join(ROOT_DIR, "logs/train"))
     _run_train(args.episodes, ll_path,
                os.path.abspath(getattr(args, "model_dir", "models/hrl_final")),
                os.path.abspath(getattr(args, "train_dir", TRAIN_DIR)),
-               train_request_pct=getattr(args, "train_request_pct", DEFAULT_TRAIN_REQUEST_PCT),
+               train_request_pct=100,
                logger=logger)
     logger.save()
     logger.plot_learning_curves()
@@ -157,8 +117,8 @@ def run_eval(args):
     _run_eval(
         os.path.abspath(getattr(args, "model_dir", "models/hrl_final")),
         os.path.abspath(getattr(args, "test_dir", None) or TEST_DIR),
-        sample_n=getattr(args, "sample_files", None),
-        sample_seed=getattr(args, "sample_seed", None),
+        sample_n=None,
+        sample_seed=None,
         num_runs=getattr(args, "num_runs", 1),
     )
 
@@ -166,8 +126,6 @@ def run_baselines(args=None):
     baselines_to_run = getattr(args, "baselines", None) or list(BASELINE_REGISTRY.keys())
     plot_out = getattr(args, "plot_out", None)
     test_dir = os.path.abspath(getattr(args, "test_dir", None) or TEST_DIR)
-    sample_n = getattr(args, "sample_files", None)
-    sample_seed = getattr(args, "sample_seed", None)
     csv_out = getattr(args, "csv_out", None)
 
     all_files = get_data_files(test_dir) or get_data_files(os.path.join(ROOT_DIR, "data"))
@@ -175,9 +133,7 @@ def run_baselines(args=None):
         print("[ERROR] No test files found. Run --mode generate first.")
         return
 
-    files = sample_files(all_files, sample_n, sample_seed)
-    if sample_n and len(all_files) > len(files):
-        print(f"[Baseline] Sampled {len(files)}/{len(all_files)} files (seed={sample_seed})")
+    files = all_files
 
     print(f"\nBaseline comparison on {len(files)} file(s): {[os.path.basename(f) for f in files]}")
 
@@ -292,7 +248,7 @@ def run_baselines(args=None):
 def main():
     p = argparse.ArgumentParser(description="NFV VNF Placement – DRL-NFV")
     p.add_argument("--mode", default="baseline",
-                   choices=["pipeline", "pretrain", "train", "eval", "baseline"])
+                   choices=["generate", "pretrain", "train", "eval", "baseline"])
 
     _add_data_generation_args(p)
     _add_shared_args(p)
@@ -304,8 +260,8 @@ def main():
 
     args = p.parse_args()
 
-    if args.mode == "pipeline":
-        run_pipeline(args)
+    if args.mode == "generate":
+        run_generate(args)
     elif args.mode == "pretrain":
         run_pretrain(args)
     elif args.mode == "train":

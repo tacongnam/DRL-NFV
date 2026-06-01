@@ -42,22 +42,3 @@ def restore_network(network, snap: dict):
         network.nodes[nid].used = used
     for lnk, used in zip(network.links, snap["links"]):
         lnk.used = used
-
-def resolve_npy_path(path: str, default_filename: str) -> str:
-    if os.path.isdir(path):
-        return os.path.join(path, default_filename)
-    if path.endswith(".weights.h5"):
-        return path[: -len(".weights.h5")] + ".npy"
-    if not path.endswith(".npy"):
-        return path + ".npy"
-    return path
-
-def get_next_time(pending: List, current_t: float) -> float:
-    return min((s.request.arrival_time for s in pending), default=current_t) if pending else current_t
-
-def extract_node_plan_map(plan: dict) -> dict:
-    result = {}
-    for vnf_key, vplan in plan.get("nodes", {}).items():
-        idx = int(vnf_key.split("_")[0])
-        result[idx] = vplan
-    return result
