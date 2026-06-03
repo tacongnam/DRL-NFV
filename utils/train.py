@@ -2,7 +2,6 @@ import os
 import numpy as np
 from data.load_data import get_data_files, print_selected_files, load_env_from_json
 
-
 def _run_train(episodes, ll_pretrained, save_dir, train_dir, train_request_pct, logger=None):
     files = get_data_files(train_dir)
     if not files:
@@ -11,28 +10,25 @@ def _run_train(episodes, ll_pretrained, save_dir, train_dir, train_request_pct, 
 
     print_selected_files("TRAIN", files, request_pct=train_request_pct)
 
-    n_files        = len(files)
-    min_ep         = max(1, episodes // n_files)
-    extra          = episodes % n_files
-    total_ep_actual = min_ep * n_files + extra
-
-    print(f"[TRAIN] {episodes} episodes across {n_files} files "
-          f"(~{min_ep} ep/file, {extra} file(s) get +1) → total={total_ep_actual}")
+    import random
+    all_tasks = []
+    while len(all_tasks) < episodes:
+        shuffled_files = list(files)
+        random.shuffle(shuffled_files)
+        all_tasks.extend(shuffled_files)
+    all_tasks = all_tasks[:episodes]
 
     from strategy.drl_strategy import DRL_Strategy
     prev_strategy  = None
     episode_offset = 0
 
     for i, fp in enumerate(files):
-        ep_for_file = min_ep + (1 if i < extra else 0)
-        print(f"\n--- File {i+1}/{n_files}: {os.path.basename(fp)} ({ep_for_file} ep) ---")
-
         if logger:
             logger.mark_file_boundary(fp)
 
-        env      = load_env_from_json(fp, request_pct=train_request_pct)
+        env = load_env_from_json(fp, request_pct=train_request_pct)
         strategy = DRL_Strategy(
-            env, is_training=True, episodes=ep_for_file,
+            env, is_training=True, episodes=1,
             placer_pretrained_path=ll_pretrained if i == 0 else None,
             logger=logger,
             episode_offset=episode_offset)
@@ -49,21 +45,16 @@ def _run_train(episodes, ll_pretrained, save_dir, train_dir, train_request_pct, 
             strategy.vgae_net.gcn_lv.set_weights(prev_strategy.vgae_net.gcn_lv.get_weights())
             strategy.buf_placer = prev_strategy.buf_placer
             strategy.buf_graph  = prev_strategy.buf_graph
-
             strategy.vgae_net.freeze_backbone()
-            strategy.vgae_net.set_finetune_lr(
-                getattr(__import__('config'), 'HRL_VGAE_FINETUNE_LR', 1e-5))
-        elif i > 0:
-            if os.path.exists(save_dir):
-                strategy.load_model(save_dir)
 
         env.set_strategy(strategy)
         env.run_simulation()
-        os.makedirs(save_dir, exist_ok=True)
-        strategy.save_model(save_dir)
+
+        if i % 10 == 0:
+            os.makedirs(save_dir, exist_ok=True)
+            strategy.save_model(save_dir)
 
         prev_strategy   = strategy
-        episode_offset += ep_for_file
 
     if prev_strategy:
         prev_strategy.save_model(save_dir)

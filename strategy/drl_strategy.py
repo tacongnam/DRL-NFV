@@ -1,4 +1,3 @@
-from __future__ import annotations
 import os
 import numpy as np
 from typing import Dict, List, Optional, Tuple
@@ -113,13 +112,7 @@ class DRL_Strategy(RoutingMixin, Strategy):
         return result
 
     def _compute_epsilon(self, progress: float) -> float:
-        import math
-        pw = config.EPSILON_WARMUP
-        if progress < pw:
-            return config.EPSILON_MAX
-        t = (progress - pw) / max(1.0 - pw, 1e-6)
-        return config.EPSILON_MIN + 0.5 * (config.EPSILON_MAX - config.EPSILON_MIN) * (
-            1.0 + math.cos(math.pi * t))
+        return max(config.EPSILON_MIN, config.EPSILON_MAX * (0.99 ** (progress * 100)))
 
     def _clear_step_caches(self):
         self.clear_routing_cache()

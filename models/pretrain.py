@@ -55,7 +55,7 @@ def build_dc_graph(env, t_start: int, t_end: int, bw: float,
 
     demand = vnf_demand or {k: 0.0 for k in config.RESOURCE_TYPE}
 
-    X = np.zeros((n, 8), np.float32)
+    X = np.zeros((n, 10), np.float32)
     A = np.zeros((n, n), np.float32)
 
     for i, did in enumerate(dcs):
@@ -82,11 +82,26 @@ def build_dc_graph(env, t_start: int, t_end: int, bw: float,
 
         # Feature 7: neighbor link congestion trung bình
         neighbor_loads = []
+        total_avail_bw = 0.0
+        max_link_cap = 1.0
+
         for lnk in node.links:
             avail_bw  = lnk.get_available_bandwidth(t_start, t_end)
             link_load = (lnk.cap - avail_bw) / max(lnk.cap, 1e-6)
             neighbor_loads.append(min(link_load, 1.0))
+            total_avail_bw += avail_bw
+            max_link_cap = max(max_link_cap, lnk.cap)
         X[i, 7] = float(np.mean(neighbor_loads)) if neighbor_loads else 0.0
+
+        # [8]: Network Breadth (Khả năng đáp ứng băng thông của các link xung quanh)
+        # Nếu tổng băng thông trống xung quanh lớn, node này rất dễ để định tuyến đến/đi
+        if node.links:
+            X[i, 8] = min(total_avail_bw / (len(node.links) * max_link_cap), 1.0)
+        else:
+            X[i, 8] = 0.0
+
+        # Feature mới 9: Bậc của node (Degree) - Node có nhiều kết nối thường dễ định tuyến hơn
+        X[i, 9] = len(node.links) / 10.0 # Normalize
 
         # Adjacency matrix: 1/delay-distance giữa các DC
         for jj, dj in enumerate(dcs):
@@ -99,8 +114,8 @@ def build_dc_graph(env, t_start: int, t_end: int, bw: float,
 
     return X, A, dcs
 
-def pretrain_vgae(train_files: list, epochs: int = 60, batch: int = 16,
-                  request_pct: int = 0, logger: TrainingLogger = None):
+def pretrain_vgae(train_files: list, epochs: int = 200, batch: int = 32,
+                  request_pct: int = 100, logger: TrainingLogger = None):
     if not train_files:
         return None
     print(f"\n{'='*50}\nVGAE Pre-training ({len(train_files)} files, {epochs} epochs)\n{'='*50}", flush=True)
@@ -121,7 +136,7 @@ def pretrain_vgae(train_files: list, epochs: int = 60, batch: int = 16,
         return None
     t0 = time.time()
     for ep in range(1, epochs + 1):
-        loss = vgae.train(buffer, epochs=1, batch=batch)
+        loss = vgae.train(buffer, epochs=2, batch=batch)
         if logger:
             logger.log_vgae_pretrain(ep, loss or 0.0)
         if ep % 20 == 0 or ep == epochs:
