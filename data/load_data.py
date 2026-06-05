@@ -4,7 +4,7 @@ from utils.helpers import sample_requests, resolve_request_limit
 
 logger = logging.getLogger(__name__)
 
-def load_env_from_json(filepath: str, request_pct: int = 0) -> Env:
+def load_env_from_json(filepath: str) -> Env:
     with open(filepath) as f:
         data = json.load(f)
 
@@ -31,7 +31,7 @@ def load_env_from_json(filepath: str, request_pct: int = 0) -> Env:
                          d_f={k: v for k, v in vd.get("d_f", {}).items()}))
 
     req_rows = sorted(data.get("R", []), key=lambda r: r.get("T", 0))
-    req_rows = sample_requests(req_rows, request_pct=request_pct)  # From utils.helpers
+    req_rows = sample_requests(req_rows, request_pct=100)  # From utils.helpers
 
     for idx, rd in enumerate(req_rows):
         requests.add_request(Request(
@@ -57,13 +57,13 @@ def sample_files(files: list, n: int | None, seed: int | None = None) -> list:
     return sorted(rng.sample(files, n))
 
 
-def print_selected_files(label: str, files: list, request_pct: int = 0):
+def print_selected_files(label: str, files: list):
     logger.info("[%s] Selected %d file(s)", label, len(files))
     for fp in files:
         with open(fp) as f:
             data = json.load(f)
         total_requests = len(data.get("R", []))
-        req_limit = resolve_request_limit(total_requests, request_pct=request_pct)
+        req_limit = resolve_request_limit(total_requests, request_pct=100)
         req_label = total_requests if req_limit is None else min(total_requests, req_limit)
         logger.info("  - %s: req=%s/%d", os.path.basename(fp), req_label, total_requests)
 

@@ -1,28 +1,23 @@
 import os, sys, argparse, subprocess, time
 import numpy as np
+import config
+from strategy import GreedyFIFS, BestFit, DeadlineAwareGreedy, RandomFit, ShortestPathFirst, GreedyGLB, DRL_Strategy
+from data.load_data import load_env_from_json, get_data_files, save_csv
+from utils import _run_eval, _run_train, _run_pretrain_inline, _plot_baseline_results, _plot_eval_vs_baselines, TrainingLogger
 
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-for _d in ["models/vgae_pretrained", "models/placer",
-           "models/hrl_final", "data/train", "data/test"]:
+for _d in ["models/vgae_pretrained", "models/placer", "models/hrl_final"]:
     os.makedirs(os.path.join(ROOT_DIR, _d), exist_ok=True)
 
 sys.path.insert(0, ROOT_DIR)
 
-import config
-from strategy import GreedyFIFS, BestFit, DeadlineAwareGreedy, RandomFit, ShortestPathFirst, GreedyGLB, DRL_Strategy
-from data.load_data import load_env_from_json, get_data_files, save_csv
-from utils import _run_eval, _run_train, _run_pretrain_inline, _plot_baseline_results, _plot_eval_vs_baselines
-from utils.training_logger import TrainingLogger
-
 TRAIN_DIR = os.path.join(ROOT_DIR, "data/train")
-TEST_DIR = os.path.join(ROOT_DIR, "data/train-gen")
-GENERATE_SCRIPT = os.path.join(ROOT_DIR, "data/generate.py")
-DEFAULT_EPISODES = 60
-
+TEST_DIR = os.path.join(ROOT_DIR, "data/test")
+DEFAULT_EPISODES = 100
 BASELINE_REGISTRY = {
     "fifs": ("GreedyFIFS", GreedyFIFS),
     "bestfit": ("BestFit", BestFit),
@@ -32,66 +27,28 @@ BASELINE_REGISTRY = {
     "glb": ("GreedyGLB", GreedyGLB)
 }
 
-
 def _add_shared_args(parser: argparse.ArgumentParser):
     parser.add_argument("--train-dir", default=TRAIN_DIR)
     parser.add_argument("--model-dir", default="models/hrl_final")
-    parser.add_argument("--test-dir", default=None)
+    parser.add_argument("--test-dir", default=TEST_DIR)
     parser.add_argument("--ll-pretrained", type=str, default=None)
     parser.add_argument("--num-runs", type=int, default=1,
                        help="Number of evaluation runs per test file (for averaging results)")
 
-def _add_data_generation_args(parser: argparse.ArgumentParser):
-    for name, default, choices in [
-        ("--topology", "nsf", ["nsf", "conus", "cogent"]),
-        ("--distribution", "rural", ["uniform", "rural", "urban", "centers"]),
-        ("--difficulty", "easy", ["easy", "normal", "hard"]),
-    ]:
-        parser.add_argument(name, default=default, choices=choices)
-    parser.add_argument("--scale", type=int, default=50)
-    parser.add_argument("--requests", type=int, default=50)
-    parser.add_argument("--num-train-files", type=int, default=5)
-    parser.add_argument("--num-test-files", type=int, default=3)
-
-
 def _add_training_budget_args(parser: argparse.ArgumentParser):
     parser.add_argument("--episodes", type=int, default=DEFAULT_EPISODES)
-    parser.add_argument("--vgae-epochs", type=int, default=60)
-    parser.add_argument("--ll-episodes", type=int, default=60)
-
-
-def _generate_data(topology, distribution, difficulty, scale, requests,
-                   num_files, output_dir, seed_offset=0):
-    cmd = [
-        sys.executable, "-u", GENERATE_SCRIPT,
-        "--topology", topology,
-        "--distribution", distribution,
-        "--difficulty", difficulty,
-        "--scale", str(scale),
-        "--num-files", str(num_files),
-        "--requests", str(requests),
-        "--seed-offset", str(seed_offset),
-        "--output", output_dir,
-    ]
-    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-    result = subprocess.run(cmd, cwd=ROOT_DIR, env=env)
-    if result.returncode != 0:
-        print(f"[WARN] Command failed: {' '.join(cmd)}", flush=True)
-    return result.returncode == 0
-
-def run_generate(args):
-    print("\n[Generating] Topology={} Distribution={} Difficulty={}".format(
-        args.topology, args.distribution, args.difficulty))
-    _generate_data(args.topology, args.distribution, args.difficulty,
-                   args.scale, args.requests, args.num_test_files, TEST_DIR)
+    parser.add_argument("--vgae-epochs", type=int, default=150)
+    parser.add_argument("--ll-episodes", type=int, default=200)
 
 def run_pretrain(args):
+    print("\n=== PRE-TRAINING ===")
     train_dir = os.path.abspath(getattr(args, "train_dir", TRAIN_DIR))
     if not get_data_files(train_dir):
         print(f"[ERROR] No JSON files in {train_dir}. Run --mode generate first.")
         return
+    
     logger = TrainingLogger(log_dir=os.path.join(ROOT_DIR, "logs/pretrain"))
-    ok = _run_pretrain_inline(args, train_dir, 100, logger=logger)
+    ok = _run_pretrain_inline(args, train_dir, logger=logger)
     logger.save()
     logger.plot_learning_curves()
     print("[Pretrain] Complete." if ok else "[Pretrain] Failed.", flush=True)
@@ -127,12 +84,10 @@ def run_baselines(args=None):
     test_dir = os.path.abspath(getattr(args, "test_dir", None) or TEST_DIR)
     csv_out = getattr(args, "csv_out", None)
 
-    all_files = get_data_files(test_dir) or get_data_files(os.path.join(ROOT_DIR, "data"))
-    if not all_files:
+    files = get_data_files(test_dir) or get_data_files(os.path.join(ROOT_DIR, "data"))
+    if not files:
         print("[ERROR] No test files found. Run --mode generate first.")
         return
-
-    files = all_files
 
     print(f"\nBaseline comparison on {len(files)} file(s): {[os.path.basename(f) for f in files]}")
 
@@ -249,19 +204,14 @@ def main():
     p.add_argument("--mode", default="baseline",
                    choices=["generate", "pretrain", "train", "eval", "baseline"])
 
-    _add_data_generation_args(p)
     _add_shared_args(p)
     _add_training_budget_args(p)
 
-    p.add_argument("--baselines", nargs="+", default=None,
-                   choices=list(BASELINE_REGISTRY.keys()))
+    p.add_argument("--baselines", nargs="+", default=None, choices=list(BASELINE_REGISTRY.keys()))
     p.add_argument("--plot-out", type=str, default=None)
-
     args = p.parse_args()
 
-    if args.mode == "generate":
-        run_generate(args)
-    elif args.mode == "pretrain":
+    if args.mode == "pretrain":
         run_pretrain(args)
     elif args.mode == "train":
         run_train(args)

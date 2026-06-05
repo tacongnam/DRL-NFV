@@ -1,15 +1,16 @@
 from __future__ import annotations
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 import numpy as np
 import networkx as nx
 import config
 
+
 class RoutingMixin:
     def __init__(self):
-        self._bw_graph_cache:   Dict = {}
-        self._path_len_cache:   Dict = {}
-        self._routing_cache:    Dict = {}
+        self._bw_graph_cache:  Dict = {}
+        self._path_len_cache:  Dict = {}
+        self._routing_cache:   Dict = {}
 
     def clear_routing_cache(self):
         self._bw_graph_cache.clear()
@@ -20,7 +21,8 @@ class RoutingMixin:
         self.clear_routing_cache()
         if hasattr(self, '_z_cache'):
             self._z_cache.clear()
-        self._bw_graph_cache = {}
+
+    # ── Static pressure helpers (giữ để dùng ngoài routing) ──
 
     @staticmethod
     def link_pressure(remaining_bw: float, capacity: float) -> float:
@@ -40,83 +42,62 @@ class RoutingMixin:
     def _delay_norm(delay: float, max_delay: float) -> float:
         return delay / max(max_delay, 1e-6)
 
+    # ── Graph building ────────────────────────────────────────
+
     def _bw_pruned_graph(self, t_start: int, t_end: int, bw: float) -> nx.Graph:
+        """
+        Xây graph với edge weight = composite_weight từ Link.
+        Dijkstra trên graph này cho path tối ưu trực tiếp —
+        không cần Yen's K-paths + score riêng.
+        """
         key = (t_start, t_end, round(bw, 2))
         if key in self._bw_graph_cache:
             return self._bw_graph_cache[key]
-        G = nx.Graph()
-        for nid in self.env.network.nodes:
-            G.add_node(nid)
-        for link in self.env.network.links:
-            avail = link.get_available_bandwidth(t_start, t_end)
-            if avail >= bw:
-                G.add_edge(link.u.name, link.v.name,
-                           weight=max(link.delay, 1e-6), delay=link.delay)
-        self._bw_graph_cache[key] = G
-        return G
 
-    def _score_path(self, path: List[str], t_start: int, t_end: int,
-                    bw: float, max_delay: float, max_hops: int) -> float:
+        all_delays = [lnk.delay for lnk in self.env.network.links if lnk.delay > 0]
+        ref_delay  = max(all_delays, default=1.0)
+
         w_delay = getattr(config, 'ROUTING_DELAY_WEIGHT',    0.4)
         w_bw    = getattr(config, 'ROUTING_BW_WEIGHT',       0.3)
         w_mm1   = getattr(config, 'ROUTING_PRESSURE_WEIGHT', 0.2)
         w_hops  = getattr(config, 'ROUTING_HOP_WEIGHT',      0.1)
-        if len(path) < 2:
-            return 0.0
-        edges = list(zip(path[:-1], path[1:]))
-        total_delay, bw_pressures, mm1_pressures = 0.0, [], []
-        for u, v in edges:
-            link = next((lnk for lnk in self.env.network.links
-                         if {lnk.u.name, lnk.v.name} == {u, v}), None)
-            if link is None:
-                continue
-            total_delay += link.delay
-            avail   = link.get_available_bandwidth(t_start, t_end)
-            used_bw = link.cap - avail
-            bw_pressures.append(self.link_pressure(avail - bw, link.cap))
-            mm1_pressures.append(self._mm1_link_pressure(used_bw + bw, link.cap))
-        delay_score = self._delay_norm(total_delay, max_delay)
-        bw_score    = (sum(bw_pressures)  / len(bw_pressures))  if bw_pressures  else 0.0
-        mm1_score   = (sum(mm1_pressures) / len(mm1_pressures)) if mm1_pressures else 0.0
-        hop_score   = (len(path) - 1) / max(max_hops, 1)
-        return w_delay * delay_score + w_bw * bw_score + w_mm1 * mm1_score + w_hops * hop_score
 
-    def _yen_k_paths(self, G: nx.Graph, u: str, v: str, K: int) -> List[List[str]]:
-        try:
-            gen   = nx.shortest_simple_paths(G, u, v, weight="weight")
-            paths = []
-            for path in gen:
-                paths.append(path)
-                if len(paths) >= K:
-                    break
-            return paths
-        except (nx.NetworkXNoPath, nx.NodeNotFound, nx.NetworkXError):
-            return []
+        G = nx.Graph()
+        for nid in self.env.network.nodes:
+            G.add_node(nid)
+        for lnk in self.env.network.links:
+            if lnk.get_available_bandwidth(t_start, t_end) < bw:
+                continue
+            G.add_edge(
+                lnk.u.name, lnk.v.name,
+                weight=lnk.composite_weight(
+                    t_start, t_end, bw,
+                    ref_delay, w_delay, w_bw, w_mm1, w_hops),
+                delay=lnk.delay)
+
+        self._bw_graph_cache[key] = G
+        return G
+
+    # ── Routing ───────────────────────────────────────────────
 
     def get_routing(self, u: str, v: str, t_start: int, t_end: int,
                     bw: float, **kwargs) -> Optional[List[str]]:
         u, v = str(u), str(v)
         if u == v:
             return [u]
+
         rkey = (u, v, t_start, t_end, round(bw, 2))
         if rkey in self._routing_cache:
             return self._routing_cache[rkey]
-        K = getattr(config, 'ROUTING_K_PATHS', 3)
+
         G = self._bw_pruned_graph(t_start, t_end, bw)
-        candidates = self._yen_k_paths(G, u, v, K)
-        if not candidates:
-            self._routing_cache[rkey] = None
-            return None
-        delays    = [link.delay for link in self.env.network.links if link.delay > 0]
-        max_delay = max(delays, default=1.0) * len(candidates[0])
-        max_hops  = max(len(p) - 1 for p in candidates)
-        best_path, best_score = None, float('inf')
-        for path in candidates:
-            score = self._score_path(path, t_start, t_end, bw, max_delay, max_hops)
-            if score < best_score:
-                best_score, best_path = score, path
-        self._routing_cache[rkey] = best_path
-        return best_path
+        try:
+            path = nx.shortest_path(G, u, v, weight="weight")
+        except (nx.NetworkXNoPath, nx.NodeNotFound, nx.NetworkXError):
+            path = None
+
+        self._routing_cache[rkey] = path
+        return path
 
     def _get_all_path_lengths(self, t_start: int, t_end: int, bw: float) -> dict:
         key = (t_start, t_end, round(bw, 2))
@@ -129,6 +110,8 @@ class RoutingMixin:
             all_len = {}
         self._path_len_cache[key] = all_len
         return all_len
+
+    # ── Pressure helpers ──────────────────────────────────────
 
     def avg_path_pressure(self, sfc, t: float, path: List[str] = None) -> float:
         t_start = self.env._get_timeslot(t)

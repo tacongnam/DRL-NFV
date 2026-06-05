@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 import numpy as np
 from typing import Dict, List, Optional, Tuple
@@ -5,40 +6,53 @@ from typing import Dict, List, Optional, Tuple
 import config
 from env import Strategy, SFC
 from models import ReplayBuffer, VGAENetwork, PlacerAgent, PressureNode, build_dc_graph
+from models.admission import AdmissionAgent, WINDOW_SIZE
 from utils.routing_utils import RoutingMixin
 from utils import (
-    LRUCache, TrainingLogger, 
-    snapshot_network, restore_network, compute_placement_reward, estimate_max_cost, 
-    execute_with_fallback, rebuild_traj_from_plan, push_traj_to_buffer
+    LRUCache, TrainingLogger,
+    snapshot_network, restore_network, compute_placement_reward,
+    estimate_max_cost, execute_with_fallback,
+    rebuild_traj_from_plan, push_traj_to_buffer,
 )
 
+
 class DRL_Strategy(RoutingMixin, Strategy):
+
     def __init__(self, env, is_training: bool = False, episodes: int = 300,
                  placer_pretrained_path: str = None,
                  logger: TrainingLogger = None, episode_offset: int = 0):
         Strategy.__init__(self, env)
         RoutingMixin.__init__(self)
-        self.name            = "DRL-NFV"
-        self.is_training     = is_training
-        self.episodes        = episodes
-        self.logger          = logger
-        self.episode_offset  = episode_offset
+        self.name           = "DRL-NFV"
+        self.is_training    = is_training
+        self.episodes       = episodes
+        self.logger         = logger
+        self.episode_offset = episode_offset
 
-        self.vgae_net  = VGAENetwork(latent_dim=config.LATENT_DIM)
-        input_dim      = config.LATENT_DIM * 2 + PlacerAgent.FEAT_DIM_EXTRA
-        self.placer    = PlacerAgent(latent_dim=config.LATENT_DIM,
-                                     max_dcs=config.MAX_DCS, input_dim=input_dim)
+        # ── VGAE ──────────────────────────────────────────────
+        self.vgae_net = VGAENetwork(latent_dim=config.LATENT_DIM)
+        input_dim     = config.LATENT_DIM * 2 + PlacerAgent.FEAT_DIM_EXTRA
+
+        # ── Placer (DQN) ───────────────────────────────────────
+        self.placer = PlacerAgent(latent_dim=config.LATENT_DIM,
+                                  max_dcs=config.MAX_DCS, input_dim=input_dim)
         dummy = np.zeros((1, input_dim), dtype=np.float32)
         self.placer.policy_net(dummy)
         self.placer.target_net(dummy)
         self.placer.weight_net(dummy)
 
-        self.buf_placer  = ReplayBuffer(capacity=10_000)
-        self.buf_graph   = ReplayBuffer(capacity=1_000)
+        # ── Admission (PPO) ────────────────────────────────────
+        self.admission        = AdmissionAgent(window_size=WINDOW_SIZE)
+        self._ppo_update_freq = 32          # Episode bước để update PPO
+        self._admission_start = max(1, episodes // 3)  # Delay admission training
+
+        # ── Replay buffers ─────────────────────────────────────
+        self.buf_placer = ReplayBuffer(capacity=10_000)
+        self.buf_graph  = ReplayBuffer(capacity=1_000)
         self._placer_traj: List[dict] = []
 
-        self._z_cache  = LRUCache(max_size=config.DRL_MAX_GRAPH_CACHE)
-        self._max_res  = {k: 1.0 for k in config.RESOURCE_TYPE}
+        # ── Max resource cache ─────────────────────────────────
+        self._max_res = {k: 1.0 for k in config.RESOURCE_TYPE}
         for node in env.network.nodes.values():
             if node.type == config.NODE_DC and node.cap:
                 for k in config.RESOURCE_TYPE:
@@ -48,6 +62,8 @@ class DRL_Strategy(RoutingMixin, Strategy):
         if placer_pretrained_path:
             self._load_placer(placer_pretrained_path)
 
+    # ── Model I/O ─────────────────────────────────────────────
+
     def load_model(self, directory: str):
         self._load_placer(os.path.join(directory, config.PLACER_WEIGHTS_FILE))
         vgae_path = os.path.join(directory, config.VGAE_WEIGHTS_FILE)
@@ -55,6 +71,7 @@ class DRL_Strategy(RoutingMixin, Strategy):
             self.vgae_net.load_weights(vgae_path)
         self.vgae_net.freeze_backbone()
         self.vgae_net.set_finetune_lr(config.HRL_VGAE_FINETUNE_LR)
+        self.admission.load_weights(directory)
 
     def _load_placer(self, path: str):
         if not path:
@@ -67,7 +84,8 @@ class DRL_Strategy(RoutingMixin, Strategy):
             print(f"[DRL] Placer weights not found: {path}")
             return
         try:
-            dummy = np.zeros((1, config.LATENT_DIM * 2 + PlacerAgent.FEAT_DIM_EXTRA), np.float32)
+            dummy = np.zeros(
+                (1, config.LATENT_DIM * 2 + PlacerAgent.FEAT_DIM_EXTRA), np.float32)
             self.placer.policy_net(dummy)
             self.placer.policy_net.set_weights(list(np.load(path, allow_pickle=True)))
             wn = path.replace(config.PLACER_WEIGHTS_FILE, config.PLACER_WEIGHT_NET_FILE)
@@ -89,9 +107,12 @@ class DRL_Strategy(RoutingMixin, Strategy):
                     np.array(self.placer.weight_net.get_weights(), dtype=object),
                     allow_pickle=True)
             self.vgae_net.save_weights(os.path.join(directory, config.VGAE_WEIGHTS_FILE))
+            self.admission.save_weights(directory)
             print(f"[DRL] Models saved -> {directory}")
         except Exception as e:
             print(f"[DRL] Save warning: {e}")
+
+    # ── Helpers ───────────────────────────────────────────────
 
     def _get_best_fit(self):
         if self._best_fit is None:
@@ -101,25 +122,27 @@ class DRL_Strategy(RoutingMixin, Strategy):
 
     def _get_z(self, t_start: int, t_end: int, bw_req: float,
                vnf_demand: dict = None) -> Tuple[np.ndarray, List[str], np.ndarray, np.ndarray]:
-        key    = (t_start, t_end, round(bw_req, 1))
-        cached = self._z_cache.get(key)
-        if cached is not None:
-            return cached
+        """
+        Luôn tính Z mới — không cache vì network state thay đổi sau env.step().
+        """
         X, A, dcs = build_dc_graph(self.env, t_start, t_end, bw_req, {}, vnf_demand)
-        Z      = self.vgae_net.encode(X, A, deterministic=not self.is_training)
-        result = (Z, dcs, X, A)
-        self._z_cache.set(key, result)
-        return result
+        Z         = self.vgae_net.encode(X, A, deterministic=not self.is_training)
+        return Z, dcs, X, A
 
     def _compute_epsilon(self, progress: float) -> float:
         return max(config.EPSILON_MIN, config.EPSILON_MAX * (0.99 ** (progress * 100)))
 
+    def _compute_use_greedy_rate(self, progress: float) -> float:
+        """Giảm greedy rate theo progress — curriculum learning"""
+        return max(0.05, 0.5 * (1.0 - progress * 2))
+
     def _clear_step_caches(self):
         self.clear_routing_cache()
-        self._z_cache.clear()
 
     def _clear_episode_caches(self):
         self.clear_episode_caches()
+
+    # ── Placement (Placer inference) ──────────────────────────
 
     def get_placement(self, sfc: SFC, current_time: float,
                       Z_t: np.ndarray = None, dc_mapping: List[str] = None,
@@ -155,8 +178,10 @@ class DRL_Strategy(RoutingMixin, Strategy):
                 return None
 
             vnf_feat   = [vnf.resource.get(k, 0.0) for k in config.RESOURCE_TYPE]
-            node_press = self.mean_candidate_pressure(valid_indices, dc_mapping, vnf, t_start, t_end)
-            action_idx = self.placer.act(Z_t, vnf_feat, valid_indices, epsilon, loc_z, node_press)
+            node_press = self.mean_candidate_pressure(
+                valid_indices, dc_mapping, vnf, t_start, t_end)
+            action_idx = self.placer.act(
+                Z_t, vnf_feat, valid_indices, epsilon, loc_z, node_press)
             chosen_dc  = dc_mapping[action_idx]
 
             path = self.get_routing(prev_dc, chosen_dc, t_start, t_end, sfc.request.bw)
@@ -183,7 +208,8 @@ class DRL_Strategy(RoutingMixin, Strategy):
             link_timeslots.append((t_start, t_end))
             prev_dc = chosen_dc
 
-        final_path = self.get_routing(prev_dc, sfc.request.end_node, t_start, t_end, sfc.request.bw)
+        final_path = self.get_routing(
+            prev_dc, sfc.request.end_node, t_start, t_end, sfc.request.bw)
         if final_path is None:
             return None
         link_paths.append(final_path)
@@ -195,20 +221,23 @@ class DRL_Strategy(RoutingMixin, Strategy):
     def _edf_sort_key(sfc: SFC) -> float:
         return sfc.request.end_time
 
+    # ── Training ──────────────────────────────────────────────
+
     def train(self) -> dict:
-        total_steps  = 0
-        total_planned = self.episodes * len(self.env.requests)
-        ep_accepted  = ep_rejected = 0
-        acc_rate     = 0.0
+        total_steps = 0
+        ep_accepted = ep_rejected = 0
+        acc_rate    = 0.0
 
         for ep in range(1, self.episodes + 1):
             self.env.reset()
             self._clear_episode_caches()
             self._best_fit = None
+            self.admission.reset_history()
 
-            pending = sorted([SFC(r) for r in self.env.requests],
-                             key=lambda s: s.request.arrival_time)
+            pending     = sorted([SFC(r) for r in self.env.requests],
+                                 key=lambda s: s.request.arrival_time)
             ep_accepted = ep_rejected = 0
+            train_admission = (ep >= self._admission_start)
 
             while pending:
                 t     = pending[0].request.arrival_time
@@ -222,7 +251,7 @@ class DRL_Strategy(RoutingMixin, Strategy):
 
                 for sfc in batch:
                     total_steps += 1
-                    progress = total_steps / max(1, total_planned)
+                    progress = ep / max(self.episodes, 1)
                     epsilon  = self._compute_epsilon(progress)
 
                     t_start = self.env._get_timeslot(t)
@@ -232,16 +261,61 @@ class DRL_Strategy(RoutingMixin, Strategy):
                         sfc.request.vnfs[0].resource if sfc.request.vnfs else None)
 
                     snap       = snapshot_network(self.env.network)
-                    use_greedy = np.random.random() < max(0.05, 0.3 * (1.0 - progress))
+                    use_greedy = (np.random.random() <
+                                  self._compute_use_greedy_rate(progress))
 
                     if use_greedy:
-                        plan = self._get_best_fit().get_placement(sfc, t)
+                        bf = self._get_best_fit()
+                        bf.clear_routing_cache()
+                        plan = bf.get_placement(sfc, t)
                         self._placer_traj = rebuild_traj_from_plan(
                             self.env, plan, sfc, t, Z_t, dc_mapping,
                             config.LATENT_DIM) if plan else []
                     else:
                         plan = self.get_placement(sfc, t, Z_t, dc_mapping, epsilon)
 
+                    # ── TẦNG 1: Placer không tìm được plan ────
+                    if plan is None:
+                        ep_rejected += 1
+                        self.env.stats['rejected_no_plan'] = \
+                            self.env.stats.get('rejected_no_plan', 0) + 1
+                        self._clear_step_caches()
+                        push_traj_to_buffer(
+                            self.buf_placer, self._placer_traj,
+                            Z_t, -config.DRL_PENALTY_DROP,
+                            not pending, config.LATENT_DIM)
+                        self._maybe_train_placer(total_steps)
+                        continue
+
+                    # ── TẦNG 2: Admission decision ─────────────
+                    gp = AdmissionAgent.extract_gp_features(self.env, t_start, t_end)
+                    gq = AdmissionAgent.extract_gq_features(sfc)
+                    oq = AdmissionAgent.extract_oq_features(plan, self.env, sfc)
+
+                    accept, log_prob, value = self.admission.decide(
+                        gp, gq, oq, training=train_admission)
+
+                    if not accept:
+                        ep_rejected += 1
+                        self.env.stats['rejected_admission'] = \
+                            self.env.stats.get('rejected_admission', 0) + 1
+                        self._clear_step_caches()
+
+                        # Placer không bị penalty nặng — plan hợp lệ về kỹ thuật
+                        R_placer_adm = -config.DRL_PENALTY_DROP * 0.3
+                        push_traj_to_buffer(
+                            self.buf_placer, self._placer_traj,
+                            Z_t, R_placer_adm,
+                            not pending, config.LATENT_DIM)
+
+                        if train_admission:
+                            window = self.admission._get_window()
+                            self.admission.record(window, 0, log_prob, value, 0.0)
+
+                        self._maybe_train_placer(total_steps)
+                        continue
+
+                    # ── TẦNG 3: Commit vào network ─────────────
                     success, rewards, score, executed_plan, _ = \
                         execute_with_fallback(self.env, plan, sfc, t, snap)
 
@@ -249,37 +323,56 @@ class DRL_Strategy(RoutingMixin, Strategy):
                         ep_accepted += 1
                         self._clear_step_caches()
                         Z_next, _, _, _ = self._get_z(t_start, t_end, sfc.request.bw)
+
                         raw_cost   = abs(rewards[1]) if len(rewards) > 1 else 0.0
-                        cost_norm  = min(1.0, raw_cost / max(estimate_max_cost(self.env, sfc), 1e-6))
-                        time_ratio = min(1.0, (t - sfc.request.arrival_time)
-                                         / max(sfc.request.delay_max, 1e-6))
+                        cost_norm  = min(1.0, raw_cost /
+                                         max(estimate_max_cost(self.env, sfc), 1e-6))
+                        time_ratio = min(1.0, (t - sfc.request.arrival_time) /
+                                         max(sfc.request.delay_max, 1e-6))
                         R_placer   = (config.DRL_R_BASE_LL
                                       + config.DRL_LL_ALPHA * (1.0 - time_ratio)
                                       - config.DRL_LL_BETA  * cost_norm)
+
+                        # Admission reward: Rev/Cost * Rev (EAC eq.25)
+                        rev   = float(oq[0]) * 1000.0
+                        cost  = float(oq[1]) * 1000.0
+                        r2c   = rev / max(cost, 1e-6)
+                        R_adm = min(r2c * rev / 1000.0, 10.0)
+
+                        self.env.stats['total_revenue'] = \
+                            self.env.stats.get('total_revenue', 0.0) + rev
+                        self.env.stats['total_cost'] += raw_cost
+
                     else:
                         ep_rejected += 1
+                        self.env.stats['rejected_step_fail'] = \
+                            self.env.stats.get('rejected_step_fail', 0) + 1
                         restore_network(self.env.network, snap)
                         self._clear_step_caches()
                         Z_next   = Z_t
                         R_placer = -config.DRL_PENALTY_DROP
+                        R_adm    = 0.0
 
-                    push_traj_to_buffer(self.buf_placer, self._placer_traj,
-                                        Z_next, R_placer,
-                                        not pending, config.LATENT_DIM)
+                    push_traj_to_buffer(
+                        self.buf_placer, self._placer_traj,
+                        Z_next, R_placer,
+                        not pending, config.LATENT_DIM)
+
+                    if train_admission:
+                        window = self.admission._get_window()
+                        self.admission.record(window, int(accept),
+                                              log_prob, value, R_adm)
 
                     if X is not None:
                         self.buf_graph.push((X, A))
 
-                    if total_steps % 4 == 0 and len(self.buf_placer) >= config.DRL_BATCH_SIZE:
-                        self.placer.train(self.buf_placer, config.DRL_BATCH_SIZE)
+                    self._maybe_train_placer(total_steps)
 
-                    if total_steps % config.DRL_TARGET_SYNC == 0:
-                        self.placer.update_target_network()
-
-                    if (total_steps % config.HRL_VGAE_FINETUNE_FREQ == 0 and len(self.buf_graph) >= 4):
-                        loss = self.vgae_net.finetune(self.buf_graph, epochs=config.HRL_VGAE_FINETUNE_EPOCHS)
-                        if self.logger and loss is not None:
-                            self.logger.log_vgae_finetune(total_steps, loss)
+            # ── Cuối episode: PPO update admission ────────────
+            if train_admission and len(self.admission._traj) >= 2:
+                adm_loss = self.admission.train_ppo()
+                if self.logger and adm_loss is not None:
+                    self.logger.log_admission(ep + self.episode_offset, adm_loss)
 
             total_ep = ep_accepted + ep_rejected
             acc_rate = ep_accepted / max(1, total_ep)
@@ -287,7 +380,9 @@ class DRL_Strategy(RoutingMixin, Strategy):
                 self.logger.log_episode(ep + self.episode_offset, acc_rate,
                                         [ep_accepted, ep_rejected])
             if ep % 10 == 0 or ep == self.episodes:
-                print(f"[DRL] ep {ep}/{self.episodes}  acc={acc_rate:.3f}", flush=True)
+                adm_status = "ON" if train_admission else "warming"
+                print(f"[DRL] ep {ep}/{self.episodes}  acc={acc_rate:.3f}"
+                      f"  admission={adm_status}", flush=True)
 
         self.env.stats.update({
             "accepted_requests": ep_accepted,
@@ -297,10 +392,25 @@ class DRL_Strategy(RoutingMixin, Strategy):
         })
         return self.env.stats
 
+    def _maybe_train_placer(self, total_steps: int):
+        if total_steps % 4 == 0 and len(self.buf_placer) >= config.DRL_BATCH_SIZE:
+            self.placer.train(self.buf_placer, config.DRL_BATCH_SIZE)
+        if total_steps % config.DRL_TARGET_SYNC == 0:
+            self.placer.update_target_network()
+        if (total_steps % config.HRL_VGAE_FINETUNE_FREQ == 0
+                and len(self.buf_graph) >= 4):
+            loss = self.vgae_net.finetune(
+                self.buf_graph, epochs=config.HRL_VGAE_FINETUNE_EPOCHS)
+            if self.logger and loss is not None:
+                self.logger.log_vgae_finetune(total_steps, loss)
+
+    # ── Evaluation ────────────────────────────────────────────
+
     def run_simulation_eval(self) -> dict:
         self.env.reset()
         self._clear_episode_caches()
         self._best_fit = None
+        self.admission.reset_history()
 
         pending    = sorted([SFC(r) for r in self.env.requests],
                             key=lambda s: s.request.arrival_time)
@@ -324,15 +434,26 @@ class DRL_Strategy(RoutingMixin, Strategy):
                     t_start, t_end, sfc.request.bw,
                     sfc.request.vnfs[0].resource if sfc.request.vnfs else None)
 
-                snap    = snapshot_network(self.env.network)
-                plan    = self.get_placement(sfc, t, Z_t, dc_mapping, 0.0)
+                snap = snapshot_network(self.env.network)
+                plan = self.get_placement(sfc, t, Z_t, dc_mapping, 0.0)
+
+                # Admission inference (exploit)
+                if plan is not None:
+                    gp = AdmissionAgent.extract_gp_features(self.env, t_start, t_end)
+                    gq = AdmissionAgent.extract_gq_features(sfc)
+                    oq = AdmissionAgent.extract_oq_features(plan, self.env, sfc)
+                    accept, _, _ = self.admission.decide(gp, gq, oq, training=False)
+                    if not accept:
+                        plan = None     # Admission từ chối
+
                 success, rewards, _, executed_plan, _ = \
                     execute_with_fallback(self.env, plan, sfc, t, snap)
 
                 if success and executed_plan:
                     accepted += 1
                     total_cost += sum(
-                        self.env.network.nodes[v["dc"]].get_cost(self.env.vnfs[v["vnf_name"]])
+                        self.env.network.nodes[v["dc"]].get_cost(
+                            self.env.vnfs[v["vnf_name"]])
                         for v in executed_plan.get("nodes", {}).values()
                         if v["dc"] in self.env.network.nodes
                         and v.get("vnf_name") in self.env.vnfs

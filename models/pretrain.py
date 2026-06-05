@@ -15,6 +15,7 @@ from utils.helpers import resolve_request_limit
 from utils.training_logger import TrainingLogger
 from data.load_data import load_env_from_json
 
+
 def print_selected_files(files: list, request_pct: int = 0):
     print(f"[Pretrain] {len(files)} file(s)", flush=True)
     for fp in files:
@@ -24,25 +25,44 @@ def print_selected_files(files: list, request_pct: int = 0):
         lim = resolve_request_limit(total, request_pct=request_pct)
         print(f"  {os.path.basename(fp)}: {min(total, lim) if lim else total}/{total}", flush=True)
 
+
 def build_dc_graph(env, t_start: int, t_end: int, bw: float,
                    path_cache: dict, vnf_demand: dict = None):
+    """
+    Xây DC graph cho VGAE.
+    path_cache phải được clear sau mỗi env.step() vì BW thay đổi.
+    Dùng composite_weight từ Link — nhất quán với routing_utils.
+    """
     dcs = [nid for nid, n in env.network.nodes.items() if n.type == config.NODE_DC]
     n = len(dcs)
     if n == 0:
-        return np.zeros((0, 8), np.float32), np.zeros((0, 0), np.float32), []
+        return np.zeros((0, 10), np.float32), np.zeros((0, 0), np.float32), []
 
     cache_key = (t_start, t_end, round(bw, 1))
     if cache_key in path_cache:
         all_len = path_cache[cache_key]
     else:
+        all_delays = [lnk.delay for lnk in env.network.links if lnk.delay > 0]
+        ref_delay  = max(all_delays, default=1.0)
+
+        w_delay = getattr(config, 'ROUTING_DELAY_WEIGHT',    0.4)
+        w_bw    = getattr(config, 'ROUTING_BW_WEIGHT',       0.3)
+        w_mm1   = getattr(config, 'ROUTING_PRESSURE_WEIGHT', 0.2)
+        w_hops  = getattr(config, 'ROUTING_HOP_WEIGHT',      0.1)
+
         G = nx.Graph()
         for nid in env.network.nodes:
             G.add_node(nid)
         for lnk in env.network.links:
             if lnk.get_available_bandwidth(t_start, t_end) >= bw:
-                G.add_edge(lnk.u.name, lnk.v.name, delay=lnk.delay)
+                G.add_edge(
+                    lnk.u.name, lnk.v.name,
+                    weight=lnk.composite_weight(
+                        t_start, t_end, bw,
+                        ref_delay, w_delay, w_bw, w_mm1, w_hops),
+                    delay=lnk.delay)
         try:
-            all_len = dict(nx.shortest_path_length(G, weight="delay"))
+            all_len = dict(nx.shortest_path_length(G, weight="weight"))
         except Exception:
             all_len = {}
         path_cache[cache_key] = all_len
@@ -53,8 +73,6 @@ def build_dc_graph(env, t_start: int, t_end: int, bw: float,
             for k in config.RESOURCE_TYPE:
                 max_r[k] = max(max_r[k], nd.cap[k])
 
-    demand = vnf_demand or {k: 0.0 for k in config.RESOURCE_TYPE}
-
     X = np.zeros((n, 10), np.float32)
     A = np.zeros((n, n), np.float32)
 
@@ -63,84 +81,98 @@ def build_dc_graph(env, t_start: int, t_end: int, bw: float,
         res  = node.get_min_available_resource(t_start, t_end)
         cap  = node.cap or {k: 1.0 for k in config.RESOURCE_TYPE}
 
-        # Features 0-2: available ratio per resource type
         for j, k in enumerate(config.RESOURCE_TYPE):
             X[i, j] = res[k] / max(max_r[k], 1e-6)
 
-        # Features 3-5: load ratio per resource type (thay slack ratio)
         for j, k in enumerate(config.RESOURCE_TYPE):
             X[i, j + 3] = (cap[k] - res[k]) / max(cap[k], 1e-6)
 
-        # Feature 6: M/M/1 aggregate pressure của node
-        loads = [
-            min((cap[k] - res[k]) / max(cap[k], 1e-6), 0.999)
-            for k in config.RESOURCE_TYPE
-        ]
+        loads    = [min((cap[k] - res[k]) / max(cap[k], 1e-6), 0.999)
+                    for k in config.RESOURCE_TYPE]
         avg_load = sum(loads) / len(loads)
         omega    = max(1.0 - avg_load, 0.001)
         X[i, 6]  = min((avg_load / omega) / 20.0, 1.0)
 
-        # Feature 7: neighbor link congestion trung bình
         neighbor_loads = []
         total_avail_bw = 0.0
-        max_link_cap = 1.0
-
+        max_link_cap   = 1.0
         for lnk in node.links:
             avail_bw  = lnk.get_available_bandwidth(t_start, t_end)
             link_load = (lnk.cap - avail_bw) / max(lnk.cap, 1e-6)
             neighbor_loads.append(min(link_load, 1.0))
             total_avail_bw += avail_bw
-            max_link_cap = max(max_link_cap, lnk.cap)
+            max_link_cap    = max(max_link_cap, lnk.cap)
         X[i, 7] = float(np.mean(neighbor_loads)) if neighbor_loads else 0.0
+        X[i, 8] = min(total_avail_bw / (len(node.links) * max_link_cap), 1.0) \
+                  if node.links else 0.0
+        X[i, 9] = len(node.links) / 10.0
 
-        # [8]: Network Breadth (Khả năng đáp ứng băng thông của các link xung quanh)
-        # Nếu tổng băng thông trống xung quanh lớn, node này rất dễ để định tuyến đến/đi
-        if node.links:
-            X[i, 8] = min(total_avail_bw / (len(node.links) * max_link_cap), 1.0)
-        else:
-            X[i, 8] = 0.0
-
-        # Feature mới 9: Bậc của node (Degree) - Node có nhiều kết nối thường dễ định tuyến hơn
-        X[i, 9] = len(node.links) / 10.0 # Normalize
-
-        # Adjacency matrix: 1/delay-distance giữa các DC
         for jj, dj in enumerate(dcs):
             if i == jj:
                 A[i, jj] = 1.0
             else:
                 dist = all_len.get(did, {}).get(dj)
-                if dist is not None and dist > 0:
-                    A[i, jj] = A[jj, i] = 1.0 / (dist + 1.0)
+                if dist is not None:
+                    A[i, jj] = A[jj, i] = 1.0 if dist == 0 else 1.0 / (dist + 1.0)
 
     return X, A, dcs
+
+
+# ── VGAE pretrain ─────────────────────────────────────────────
 
 def pretrain_vgae(train_files: list, epochs: int = 200, batch: int = 32,
                   request_pct: int = 100, logger: TrainingLogger = None):
     if not train_files:
         return None
-    print(f"\n{'='*50}\nVGAE Pre-training ({len(train_files)} files, {epochs} epochs)\n{'='*50}", flush=True)
-    vgae = VGAENetwork(latent_dim=config.LATENT_DIM)
+    print(f"\n{'='*50}\nVGAE Pre-training ({len(train_files)} files, {epochs} epochs)\n{'='*50}",
+          flush=True)
+
+    vgae   = VGAENetwork(latent_dim=config.LATENT_DIM)
     buffer = ReplayBuffer(capacity=2000)
-    path_cache = {}
+
+    from strategy.best_fit import BestFit
+    from env.request import SFC as SFCcls
+
     for fp in train_files:
-        env = load_env_from_json(fp, request_pct=request_pct)
+        path_cache = {}                         # Cache riêng mỗi file
+        env = load_env_from_json(fp)
         env.reset()
-        for req in env.requests:
+        teacher = BestFit(env)
+
+        for req in sorted(env.requests, key=lambda r: r.arrival_time):
             t_s = env._get_timeslot(req.arrival_time)
             t_e = env._get_timeslot(req.arrival_time + req.delay_max)
-            X, A, dcs = build_dc_graph(env, t_s, t_e, req.bw, path_cache)
+
+            # Snapshot TRƯỚC deploy
+            X_before, A_before, dcs = build_dc_graph(env, t_s, t_e, req.bw, path_cache)
             if len(dcs) >= 2:
-                buffer.push((X, A))
+                buffer.push((X_before, A_before))
+
+            # Deploy để lấy snapshot SAU
+            sfc  = SFCcls(req)
+            plan = teacher.get_placement(sfc, req.arrival_time)
+            if plan is not None:
+                env.step(plan)
+                path_cache.clear()              # BW thay đổi → rebuild
+                X_after, A_after, dcs_after = build_dc_graph(
+                    env, t_s, t_e, req.bw, path_cache)
+                if len(dcs_after) >= 2:
+                    buffer.push((X_after, A_after))
+
     print(f"  Collected {len(buffer)} snapshots", flush=True)
     if len(buffer) < 4:
         return None
+
     t0 = time.time()
     for ep in range(1, epochs + 1):
         loss = vgae.train(buffer, epochs=2, batch=batch)
         if logger:
             logger.log_vgae_pretrain(ep, loss or 0.0)
         if ep % 20 == 0 or ep == epochs:
-            print(f"  epoch {ep}/{epochs}  ({time.time()-t0:.1f}s)", flush=True)
+            loss_str = f"{loss:.4f}" if loss else "N/A"
+            print(f"  epoch {ep}/{epochs}  loss={loss_str}  ({time.time()-t0:.1f}s)",
+                  flush=True)
+
     os.makedirs(config.VGAE_DIR, exist_ok=True)
     out = os.path.join(config.VGAE_DIR, config.VGAE_WEIGHTS_FILE)
     vgae.save_weights(out)
@@ -148,48 +180,71 @@ def pretrain_vgae(train_files: list, epochs: int = 200, batch: int = 32,
     return vgae
 
 
+# ── Placer pretrain helpers ───────────────────────────────────
+
 def _best_valid_dc(dcs: list, valid: list, env, vnf, t_s: int, t_e: int) -> int:
     best_idx, best_waste = valid[0], float('inf')
     for idx in valid:
-        res = env.network.nodes[dcs[idx]].get_min_available_resource(t_s, t_e)
+        res   = env.network.nodes[dcs[idx]].get_min_available_resource(t_s, t_e)
         waste = sum(res[k] - vnf.resource.get(k, 0.0) for k in config.RESOURCE_TYPE)
         if waste < best_waste:
             best_waste, best_idx = waste, idx
     return best_idx
 
 
+# ── Placer pretrain ───────────────────────────────────────────
+
 def pretrain_placer(train_files: list, vgae: VGAENetwork, episodes: int = 60,
-                    batch: int = 32, request_pct: int = 0, logger: TrainingLogger = None):
+                    batch: int = 32, request_pct: int = 0,
+                    logger: TrainingLogger = None):
     if not train_files:
         return None
+
     tf.keras.backend.clear_session()
     input_dim = config.LATENT_DIM * 2 + PlacerAgent.FEAT_DIM_EXTRA
-    placer = PlacerAgent(latent_dim=config.LATENT_DIM, max_dcs=config.MAX_DCS, input_dim=input_dim)
+    placer    = PlacerAgent(latent_dim=config.LATENT_DIM,
+                            max_dcs=config.MAX_DCS, input_dim=input_dim)
     dummy = np.zeros((1, input_dim), dtype=np.float32)
     placer.policy_net(dummy)
     placer.target_net(dummy)
     placer.weight_net(dummy)
     buf = ReplayBuffer(capacity=20_000)
 
-    file_envs = []
-    for fp in train_files:
-        env = load_env_from_json(fp, request_pct=request_pct)
-        env.reset()
-        path_cache = {}
-        sorted_reqs = sorted(env.requests, key=lambda r: r.arrival_time)
-        file_envs.append((os.path.basename(fp), env, path_cache, sorted_reqs))
-
     from strategy.best_fit import BestFit
+    from strategy.random_fit import RandomFit
     from env.request import SFC as SFCcls
 
-    print(f"\n{'='*50}\nPlacer Pre-training ({len(file_envs)} files, {episodes} episodes)\n{'='*50}", flush=True)
+    file_envs = []
+    for fp in train_files:
+        env         = load_env_from_json(fp)
+        sorted_reqs = sorted(env.requests, key=lambda r: r.arrival_time)
+        file_envs.append((os.path.basename(fp), env, sorted_reqs))
+
+    print(f"\n{'='*50}\nPlacer Pre-training ({len(file_envs)} files, {episodes} episodes)\n{'='*50}",
+          flush=True)
+
+    # Shuffle episode order để train đều trên tất cả files
+    ep_order = []
+    while len(ep_order) < episodes:
+        idxs = list(range(len(file_envs)))
+        random.shuffle(idxs)
+        ep_order.extend(idxs)
+    ep_order = ep_order[:episodes]
 
     for ep in range(1, episodes + 1):
-        epsilon = max(0.05, 0.5 * (1.0 - ep / episodes))
-        _, env, path_cache, sorted_reqs = file_envs[(ep - 1) % len(file_envs)]
+        epsilon  = max(0.05, 0.5 * (1.0 - ep / episodes))
+        file_idx = ep_order[ep - 1]
+        _, env, sorted_reqs = file_envs[file_idx]
         env.reset()
-        teacher = BestFit(env)
-        zeros = np.zeros(config.LATENT_DIM, dtype=np.float32)
+        path_cache = {}                         # Mới mỗi episode — tránh stale
+        zeros      = np.zeros(config.LATENT_DIM, dtype=np.float32)
+
+        # Mixed teacher: 70% BestFit + 30% RandomFit
+        # → Placer học distribution rộng hơn, tránh overfit BestFit
+        if random.random() < 0.7:
+            teacher = BestFit(env)
+        else:
+            teacher = RandomFit(env)
 
         max_r = {k: 1.0 for k in config.RESOURCE_TYPE}
         for nd in env.network.nodes.values():
@@ -198,27 +253,32 @@ def pretrain_placer(train_files: list, vgae: VGAENetwork, episodes: int = 60,
                     max_r[k] = max(max_r[k], nd.cap[k])
 
         for req in sorted_reqs:
-            t_s = env._get_timeslot(req.arrival_time)
-            t_e = env._get_timeslot(req.end_time)
+            t_s       = env._get_timeslot(req.arrival_time)
+            t_e       = env._get_timeslot(req.end_time)
             vnf_demand = req.vnfs[0].resource if req.vnfs else {}
             X, A, dcs = build_dc_graph(env, t_s, t_e, req.bw, path_cache, vnf_demand)
             if len(dcs) < 2:
                 continue
-            Z = vgae.encode(X, A, deterministic=True)
+
+            Z   = vgae.encode(X, A, deterministic=True)
             sfc = SFCcls(req)
             plan = teacher.get_placement(sfc, req.arrival_time)
 
+            # ── Plan thất bại ──────────────────────────────────
             if plan is None:
                 for vnf in req.vnfs:
                     vnf_feat = [vnf.resource.get(k, 0.0) for k in config.RESOURCE_TYPE]
-                    valid = [i for i, d in enumerate(dcs)
-                             if i < config.MAX_DCS and
-                             env._check_can_deploy_vnf(env.network.nodes[d], vnf, t_s, t_e)]
+                    valid    = [i for i, d in enumerate(dcs)
+                                if i < config.MAX_DCS and
+                                env._check_can_deploy_vnf(
+                                    env.network.nodes[d], vnf, t_s, t_e)]
                     if not valid:
                         continue
                     act_idx = (random.choice(valid) if random.random() < epsilon
                                else _best_valid_dc(dcs, valid, env, vnf, t_s, t_e))
-                    buf.push((Z, vnf_feat, zeros, 0.0, act_idx, -1.0, Z, valid, zeros, 0.0, False))
+                    buf.push((Z, vnf_feat, zeros, 0.0, act_idx,
+                              -config.DRL_PENALTY_DROP,
+                              Z, valid, zeros, 0.0, True))
                 continue
 
             max_cost = max(1.0, sum(
@@ -227,7 +287,7 @@ def pretrain_placer(train_files: list, vgae: VGAENetwork, episodes: int = 60,
                      and n.get_cost(v) < float('inf')), default=0.0)
                 for v in req.vnfs))
 
-            prev_loc_z = zeros
+            prev_loc_z    = zeros
             node_plan_map = {int(k.split("_")[0]): v
                              for k, v in plan.get("nodes", {}).items()}
 
@@ -239,40 +299,50 @@ def pretrain_placer(train_files: list, vgae: VGAENetwork, episodes: int = 60,
                 if act_idx >= config.MAX_DCS:
                     continue
                 vnf_feat = [vnf.resource.get(rk, 0.0) for rk in config.RESOURCE_TYPE]
-                valid = [i for i, d in enumerate(dcs)
-                         if i < config.MAX_DCS and
-                         env._check_can_deploy_vnf(env.network.nodes[d], vnf, t_s, t_e)]
+                valid    = [i for i, d in enumerate(dcs)
+                            if i < config.MAX_DCS and
+                            env._check_can_deploy_vnf(
+                                env.network.nodes[d], vnf, t_s, t_e)]
                 if not valid:
                     continue
 
                 chosen_node = env.network.nodes[node_plan["dc"]]
-                res = chosen_node.get_min_available_resource(t_s, t_e)
-                cap = chosen_node.cap or {rk: 1.0 for rk in config.RESOURCE_TYPE}
-                node_press = PressureNode.compute(res, vnf.resource, cap)
+                res         = chosen_node.get_min_available_resource(t_s, t_e)
+                cap         = chosen_node.cap or {rk: 1.0 for rk in config.RESOURCE_TYPE}
+                node_press  = PressureNode.compute(res, vnf.resource, cap)
 
                 alpha, beta = placer.get_reward_weights(Z, vnf_feat, prev_loc_z, node_press)
-                raw_cost = chosen_node.get_cost(vnf)
+                raw_cost    = chosen_node.get_cost(vnf)
                 if raw_cost == float('inf'):
                     raw_cost = max_cost
                 cost_norm = min(1.0, raw_cost / max_cost)
-                time_rem = max(0.0, req.end_time - req.arrival_time)
-                delay_norm = 1.0 - min(1.0, time_rem / max(req.delay_max, 1e-6))
+
+                # FIX: time_elapsed thay vì time_rem — đo urgency thực sự
+                time_elapsed = max(0.0, (env.t if hasattr(env, 't') else 0.0)
+                                   - req.arrival_time)
+                delay_norm   = min(1.0, time_elapsed / max(req.delay_max, 1e-6))
+
                 reward = float(config.DRL_R_BASE_LL
                                + alpha * (1.0 - delay_norm)
-                               - beta * cost_norm
+                               - beta  * cost_norm
                                - node_press)
 
                 cur_loc_z = Z[act_idx].copy() if act_idx < len(Z) else zeros
+
                 if k + 1 < len(req.vnfs):
-                    next_vnf = req.vnfs[k + 1]
+                    next_vnf   = req.vnfs[k + 1]
                     next_valid = [i for i, d in enumerate(dcs)
                                   if i < config.MAX_DCS and
                                   env._check_can_deploy_vnf(
                                       env.network.nodes[d], next_vnf, t_s, t_e)] or valid
                     chosen_node.use(vnf.resource, t_s, t_e + 1)
-                    X_next, A_next, _ = build_dc_graph(env, t_s, t_e, req.bw, path_cache, next_vnf.resource)
+                    path_cache.clear()          # Resource thay đổi → rebuild
+                    X_next, A_next, _ = build_dc_graph(
+                        env, t_s, t_e, req.bw, path_cache, next_vnf.resource)
                     Z_next = vgae.encode(X_next, A_next, deterministic=True)
-                    chosen_node.use({rk: -vnf.resource[rk] for rk in config.RESOURCE_TYPE}, t_s, t_e + 1)
+                    chosen_node.use(
+                        {rk: -vnf.resource[rk] for rk in config.RESOURCE_TYPE},
+                        t_s, t_e + 1)           # Rollback
                     next_press = node_press
                 else:
                     next_valid, Z_next, next_press = valid, Z, 0.0
@@ -284,14 +354,19 @@ def pretrain_placer(train_files: list, vgae: VGAENetwork, episodes: int = 60,
                 prev_loc_z = cur_loc_z
 
             env.step(plan)
+            path_cache.clear()                  # BW thay đổi sau deploy
 
+        # ── Train sau mỗi episode ──────────────────────────────
         if len(buf) >= batch:
             for _ in range(min(len(buf) // batch, 10)):
                 placer.train(buf, batch)
+            if ep % 5 == 0:
+                placer.update_target_network()
             if logger:
                 recent = list(buf.buf)[-batch:]
-                avg_r = float(np.mean([r[5] if not hasattr(r[5], '__len__') else r[5][0]
-                                       for r in recent]))
+                avg_r  = float(np.mean([
+                    r[5] if not hasattr(r[5], '__len__') else r[5][0]
+                    for r in recent]))
                 logger.log_ll_pretrain(ep, 0.0, avg_r)
 
         if ep == 1 or ep % 3 == 0 or ep == episodes:

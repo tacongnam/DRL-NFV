@@ -1,22 +1,16 @@
 import os
 import numpy as np
-from data.load_data import get_data_files, print_selected_files, load_env_from_json
+from data.load_data import get_data_files, load_env_from_json
 
-def _run_train(episodes, ll_pretrained, save_dir, train_dir, train_request_pct, logger=None):
+def _run_train(episodes, ll_pretrained, save_dir, train_dir, logger=None):
     files = get_data_files(train_dir)
     if not files:
         print(f"[ERROR] No training files in {train_dir}.")
         return None
 
-    print_selected_files("TRAIN", files, request_pct=train_request_pct)
-
     import random
-    all_tasks = []
-    while len(all_tasks) < episodes:
-        shuffled_files = list(files)
-        random.shuffle(shuffled_files)
-        all_tasks.extend(shuffled_files)
-    all_tasks = all_tasks[:episodes]
+    episodes_per_file = max(1, episodes // len(files))
+    remainder = episodes - episodes_per_file * len(files)
 
     from strategy.drl_strategy import DRL_Strategy
     prev_strategy  = None
@@ -26,9 +20,11 @@ def _run_train(episodes, ll_pretrained, save_dir, train_dir, train_request_pct, 
         if logger:
             logger.mark_file_boundary(fp)
 
-        env = load_env_from_json(fp, request_pct=train_request_pct)
+        ep_this_file = episodes_per_file + (1 if i < remainder else 0)
+        env = load_env_from_json(fp)
         strategy = DRL_Strategy(
-            env, is_training=True, episodes=1,
+            env, is_training=True,
+            episodes=ep_this_file,
             placer_pretrained_path=ll_pretrained if i == 0 else None,
             logger=logger,
             episode_offset=episode_offset)
@@ -49,12 +45,13 @@ def _run_train(episodes, ll_pretrained, save_dir, train_dir, train_request_pct, 
 
         env.set_strategy(strategy)
         env.run_simulation()
+        episodes_offset += ep_this_file
 
         if i % 10 == 0:
             os.makedirs(save_dir, exist_ok=True)
             strategy.save_model(save_dir)
 
-        prev_strategy   = strategy
+        prev_strategy = strategy
 
     if prev_strategy:
         prev_strategy.save_model(save_dir)

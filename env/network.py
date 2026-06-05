@@ -1,3 +1,4 @@
+import math
 import networkx as nx
 import config
 from env.vnf import VNF
@@ -19,7 +20,6 @@ class Node:
         self.vnfs  = set() if VNFs is None else VNFs
 
         if used is None:
-            # Timeslot 0 khởi tạo với usage = 0
             self.used = {0: {k: 0.0 for k in config.RESOURCE_TYPE}}
         else:
             self.used = used
@@ -65,7 +65,7 @@ class Node:
                 prev_t = max((t for t in self.used if t < T), default=None)
                 prev = self.used[prev_t] if prev_t is not None else {k: 0.0 for k in config.RESOURCE_TYPE}
                 self.used[T] = {k: prev[k] for k in config.RESOURCE_TYPE}
-                
+
         for T in range(start_T, end_T):
             for k in config.RESOURCE_TYPE:
                 self.used[T][k] += resource[k]
@@ -98,6 +98,7 @@ class Node:
             return True
         return False
 
+
 class Link:
     def __init__(self, u: Node, v: Node, bandwidth_capacity: float,
                  link_delay: float, used: dict = None):
@@ -129,10 +130,10 @@ class Link:
             if T not in self.used:
                 prev_t = max((t for t in self.used if t < T), default=None)
                 self.used[T] = self.used[prev_t] if prev_t is not None else 0.0
-                
+
         for T in range(start_T, end_T):
             self.used[T] += bandwidth
-    
+
     def get_load(self, t_start: int, t_end: int) -> float:
         if self.cap <= 0:
             return 1.0
@@ -157,7 +158,28 @@ class Link:
         else:
             prev_t = max((t for t in self.used if t < T), default=None)
             used_T = self.used[prev_t] if prev_t is not None else 0.0
-        return self.cap - used_T    
+        return self.cap - used_T
+
+    def composite_weight(self, t_start: int, t_end: int, bw: float,
+                         ref_delay: float = 1.0,
+                         w_delay: float = 0.4, w_bw: float = 0.3,
+                         w_mm1: float = 0.2, w_hops: float = 0.1) -> float:
+        """
+        Single source of truth cho edge cost — dùng chung ở routing_utils
+        và build_dc_graph.
+        """
+        avail   = self.get_available_bandwidth(t_start, t_end)
+        used_bw = self.cap - avail
+        load    = min(used_bw / max(self.cap, 1e-6), 0.999)
+        omega   = max(1.0 - load, 0.001)
+
+        delay_w = w_delay * (self.delay / max(ref_delay, 1e-6))
+        bw_w    = w_bw    * math.exp(-max(avail - bw, 0.0) / max(self.cap, 1e-6))
+        mm1_w   = w_mm1   * min((load / omega) / 20.0, 1.0)
+        hop_w   = w_hops  * 1.0
+
+        return max(delay_w + bw_w + mm1_w + hop_w, 1e-6)
+
 
 class Network:
     def __init__(self):
