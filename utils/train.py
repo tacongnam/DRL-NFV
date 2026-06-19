@@ -45,7 +45,7 @@ def _run_train(episodes, ll_pretrained, save_dir, train_dir, logger=None):
 
         env.set_strategy(strategy)
         env.run_simulation()
-        episodes_offset += ep_this_file
+        episode_offset += ep_this_file
 
         if i % 10 == 0:
             os.makedirs(save_dir, exist_ok=True)

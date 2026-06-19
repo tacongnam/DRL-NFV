@@ -50,11 +50,6 @@ class VGAENetwork:
         self.aux_head = layers.Dense(self.NODE_FEAT_DIM, name="aux_head")
         self.optimizer = keras.optimizers.Adam(lr)
 
-        HRL_VGAE_FINETUNE_LR   = 1e-5
-        HRL_VGAE_FINETUNE_FREQ = 500
-        HRL_VGAE_FINETUNE_EPOCHS = 1
-        HRL_VGAE_ONLINE        = False
-
     def freeze_backbone(self):
         self.gcn1.trainable   = False
         self.gcn_mu.trainable = False

@@ -1,4 +1,4 @@
-import os, sys, argparse, subprocess, time
+import os, sys, argparse, time
 import numpy as np
 import config
 from strategy import GreedyFIFS, BestFit, DeadlineAwareGreedy, RandomFit, ShortestPathFirst, GreedyGLB, DRL_Strategy
@@ -63,7 +63,6 @@ def run_train(args):
     _run_train(args.episodes, ll_path,
                os.path.abspath(getattr(args, "model_dir", "models/hrl_final")),
                os.path.abspath(getattr(args, "train_dir", TRAIN_DIR)),
-               train_request_pct=100,
                logger=logger)
     logger.save()
     logger.plot_learning_curves()

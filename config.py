@@ -29,8 +29,6 @@ EPSILON_WARMUP = 0.05
 
 DRL_LL_ALPHA = 2.0
 DRL_LL_BETA = 0.1
-
-ROUTING_K_PATHS = 3
  
 ROUTING_DELAY_WEIGHT    = 0.4  # w_delay : tổng delay dọc path
 ROUTING_BW_WEIGHT       = 0.3  # w_bw    : mean exponential BW pressure

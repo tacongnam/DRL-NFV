@@ -26,8 +26,6 @@ def _run_pretrain_inline(args, train_dir: str, logger=None):
             episodes=getattr(args, "ll_episodes", 60),
             logger=logger,
         )
-    else:
-        logger.info("[Pretrain] Skipped Placer pretrain because VGAE was not produced.")
 
     import config
     vgae_out = os.path.join(config.VGAE_DIR, config.VGAE_WEIGHTS_FILE)

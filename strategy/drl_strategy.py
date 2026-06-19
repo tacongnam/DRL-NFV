@@ -10,14 +10,11 @@ from models.admission import AdmissionAgent, WINDOW_SIZE
 from utils.routing_utils import RoutingMixin
 from utils import (
     LRUCache, TrainingLogger,
-    snapshot_network, restore_network, compute_placement_reward,
-    estimate_max_cost, execute_with_fallback,
+    snapshot_network, restore_network, estimate_max_cost, execute_with_fallback,
     rebuild_traj_from_plan, push_traj_to_buffer,
 )
 
-
 class DRL_Strategy(RoutingMixin, Strategy):
-
     def __init__(self, env, is_training: bool = False, episodes: int = 300,
                  placer_pretrained_path: str = None,
                  logger: TrainingLogger = None, episode_offset: int = 0):
@@ -140,7 +137,9 @@ class DRL_Strategy(RoutingMixin, Strategy):
         self.clear_routing_cache()
 
     def _clear_episode_caches(self):
-        self.clear_episode_caches()
+        self.clear_routing_cache()
+        if hasattr(self, '_z_cache'):
+            self._z_cache.clear()
 
     # ── Placement (Placer inference) ──────────────────────────
 

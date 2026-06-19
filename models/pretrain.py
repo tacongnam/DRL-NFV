@@ -11,23 +11,10 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 import config
 from models.model import VGAENetwork, ReplayBuffer
 from models.placer import PlacerAgent, PressureNode
-from utils.helpers import resolve_request_limit
 from utils.training_logger import TrainingLogger
 from data.load_data import load_env_from_json
 
-
-def print_selected_files(files: list, request_pct: int = 0):
-    print(f"[Pretrain] {len(files)} file(s)", flush=True)
-    for fp in files:
-        with open(fp) as f:
-            data = json.load(f)
-        total = len(data.get("R", []))
-        lim = resolve_request_limit(total, request_pct=request_pct)
-        print(f"  {os.path.basename(fp)}: {min(total, lim) if lim else total}/{total}", flush=True)
-
-
-def build_dc_graph(env, t_start: int, t_end: int, bw: float,
-                   path_cache: dict, vnf_demand: dict = None):
+def build_dc_graph(env, t_start: int, t_end: int, bw: float, path_cache: dict, vnf_demand: dict = None):
     """
     Xây DC graph cho VGAE.
     path_cache phải được clear sau mỗi env.step() vì BW thay đổi.

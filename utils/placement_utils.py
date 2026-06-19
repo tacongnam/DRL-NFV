@@ -6,26 +6,6 @@ import config
 from models.placer import PressureNode
 from utils.hrl_utils import restore_network
 
-def compute_placement_reward(env, sfc, t: float, chosen_dc_name: str,
-                              vnf, env_rewards: list,
-                              max_cost: float,
-                              path_pressure: float = 0.0) -> float:
-    node    = env.network.nodes[chosen_dc_name]
-    t_start = env._get_timeslot(t)
-    t_end   = env._get_timeslot(sfc.request.end_time)
-    res     = node.get_min_available_resource(t_start, t_end)
-    cap     = node.cap or {k: 1.0 for k in config.RESOURCE_TYPE}
-    node_press = PressureNode.compute(res, vnf.resource, cap)
-    raw_cost   = abs(env_rewards[1]) if len(env_rewards) > 1 else 0.0
-    cost_norm  = min(1.0, raw_cost / max(max_cost, 1e-6))
-    time_rem   = max(0.0, sfc.request.end_time - t)
-    delay_norm = 1.0 - min(1.0, time_rem / max(sfc.request.delay_max, 1e-6))
-    return (config.DRL_R_BASE_LL
-            + config.DRL_LL_ALPHA * (1.0 - delay_norm)
-            - config.DRL_LL_BETA  * cost_norm
-            - node_press
-            - path_pressure)
-
 def estimate_max_cost(env, sfc) -> float:
     return max(1.0, sum(
         max((n.get_cost(v) for n in env.network.nodes.values()
