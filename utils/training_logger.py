@@ -68,6 +68,15 @@ class TrainingLogger:
         self.data["ll_loss"].append(float(loss))
         self.data["ll_weight_loss"].append(float(weight_loss))
 
+    def log_admission(self, episode: int, loss: float):
+        self.data["admission_episode"].append(episode)
+        self.data["admission_loss"].append(float(loss))
+
+    def log_revenue_metrics(self, episode: int, ltr: float, lt_r2c: float):
+        self.data["revenue_episode"].append(episode)
+        self.data["ltr"].append(float(ltr))
+        self.data["lt_r2c"].append(float(lt_r2c))
+
     def save(self):
         path = os.path.join(self.log_dir, "training_log.json")
         with open(path, "w") as f:
@@ -224,6 +233,43 @@ class TrainingLogger:
             fig.suptitle("Low-Level Agent Training Loss", fontweight="bold")
             fig.tight_layout()
             save_fig(fig, "train_ll_loss.png")
+
+        # Admission PPO loss
+        if self.data.get("admission_episode"):
+            fig, ax = plt.subplots(figsize=(8, 4))
+            eps    = self.data["admission_episode"]
+            losses = self.data["admission_loss"]
+            ax.plot(eps, losses, color="#cccccc", linewidth=0.6, alpha=0.5, label="Raw")
+            s = smooth(losses, w=max(3, len(losses) // 10))
+            ax.plot(eps[:len(s)], s, color="#e07b4c", linewidth=1.8, label="Smoothed")
+            draw_boundaries(ax, eps, boundaries)
+            ax.set_title("Admission Agent PPO Loss")
+            ax.set_xlabel("Episode")
+            ax.set_ylabel("Loss")
+            ax.legend()
+            ax.grid(True, linestyle="--", alpha=0.4)
+            fig.tight_layout()
+            save_fig(fig, "train_admission_loss.png")
+
+        # LTR and LT-R2C
+        if self.data.get("revenue_episode"):
+            fig, axes = plt.subplots(1, 2, figsize=(13, 4))
+            eps = self.data["revenue_episode"]
+            for ax, key, title, color in [
+                (axes[0], "ltr",    "Long-Term Average Revenue (LTR)",  "#4c7be0"),
+                (axes[1], "lt_r2c", "Long-Term Revenue-to-Cost (LT-R2C)", "#27ae60"),
+            ]:
+                vals = self.data[key]
+                ax.plot(eps, vals, color="#cccccc", linewidth=0.6, alpha=0.5, label="Raw")
+                s = smooth(vals, w=max(3, len(vals) // 10))
+                ax.plot(eps[:len(s)], s, color=color, linewidth=1.8, label="Smoothed")
+                draw_boundaries(ax, eps, boundaries)
+                ax.set_title(title)
+                ax.set_xlabel("Episode")
+                ax.legend()
+                ax.grid(True, linestyle="--", alpha=0.4)
+            fig.tight_layout()
+            save_fig(fig, "train_revenue_metrics.png")
 
         # VGAE online loss (legacy)
         if self.data.get("vgae_online_step"):

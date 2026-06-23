@@ -10,9 +10,13 @@ from models.admission import AdmissionAgent, WINDOW_SIZE
 from utils.routing_utils import RoutingMixin
 from utils import (
     LRUCache, TrainingLogger,
-    snapshot_network, restore_network, estimate_max_cost, execute_with_fallback,
+    snapshot_network, restore_network,
+    estimate_max_cost, execute_with_fallback,
     rebuild_traj_from_plan, push_traj_to_buffer,
 )
+from utils.hrl_utils import compute_revenue, compute_cost
+from utils.metrics import EpisodeMetrics
+
 
 class DRL_Strategy(RoutingMixin, Strategy):
     def __init__(self, env, is_training: bool = False, episodes: int = 300,
@@ -26,29 +30,27 @@ class DRL_Strategy(RoutingMixin, Strategy):
         self.logger         = logger
         self.episode_offset = episode_offset
 
-        # ── VGAE ──────────────────────────────────────────────
         self.vgae_net = VGAENetwork(latent_dim=config.LATENT_DIM)
         input_dim     = config.LATENT_DIM * 2 + PlacerAgent.FEAT_DIM_EXTRA
 
-        # ── Placer (DQN) ───────────────────────────────────────
-        self.placer = PlacerAgent(latent_dim=config.LATENT_DIM,
-                                  max_dcs=config.MAX_DCS, input_dim=input_dim)
+        self.placer   = PlacerAgent(latent_dim=config.LATENT_DIM,
+                                    max_dcs=config.MAX_DCS, input_dim=input_dim)
         dummy = np.zeros((1, input_dim), dtype=np.float32)
         self.placer.policy_net(dummy)
         self.placer.target_net(dummy)
         self.placer.weight_net(dummy)
 
-        # ── Admission (PPO) ────────────────────────────────────
-        self.admission        = AdmissionAgent(window_size=WINDOW_SIZE)
-        self._ppo_update_freq = 32          # Episode bước để update PPO
-        self._admission_start = max(1, episodes // 3)  # Delay admission training
+        self.admission = AdmissionAgent(window_size=WINDOW_SIZE)
 
-        # ── Replay buffers ─────────────────────────────────────
+        # Episode at which admission training begins.
+        self._admission_start = max(1, int(episodes * config.ADMISSION_START_FRAC))
+        # Additional warmup: pure-accept episodes right after admission activates.
+        self._admission_warmup = getattr(config, 'ADMISSION_WARMUP_EPISODES', 5)
+
         self.buf_placer = ReplayBuffer(capacity=10_000)
         self.buf_graph  = ReplayBuffer(capacity=1_000)
         self._placer_traj: List[dict] = []
 
-        # ── Max resource cache ─────────────────────────────────
         self._max_res = {k: 1.0 for k in config.RESOURCE_TYPE}
         for node in env.network.nodes.values():
             if node.type == config.NODE_DC and node.cap:
@@ -105,7 +107,6 @@ class DRL_Strategy(RoutingMixin, Strategy):
                     allow_pickle=True)
             self.vgae_net.save_weights(os.path.join(directory, config.VGAE_WEIGHTS_FILE))
             self.admission.save_weights(directory)
-            print(f"[DRL] Models saved -> {directory}")
         except Exception as e:
             print(f"[DRL] Save warning: {e}")
 
@@ -119,9 +120,6 @@ class DRL_Strategy(RoutingMixin, Strategy):
 
     def _get_z(self, t_start: int, t_end: int, bw_req: float,
                vnf_demand: dict = None) -> Tuple[np.ndarray, List[str], np.ndarray, np.ndarray]:
-        """
-        Luôn tính Z mới — không cache vì network state thay đổi sau env.step().
-        """
         X, A, dcs = build_dc_graph(self.env, t_start, t_end, bw_req, {}, vnf_demand)
         Z         = self.vgae_net.encode(X, A, deterministic=not self.is_training)
         return Z, dcs, X, A
@@ -130,7 +128,6 @@ class DRL_Strategy(RoutingMixin, Strategy):
         return max(config.EPSILON_MIN, config.EPSILON_MAX * (0.99 ** (progress * 100)))
 
     def _compute_use_greedy_rate(self, progress: float) -> float:
-        """Giảm greedy rate theo progress — curriculum learning"""
         return max(0.05, 0.5 * (1.0 - progress * 2))
 
     def _clear_step_caches(self):
@@ -141,7 +138,20 @@ class DRL_Strategy(RoutingMixin, Strategy):
         if hasattr(self, '_z_cache'):
             self._z_cache.clear()
 
-    # ── Placement (Placer inference) ──────────────────────────
+    def _admission_phase(self, ep: int) -> str:
+        """
+        Returns the current admission phase for episode ep:
+          'off'     — before admission training starts (always accept)
+          'warmup'  — admission active but forced to accept (builds trajectory)
+          'active'  — admission makes real decisions
+        """
+        if ep < self._admission_start:
+            return 'off'
+        if ep < self._admission_start + self._admission_warmup:
+            return 'warmup'
+        return 'active'
+
+    # ── Placement ─────────────────────────────────────────────
 
     def get_placement(self, sfc: SFC, current_time: float,
                       Z_t: np.ndarray = None, dc_mapping: List[str] = None,
@@ -195,10 +205,13 @@ class DRL_Strategy(RoutingMixin, Strategy):
                 return None
 
             self._placer_traj.append({
-                "Z_t": Z_t, "vnf_feat": vnf_feat,
-                "loc_z": loc_z.copy(), "node_press": node_press,
+                "Z_t":        Z_t,
+                "vnf_feat":   vnf_feat,
+                "loc_z":      loc_z.copy(),
+                "node_press": node_press,
                 "action_idx": action_idx,
-                "valid_mask": valid_indices, "dc_name": chosen_dc,
+                "valid_mask": valid_indices,
+                "dc_name":    chosen_dc,
             })
             loc_z = Z_t[action_idx].copy() if action_idx < len(Z_t) else loc_z
             node_placements.append(chosen_dc)
@@ -226,17 +239,19 @@ class DRL_Strategy(RoutingMixin, Strategy):
         total_steps = 0
         ep_accepted = ep_rejected = 0
         acc_rate    = 0.0
+        metrics     = EpisodeMetrics()
 
         for ep in range(1, self.episodes + 1):
             self.env.reset()
             self._clear_episode_caches()
             self._best_fit = None
             self.admission.reset_history()
+            metrics.reset()
 
             pending     = sorted([SFC(r) for r in self.env.requests],
                                  key=lambda s: s.request.arrival_time)
             ep_accepted = ep_rejected = 0
-            train_admission = (ep >= self._admission_start)
+            adm_phase   = self._admission_phase(ep)
 
             while pending:
                 t     = pending[0].request.arrival_time
@@ -267,17 +282,19 @@ class DRL_Strategy(RoutingMixin, Strategy):
                         bf = self._get_best_fit()
                         bf.clear_routing_cache()
                         plan = bf.get_placement(sfc, t)
-                        self._placer_traj = rebuild_traj_from_plan(
-                            self.env, plan, sfc, t, Z_t, dc_mapping,
-                            config.LATENT_DIM) if plan else []
+                        self._placer_traj = (
+                            rebuild_traj_from_plan(
+                                self.env, plan, sfc, t, Z_t, dc_mapping,
+                                config.LATENT_DIM)
+                            if plan else [])
                     else:
                         plan = self.get_placement(sfc, t, Z_t, dc_mapping, epsilon)
 
-                    # ── TẦNG 1: Placer không tìm được plan ────
+                    # ── Tier 1: placement failed ───────────────
                     if plan is None:
                         ep_rejected += 1
-                        self.env.stats['rejected_no_plan'] = \
-                            self.env.stats.get('rejected_no_plan', 0) + 1
+                        self.env.stats['rejected_no_plan'] = (
+                            self.env.stats.get('rejected_no_plan', 0) + 1)
                         self._clear_step_caches()
                         push_traj_to_buffer(
                             self.buf_placer, self._placer_traj,
@@ -286,35 +303,41 @@ class DRL_Strategy(RoutingMixin, Strategy):
                         self._maybe_train_placer(total_steps)
                         continue
 
-                    # ── TẦNG 2: Admission decision ─────────────
+                    # ── Tier 2: admission decision ─────────────
                     gp = AdmissionAgent.extract_gp_features(self.env, t_start, t_end)
                     gq = AdmissionAgent.extract_gq_features(sfc)
                     oq = AdmissionAgent.extract_oq_features(plan, self.env, sfc)
 
+                    # During 'off' phase: accept everything, no trajectory.
+                    # During 'warmup' phase: accept everything, build trajectory.
+                    # During 'active' phase: real decision with confidence threshold.
+                    force_accept = (adm_phase in ('off', 'warmup'))
+                    train_adm    = (adm_phase != 'off')
+
                     accept, log_prob, value = self.admission.decide(
-                        gp, gq, oq, training=train_admission)
+                        gp, gq, oq,
+                        training=train_adm,
+                        force_accept=force_accept)
 
                     if not accept:
                         ep_rejected += 1
-                        self.env.stats['rejected_admission'] = \
-                            self.env.stats.get('rejected_admission', 0) + 1
+                        self.env.stats['rejected_admission'] = (
+                            self.env.stats.get('rejected_admission', 0) + 1)
                         self._clear_step_caches()
 
-                        # Placer không bị penalty nặng — plan hợp lệ về kỹ thuật
-                        R_placer_adm = -config.DRL_PENALTY_DROP * 0.3
                         push_traj_to_buffer(
                             self.buf_placer, self._placer_traj,
-                            Z_t, R_placer_adm,
+                            Z_t, -config.DRL_PENALTY_DROP * 0.3,
                             not pending, config.LATENT_DIM)
 
-                        if train_admission:
+                        if train_adm:
                             window = self.admission._get_window()
                             self.admission.record(window, 0, log_prob, value, 0.0)
 
                         self._maybe_train_placer(total_steps)
                         continue
 
-                    # ── TẦNG 3: Commit vào network ─────────────
+                    # ── Tier 3: commit ─────────────────────────
                     success, rewards, score, executed_plan, _ = \
                         execute_with_fallback(self.env, plan, sfc, t, snap)
 
@@ -323,29 +346,36 @@ class DRL_Strategy(RoutingMixin, Strategy):
                         self._clear_step_caches()
                         Z_next, _, _, _ = self._get_z(t_start, t_end, sfc.request.bw)
 
-                        raw_cost   = abs(rewards[1]) if len(rewards) > 1 else 0.0
+                        revenue  = compute_revenue(sfc.request,
+                                                   config.REVENUE_WEIGHT_NODE,
+                                                   config.REVENUE_WEIGHT_LINK)
+                        cost_val = compute_cost(plan, self.env, sfc.request,
+                                                config.REVENUE_WEIGHT_NODE,
+                                                config.REVENUE_WEIGHT_LINK)
+                        r2c      = revenue / max(cost_val, 1e-6)
+
+                        raw_cost   = abs(rewards[1]) if len(rewards) > 1 else cost_val
                         cost_norm  = min(1.0, raw_cost /
                                          max(estimate_max_cost(self.env, sfc), 1e-6))
                         time_ratio = min(1.0, (t - sfc.request.arrival_time) /
                                          max(sfc.request.delay_max, 1e-6))
                         R_placer   = (config.DRL_R_BASE_LL
-                                      + config.DRL_LL_ALPHA * (1.0 - time_ratio)
-                                      - config.DRL_LL_BETA  * cost_norm)
+                                      + config.DRL_LL_ALPHA * r2c
+                                      - config.DRL_LL_BETA  * cost_norm
+                                      - 0.1 * time_ratio)
 
-                        # Admission reward: Rev/Cost * Rev (EAC eq.25)
-                        rev   = float(oq[0]) * 1000.0
-                        cost  = float(oq[1]) * 1000.0
-                        r2c   = rev / max(cost, 1e-6)
-                        R_adm = min(r2c * rev / 1000.0, 10.0)
+                        R_adm = min(r2c * revenue / 1000.0, 10.0)
 
-                        self.env.stats['total_revenue'] = \
-                            self.env.stats.get('total_revenue', 0.0) + rev
-                        self.env.stats['total_cost'] += raw_cost
+                        metrics.record(revenue, cost_val, r2c, accepted=True)
+                        self.env.stats['total_revenue'] = (
+                            self.env.stats.get('total_revenue', 0.0) + revenue)
+                        self.env.stats['total_cost'] = (
+                            self.env.stats.get('total_cost', 0.0) + raw_cost)
 
                     else:
                         ep_rejected += 1
-                        self.env.stats['rejected_step_fail'] = \
-                            self.env.stats.get('rejected_step_fail', 0) + 1
+                        self.env.stats['rejected_step_fail'] = (
+                            self.env.stats.get('rejected_step_fail', 0) + 1)
                         restore_network(self.env.network, snap)
                         self._clear_step_caches()
                         Z_next   = Z_t
@@ -357,9 +387,9 @@ class DRL_Strategy(RoutingMixin, Strategy):
                         Z_next, R_placer,
                         not pending, config.LATENT_DIM)
 
-                    if train_admission:
+                    if train_adm:
                         window = self.admission._get_window()
-                        self.admission.record(window, int(accept),
+                        self.admission.record(window, int(accept and not force_accept),
                                               log_prob, value, R_adm)
 
                     if X is not None:
@@ -367,21 +397,33 @@ class DRL_Strategy(RoutingMixin, Strategy):
 
                     self._maybe_train_placer(total_steps)
 
-            # ── Cuối episode: PPO update admission ────────────
-            if train_admission and len(self.admission._traj) >= 2:
+            # ── End of episode: PPO update ─────────────────────
+            if adm_phase != 'off' and len(self.admission._traj) >= 2:
                 adm_loss = self.admission.train_ppo()
                 if self.logger and adm_loss is not None:
                     self.logger.log_admission(ep + self.episode_offset, adm_loss)
 
-            total_ep = ep_accepted + ep_rejected
-            acc_rate = ep_accepted / max(1, total_ep)
+            total_ep   = ep_accepted + ep_rejected
+            acc_rate   = ep_accepted / max(1, total_ep)
+            ep_metrics = metrics.summary()
+
             if self.logger:
                 self.logger.log_episode(ep + self.episode_offset, acc_rate,
                                         [ep_accepted, ep_rejected])
+                self.logger.log_revenue_metrics(
+                    ep + self.episode_offset,
+                    ep_metrics.get('ltr', 0.0),
+                    ep_metrics.get('lt_r2c', 0.0))
+
             if ep % 10 == 0 or ep == self.episodes:
-                adm_status = "ON" if train_admission else "warming"
-                print(f"[DRL] ep {ep}/{self.episodes}  acc={acc_rate:.3f}"
-                      f"  admission={adm_status}", flush=True)
+                print(
+                    f"[DRL] ep {ep}/{self.episodes}"
+                    f"  acc={acc_rate:.3f}"
+                    f"  LTR={ep_metrics.get('ltr', 0.0):.2f}"
+                    f"  R2C={ep_metrics.get('lt_r2c', 0.0):.3f}"
+                    f"  adm={adm_phase}"
+                    f"  rej_adm={self.env.stats.get('rejected_admission', 0)}",
+                    flush=True)
 
         self.env.stats.update({
             "accepted_requests": ep_accepted,
@@ -415,6 +457,7 @@ class DRL_Strategy(RoutingMixin, Strategy):
                             key=lambda s: s.request.arrival_time)
         accepted   = rejected = 0
         total_cost = 0.0
+        metrics    = EpisodeMetrics()
 
         while pending:
             t     = pending[0].request.arrival_time
@@ -436,28 +479,29 @@ class DRL_Strategy(RoutingMixin, Strategy):
                 snap = snapshot_network(self.env.network)
                 plan = self.get_placement(sfc, t, Z_t, dc_mapping, 0.0)
 
-                # Admission inference (exploit)
-                if plan is not None:
+                if plan is not None and self.admission._is_trained:
                     gp = AdmissionAgent.extract_gp_features(self.env, t_start, t_end)
                     gq = AdmissionAgent.extract_gq_features(sfc)
                     oq = AdmissionAgent.extract_oq_features(plan, self.env, sfc)
-                    accept, _, _ = self.admission.decide(gp, gq, oq, training=False)
+                    accept, _, _ = self.admission.decide(
+                        gp, gq, oq, training=False, force_accept=False)
                     if not accept:
-                        plan = None     # Admission từ chối
+                        plan = None
 
                 success, rewards, _, executed_plan, _ = \
                     execute_with_fallback(self.env, plan, sfc, t, snap)
 
                 if success and executed_plan:
-                    accepted += 1
-                    total_cost += sum(
-                        self.env.network.nodes[v["dc"]].get_cost(
-                            self.env.vnfs[v["vnf_name"]])
-                        for v in executed_plan.get("nodes", {}).values()
-                        if v["dc"] in self.env.network.nodes
-                        and v.get("vnf_name") in self.env.vnfs
-                        and self.env.network.nodes[v["dc"]].get_cost(
-                            self.env.vnfs[v["vnf_name"]]) < float('inf'))
+                    accepted  += 1
+                    revenue    = compute_revenue(sfc.request,
+                                                 config.REVENUE_WEIGHT_NODE,
+                                                 config.REVENUE_WEIGHT_LINK)
+                    cost_val   = compute_cost(executed_plan, self.env, sfc.request,
+                                              config.REVENUE_WEIGHT_NODE,
+                                              config.REVENUE_WEIGHT_LINK)
+                    total_cost += cost_val
+                    metrics.record(revenue, cost_val, revenue / max(cost_val, 1e-6),
+                                   accepted=True)
                     self.env.stats["total_delay"] += (
                         sfc.request.end_time - sfc.request.arrival_time)
                 else:
@@ -465,7 +509,8 @@ class DRL_Strategy(RoutingMixin, Strategy):
 
                 self._clear_step_caches()
 
-        total = accepted + rejected
+        total      = accepted + rejected
+        ep_metrics = metrics.summary()
         self.env.stats.update({
             "accepted_requests": accepted,
             "rejected_requests": rejected,
@@ -473,6 +518,8 @@ class DRL_Strategy(RoutingMixin, Strategy):
             "total_cost":        total_cost,
             "acceptance_ratio":  accepted / total if total > 0 else 0.0,
             "average_cost":      total_cost / accepted if accepted > 0 else 0.0,
+            "ltr":               ep_metrics.get('ltr', 0.0),
+            "lt_r2c":            ep_metrics.get('lt_r2c', 0.0),
             "algorithm_name":    self.name,
         })
         return self.env.stats

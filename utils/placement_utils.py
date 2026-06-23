@@ -4,7 +4,8 @@ from typing import Dict, List, Optional, Tuple
 
 import config
 from models.placer import PressureNode
-from utils.hrl_utils import restore_network
+from utils.hrl_utils import restore_network, compute_revenue, compute_cost
+
 
 def estimate_max_cost(env, sfc) -> float:
     return max(1.0, sum(
@@ -12,6 +13,7 @@ def estimate_max_cost(env, sfc) -> float:
              if n.type == config.NODE_DC and n.cost is not None
              and n.get_cost(v) < float('inf')), default=0.0)
         for v in sfc.request.vnfs))
+
 
 def execute_with_fallback(env, plan, sfc, t: float, snap: dict):
     if plan is not None:
@@ -21,31 +23,54 @@ def execute_with_fallback(env, plan, sfc, t: float, snap: dict):
         restore_network(env.network, snap)
     return False, [-1.0, 0.0], None, None, False
 
+
+def sort_vnfs_by_degree_resource(req):
+    vnf_list = list(req.vnfs)
+    adjacency = {i: 0 for i in range(len(vnf_list))}
+    if hasattr(req, 'links'):
+        for lnk in req.links:
+            src = getattr(lnk, 'src_idx', None)
+            dst = getattr(lnk, 'dst_idx', None)
+            if src is not None and dst is not None:
+                adjacency[src] = adjacency.get(src, 0) + 1
+                adjacency[dst] = adjacency.get(dst, 0) + 1
+    sorted_vnfs = sorted(
+        enumerate(vnf_list),
+        key=lambda iv: (
+            -adjacency.get(iv[0], 0),
+            -sum(iv[1].resource.get(k, 0.0) for k in config.RESOURCE_TYPE)
+        )
+    )
+    return [v for _, v in sorted_vnfs], [i for i, _ in sorted_vnfs]
+
+
 def rebuild_traj_from_plan(env, plan: dict, sfc, t: float,
                             Z_t: np.ndarray, dc_mapping: List[str],
                             latent_dim: int) -> List[dict]:
-    from models.placer import PressureNode
-    t_start      = env._get_timeslot(t)
-    t_end        = env._get_timeslot(sfc.request.end_time)
-    node_plan_map = {int(k.split("_")[0]): v for k, v in plan.get("nodes", {}).items()}
-    prev_loc_z   = np.zeros(latent_dim, dtype=np.float32)
-    traj         = []
+    t_start       = env._get_timeslot(t)
+    t_end         = env._get_timeslot(sfc.request.end_time)
+    node_plan_map = {int(k.split("_")[0]): v
+                     for k, v in plan.get("nodes", {}).items()}
+    prev_loc_z    = np.zeros(latent_dim, dtype=np.float32)
+    traj          = []
+
     for i, vnf in enumerate(sfc.request.vnfs):
-        np_ = node_plan_map.get(i)
+        np_  = node_plan_map.get(i)
         if np_ is None or np_["dc"] not in dc_mapping:
             continue
         act_idx = dc_mapping.index(np_["dc"])
         if act_idx >= config.MAX_DCS:
             continue
-        cand  = [str(x) for x in vnf.get_dcs()]
+        cand = [str(x) for x in vnf.get_dcs()]
         if '-1' in cand or not cand:
             cand = dc_mapping
         valid = [idx for idx, dc_id in enumerate(dc_mapping)
                  if dc_id in cand and idx < config.MAX_DCS
-                 and env._check_can_deploy_vnf(env.network.nodes[dc_id], vnf, t_start, t_end)]
-        node      = env.network.nodes[np_["dc"]]
-        res       = node.get_min_available_resource(t_start, t_end)
-        cap       = node.cap or {k: 1.0 for k in config.RESOURCE_TYPE}
+                 and env._check_can_deploy_vnf(
+                     env.network.nodes[dc_id], vnf, t_start, t_end)]
+        node       = env.network.nodes[np_["dc"]]
+        res        = node.get_min_available_resource(t_start, t_end)
+        cap        = node.cap or {k: 1.0 for k in config.RESOURCE_TYPE}
         node_press = PressureNode.compute(res, vnf.resource, cap)
         traj.append({
             "Z_t":        Z_t,
@@ -58,6 +83,7 @@ def rebuild_traj_from_plan(env, plan: dict, sfc, t: float,
         })
         prev_loc_z = Z_t[act_idx].copy() if act_idx < len(Z_t) else prev_loc_z
     return traj
+
 
 def push_traj_to_buffer(buf, traj: List[dict],
                          Z_next: np.ndarray, R: float,

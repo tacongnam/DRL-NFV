@@ -3,7 +3,7 @@ NODE_SWITCH = 1
 RESOURCE_TYPE = ["mem", "cpu", "ram"]
 TIMESTEP = 0.1
 
-LATENT_DIM = 10
+LATENT_DIM = 16
 MAX_DCS = 60
 VGAE_DIR = "models/vgae_pretrained"
 PLACER_DIR = "models/placer"
@@ -29,13 +29,39 @@ EPSILON_WARMUP = 0.05
 
 DRL_LL_ALPHA = 2.0
 DRL_LL_BETA = 0.1
- 
-ROUTING_DELAY_WEIGHT    = 0.4  # w_delay : tổng delay dọc path
-ROUTING_BW_WEIGHT       = 0.3  # w_bw    : mean exponential BW pressure
-ROUTING_PRESSURE_WEIGHT = 0.2  # w_mm1   : mean M/M/1 queuing pressure
-ROUTING_HOP_WEIGHT      = 0.1  # w_hops  : số hop (tránh path quá dài)
 
-HRL_VGAE_FINETUNE_LR   = 1e-5
-HRL_VGAE_FINETUNE_FREQ = 500
+ROUTING_DELAY_WEIGHT    = 0.4
+ROUTING_BW_WEIGHT       = 0.3
+ROUTING_PRESSURE_WEIGHT = 0.2
+ROUTING_HOP_WEIGHT      = 0.1
+
+HRL_VGAE_FINETUNE_LR    = 1e-5
+HRL_VGAE_FINETUNE_FREQ  = 500
 HRL_VGAE_FINETUNE_EPOCHS = 1
-HRL_VGAE_ONLINE        = False
+HRL_VGAE_ONLINE         = False
+
+ADMISSION_WINDOW_SIZE    = 10
+ADMISSION_HIDDEN_DIM     = 128
+ADMISSION_LR             = 3e-4
+ADMISSION_PPO_EPOCHS     = 4
+ADMISSION_CLIP_EPS       = 0.2
+ADMISSION_GAMMA          = 0.99
+ADMISSION_LAM            = 0.95
+ADMISSION_ENTROPY_COEF   = 0.01
+ADMISSION_VALUE_COEF     = 0.5
+ADMISSION_START_FRAC     = 0.25
+
+# Reject only when P(reject) >= this threshold; otherwise default accept.
+ADMISSION_REJECT_THRESHOLD = 0.65
+
+# Static R2C floor: always reject if R2C < floor (0.0 = disabled).
+ADMISSION_R2C_FLOOR      = 0.0
+
+# Pure-accept warmup episodes after admission activates.
+ADMISSION_WARMUP_EPISODES = 5
+
+REVENUE_WEIGHT_NODE     = 1.0
+REVENUE_WEIGHT_LINK     = 1.0
+
+PLACER_HIDDEN_DIM       = 256
+PLACER_LR               = 3e-4

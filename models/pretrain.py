@@ -14,14 +14,11 @@ from models.placer import PlacerAgent, PressureNode
 from utils.training_logger import TrainingLogger
 from data.load_data import load_env_from_json
 
-def build_dc_graph(env, t_start: int, t_end: int, bw: float, path_cache: dict, vnf_demand: dict = None):
-    """
-    Xây DC graph cho VGAE.
-    path_cache phải được clear sau mỗi env.step() vì BW thay đổi.
-    Dùng composite_weight từ Link — nhất quán với routing_utils.
-    """
+
+def build_dc_graph(env, t_start: int, t_end: int, bw: float,
+                   path_cache: dict, vnf_demand: dict = None):
     dcs = [nid for nid, n in env.network.nodes.items() if n.type == config.NODE_DC]
-    n = len(dcs)
+    n   = len(dcs)
     if n == 0:
         return np.zeros((0, 10), np.float32), np.zeros((0, 0), np.float32), []
 
@@ -80,9 +77,7 @@ def build_dc_graph(env, t_start: int, t_end: int, bw: float, path_cache: dict, v
         omega    = max(1.0 - avg_load, 0.001)
         X[i, 6]  = min((avg_load / omega) / 20.0, 1.0)
 
-        neighbor_loads = []
-        total_avail_bw = 0.0
-        max_link_cap   = 1.0
+        neighbor_loads, total_avail_bw, max_link_cap = [], 0.0, 1.0
         for lnk in node.links:
             avail_bw  = lnk.get_available_bandwidth(t_start, t_end)
             link_load = (lnk.cap - avail_bw) / max(lnk.cap, 1e-6)
@@ -90,8 +85,8 @@ def build_dc_graph(env, t_start: int, t_end: int, bw: float, path_cache: dict, v
             total_avail_bw += avail_bw
             max_link_cap    = max(max_link_cap, lnk.cap)
         X[i, 7] = float(np.mean(neighbor_loads)) if neighbor_loads else 0.0
-        X[i, 8] = min(total_avail_bw / (len(node.links) * max_link_cap), 1.0) \
-                  if node.links else 0.0
+        X[i, 8] = (min(total_avail_bw / (len(node.links) * max_link_cap), 1.0)
+                   if node.links else 0.0)
         X[i, 9] = len(node.links) / 10.0
 
         for jj, dj in enumerate(dcs):
@@ -104,8 +99,6 @@ def build_dc_graph(env, t_start: int, t_end: int, bw: float, path_cache: dict, v
 
     return X, A, dcs
 
-
-# ── VGAE pretrain ─────────────────────────────────────────────
 
 def pretrain_vgae(train_files: list, epochs: int = 200, batch: int = 32,
                   request_pct: int = 100, logger: TrainingLogger = None):
@@ -121,26 +114,24 @@ def pretrain_vgae(train_files: list, epochs: int = 200, batch: int = 32,
     from env.request import SFC as SFCcls
 
     for fp in train_files:
-        path_cache = {}                         # Cache riêng mỗi file
-        env = load_env_from_json(fp)
+        path_cache = {}
+        env        = load_env_from_json(fp)
         env.reset()
-        teacher = BestFit(env)
+        teacher    = BestFit(env)
 
         for req in sorted(env.requests, key=lambda r: r.arrival_time):
             t_s = env._get_timeslot(req.arrival_time)
             t_e = env._get_timeslot(req.arrival_time + req.delay_max)
 
-            # Snapshot TRƯỚC deploy
             X_before, A_before, dcs = build_dc_graph(env, t_s, t_e, req.bw, path_cache)
             if len(dcs) >= 2:
                 buffer.push((X_before, A_before))
 
-            # Deploy để lấy snapshot SAU
             sfc  = SFCcls(req)
             plan = teacher.get_placement(sfc, req.arrival_time)
             if plan is not None:
                 env.step(plan)
-                path_cache.clear()              # BW thay đổi → rebuild
+                path_cache.clear()
                 X_after, A_after, dcs_after = build_dc_graph(
                     env, t_s, t_e, req.bw, path_cache)
                 if len(dcs_after) >= 2:
@@ -167,8 +158,6 @@ def pretrain_vgae(train_files: list, epochs: int = 200, batch: int = 32,
     return vgae
 
 
-# ── Placer pretrain helpers ───────────────────────────────────
-
 def _best_valid_dc(dcs: list, valid: list, env, vnf, t_s: int, t_e: int) -> int:
     best_idx, best_waste = valid[0], float('inf')
     for idx in valid:
@@ -178,8 +167,6 @@ def _best_valid_dc(dcs: list, valid: list, env, vnf, t_s: int, t_e: int) -> int:
             best_waste, best_idx = waste, idx
     return best_idx
 
-
-# ── Placer pretrain ───────────────────────────────────────────
 
 def pretrain_placer(train_files: list, vgae: VGAENetwork, episodes: int = 60,
                     batch: int = 32, request_pct: int = 0,
@@ -210,7 +197,6 @@ def pretrain_placer(train_files: list, vgae: VGAENetwork, episodes: int = 60,
     print(f"\n{'='*50}\nPlacer Pre-training ({len(file_envs)} files, {episodes} episodes)\n{'='*50}",
           flush=True)
 
-    # Shuffle episode order để train đều trên tất cả files
     ep_order = []
     while len(ep_order) < episodes:
         idxs = list(range(len(file_envs)))
@@ -223,11 +209,9 @@ def pretrain_placer(train_files: list, vgae: VGAENetwork, episodes: int = 60,
         file_idx = ep_order[ep - 1]
         _, env, sorted_reqs = file_envs[file_idx]
         env.reset()
-        path_cache = {}                         # Mới mỗi episode — tránh stale
+        path_cache = {}
         zeros      = np.zeros(config.LATENT_DIM, dtype=np.float32)
 
-        # Mixed teacher: 70% BestFit + 30% RandomFit
-        # → Placer học distribution rộng hơn, tránh overfit BestFit
         if random.random() < 0.7:
             teacher = BestFit(env)
         else:
@@ -251,7 +235,6 @@ def pretrain_placer(train_files: list, vgae: VGAENetwork, episodes: int = 60,
             sfc = SFCcls(req)
             plan = teacher.get_placement(sfc, req.arrival_time)
 
-            # ── Plan thất bại ──────────────────────────────────
             if plan is None:
                 for vnf in req.vnfs:
                     vnf_feat = [vnf.resource.get(k, 0.0) for k in config.RESOURCE_TYPE]
@@ -268,11 +251,18 @@ def pretrain_placer(train_files: list, vgae: VGAENetwork, episodes: int = 60,
                               Z, valid, zeros, 0.0, True))
                 continue
 
+            from utils.hrl_utils import compute_revenue, compute_cost
+            revenue  = compute_revenue(req, config.REVENUE_WEIGHT_NODE,
+                                       config.REVENUE_WEIGHT_LINK)
             max_cost = max(1.0, sum(
                 max((n.get_cost(v) for n in env.network.nodes.values()
                      if n.type == config.NODE_DC and n.cost is not None
                      and n.get_cost(v) < float('inf')), default=0.0)
                 for v in req.vnfs))
+            cost_val = compute_cost(plan, env, req,
+                                    config.REVENUE_WEIGHT_NODE,
+                                    config.REVENUE_WEIGHT_LINK)
+            r2c      = revenue / max(cost_val, 1e-6)
 
             prev_loc_z    = zeros
             node_plan_map = {int(k.split("_")[0]): v
@@ -299,20 +289,10 @@ def pretrain_placer(train_files: list, vgae: VGAENetwork, episodes: int = 60,
                 node_press  = PressureNode.compute(res, vnf.resource, cap)
 
                 alpha, beta = placer.get_reward_weights(Z, vnf_feat, prev_loc_z, node_press)
-                raw_cost    = chosen_node.get_cost(vnf)
-                if raw_cost == float('inf'):
-                    raw_cost = max_cost
-                cost_norm = min(1.0, raw_cost / max_cost)
-
-                # FIX: time_elapsed thay vì time_rem — đo urgency thực sự
-                time_elapsed = max(0.0, (env.t if hasattr(env, 't') else 0.0)
-                                   - req.arrival_time)
-                delay_norm   = min(1.0, time_elapsed / max(req.delay_max, 1e-6))
 
                 reward = float(config.DRL_R_BASE_LL
-                               + alpha * (1.0 - delay_norm)
-                               - beta  * cost_norm
-                               - node_press)
+                               + alpha * r2c
+                               - beta  * node_press)
 
                 cur_loc_z = Z[act_idx].copy() if act_idx < len(Z) else zeros
 
@@ -323,13 +303,13 @@ def pretrain_placer(train_files: list, vgae: VGAENetwork, episodes: int = 60,
                                   env._check_can_deploy_vnf(
                                       env.network.nodes[d], next_vnf, t_s, t_e)] or valid
                     chosen_node.use(vnf.resource, t_s, t_e + 1)
-                    path_cache.clear()          # Resource thay đổi → rebuild
+                    path_cache.clear()
                     X_next, A_next, _ = build_dc_graph(
                         env, t_s, t_e, req.bw, path_cache, next_vnf.resource)
                     Z_next = vgae.encode(X_next, A_next, deterministic=True)
                     chosen_node.use(
                         {rk: -vnf.resource[rk] for rk in config.RESOURCE_TYPE},
-                        t_s, t_e + 1)           # Rollback
+                        t_s, t_e + 1)
                     next_press = node_press
                 else:
                     next_valid, Z_next, next_press = valid, Z, 0.0
@@ -341,9 +321,8 @@ def pretrain_placer(train_files: list, vgae: VGAENetwork, episodes: int = 60,
                 prev_loc_z = cur_loc_z
 
             env.step(plan)
-            path_cache.clear()                  # BW thay đổi sau deploy
+            path_cache.clear()
 
-        # ── Train sau mỗi episode ──────────────────────────────
         if len(buf) >= batch:
             for _ in range(min(len(buf) // batch, 10)):
                 placer.train(buf, batch)
